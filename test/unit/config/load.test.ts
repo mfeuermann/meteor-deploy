@@ -64,6 +64,11 @@ describe('loadConfig', () => {
     expect(loadConfig(d).raw.app.name).toBe('second');
   });
 
+  it('loads a CommonJS mup.js that sits inside a "type": "module" package', () => {
+    const d = dir({ 'package.json': '{"type":"module"}', '.deploy/mup.js': JS('esm-scope') });
+    expect(loadConfig(join(d, '.deploy')).raw.app.name).toBe('esm-scope');
+  });
+
   it('reports invalid JSON with the file name', () => {
     const d = dir({ 'mup.json': '{ "app": ' });
     expect(() => loadConfig(d)).toThrow(/mup\.json/);

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import Module, { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { CometError } from '../core/errors.js';
@@ -53,10 +53,46 @@ function loadFile(path: string): RawConfig {
     const resolved = require.resolve(path);
     delete require.cache[resolved];
     const mod = require(resolved);
+    if (isEmptyEsmNamespace(mod)) return compileAsCommonJs(resolved);
     return (mod && mod.__esModule && mod.default) || mod;
   } catch (err) {
+    if (isCjsInEsmScopeError(err)) {
+      try {
+        return compileAsCommonJs(path);
+      } catch (inner) {
+        throw new CometError(`Failed to load ${path}: ${(inner as Error).message}`, { cause: inner });
+      }
+    }
     throw new CometError(`Failed to load ${path}: ${(err as Error).message}`, { cause: err });
   }
+}
+
+function isEmptyEsmNamespace(mod: unknown): boolean {
+  return (
+    !!mod &&
+    typeof mod === 'object' &&
+    (mod as any)[Symbol.toStringTag] === 'Module' &&
+    Object.keys(mod as object).filter((k) => k !== 'module.exports').length === 0
+  );
+}
+
+function isCjsInEsmScopeError(err: unknown): boolean {
+  const e = err as NodeJS.ErrnoException;
+  return e?.code === 'ERR_REQUIRE_ESM' || (e instanceof ReferenceError && /module is not defined|exports is not defined/.test(e.message));
+}
+
+/**
+ * mup.js files use `module.exports`. When the file sits inside a package with
+ * `"type": "module"` (common for Meteor 3 apps), Node treats it as ESM. Compile
+ * it as CommonJS explicitly so such configs keep working.
+ */
+function compileAsCommonJs(path: string): RawConfig {
+  const m = new Module(path) as Module & { _compile(code: string, file: string): void; paths: string[] };
+  m.filename = path;
+  m.paths = (Module as any)._nodeModulePaths(dirname(path));
+  m._compile(readFileSync(path, 'utf8'), path);
+  const exported = m.exports as any;
+  return (exported && exported.__esModule && exported.default) || exported;
 }
 
 export function loadConfig(cwd: string, configFlag?: string): LoadedConfig {
