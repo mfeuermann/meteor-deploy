@@ -27,3 +27,18 @@ This project includes files derived from Meteor Up (mup) 1.5.11
   SOFTWARE.
 
 Files derived from Meteor Up:
+
+(copied unchanged from mup 1.5.11 lib/plugins/{meteor,docker}/assets and lib/plugins/default/template)
+  templates/mup/default/mup.js.sample
+  templates/mup/default/settings.json
+  templates/mup/docker/docker-restart.sh
+  templates/mup/docker/docker-setup.sh
+  templates/mup/docker/docker-update.sh
+  templates/mup/docker/install-docker.sh
+  templates/mup/meteor/meteor-deploy-check.sh
+  templates/mup/meteor/meteor-destroy.sh
+  templates/mup/meteor/meteor-setup.sh
+  templates/mup/meteor/meteor-start.sh
+  templates/mup/meteor/meteor-stop.sh
+  templates/mup/meteor/templates/env.list
+  templates/mup/meteor/templates/start.sh

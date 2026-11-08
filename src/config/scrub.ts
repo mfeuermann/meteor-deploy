@@ -4,7 +4,6 @@ import type { NormalizedConfig } from './types.js';
 
 /** Port of MUP's scrubUrl (keeps scheme, auth marker, label count, port, path, hash). */
 export function scrubUrl(url: string): string {
-  // eslint-disable-next-line @typescript-eslint/no-deprecated
   const { protocol, auth, hostname, port, path, hash } = parse(url);
   let href = `${protocol}//`;
   if (auth) href += 'user:pass@';

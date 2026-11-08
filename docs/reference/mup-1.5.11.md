@@ -236,7 +236,7 @@ Effects: upload and prepare-bundle run on the **first app server only**, which a
   - The rendered text is sent as the ssh `exec` command, so it runs in the remote user's default shell and the shebang is ignored. `mup status` flags a non-bash shell.
   - Non-zero exit = failure; the error includes the last 4200 chars of stderr/stdout.
 - `copy`: SFTP as the SSH user (`fastPut` for files; `open w+` / `write` for rendered templates). Retries up to 3× after 3 s / 6 s / 9 s. `No such file` → no retry, hint "run mup setup".
-- `hostVars[host]` are deep-merged (`lodash.merge`) into vars per session (keyed by `servers.<n>.host`).
+- `hostVars[host]` are deep-merged (`lodash.merge`) into vars per session (keyed by `servers.<n>.host`). **Quirk:** `copy`/`executeScript` only shallow-clone the options, so the merge mutates the `vars` object shared by all hosts — a server's `bind`/`env.PORT`/`env.*`/`settings` leak into every server rendered after it (comet-deploy renders each server from a fresh copy).
 - `runTaskList(list, sessions, { series })`: `series: true` = `async.mapSeries`, i.e. the **whole list on server 1, then server 2…**. Otherwise all servers run concurrently. The first failure rejects → exit 1; in series mode the remaining servers are never touched.
 
 ### 3.2 Top-level commands (default plugin; the handlers are mostly no-ops, the work is done by `post.default.*` hooks)

@@ -34,3 +34,58 @@ export async function mupNormalize(configPath: string): Promise<Record<string, a
     console.log = log;
   }
 }
+
+/**
+ * Runs MUP's own `meteor.envconfig` handler with a captured task list (no SSH)
+ * and renders the two `copy` tasks (start.sh, env.list) for one server exactly
+ * like MUP's nodemiral `copy` task does: `lodash.merge(vars, hostVars[host])`,
+ * then `@zodern/ejs` with `filename` set.
+ *
+ * Deviation (ruled): MUP merges into a vars object shared by all hosts, so
+ * values of one server leak into the next one. We merge into a fresh copy per
+ * host, i.e. what MUP produces for a server rendered on its own.
+ *
+ * Per-server settings paths are resolved by MUP against process.cwd(), so the
+ * oracle runs with cwd = `cwd` (default: the config directory).
+ */
+export async function mupEnvconfigFiles(
+  configPath: string,
+  settingsPath: string,
+  serverName: string,
+  opts: { cwd?: string } = {},
+): Promise<{ startSh: string; envList: string }> {
+  const { readFileSync } = await import('node:fs');
+  const cloneDeep = require('lodash/cloneDeep');
+  const merge = require('lodash/merge');
+  const ejs = require('@zodern/ejs');
+  const handlers = mupRequire('plugins/meteor/command-handlers.js');
+
+  const api = createMupApi(configPath, { settings: settingsPath });
+  let captured: any;
+  api.runTaskList = async (list: any) => {
+    captured = list;
+  };
+  api.getSessions = () => [];
+
+  const log = console.log;
+  const prevCwd = process.cwd();
+  console.log = () => {};
+  try {
+    process.chdir(opts.cwd ?? dirname(configPath));
+    api.getConfig(false);
+    await handlers.envconfig(api);
+  } finally {
+    console.log = log;
+    process.chdir(prevCwd);
+  }
+
+  const host = api.getConfig(false).servers[serverName].host;
+  const render = (destSuffix: string): string => {
+    const task = captured._taskQueue.find((t: any) => t.type === 'copy' && t.options.dest.endsWith(destSuffix));
+    if (!task) throw new Error(`MUP envconfig produced no copy task for ${destSuffix}`);
+    const { src, vars, hostVars } = task.options;
+    const merged = merge(cloneDeep(vars), hostVars?.[host]);
+    return ejs.render(readFileSync(src, 'utf8'), merged, { filename: src });
+  };
+  return { startSh: render('/config/start.sh'), envList: render('/config/env.list') };
+}
