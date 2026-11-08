@@ -11,6 +11,7 @@ const entry = (p: Partial<CacheEntry> = {}): CacheEntry => ({
   imageId: 'sha256:abc',
   bundleDir: '/tmp/b/bundle',
   nodeVersion: '24.22.1',
+  depsHash: 'd'.repeat(64),
   createdAt: '2026-11-07T18:30:05.000Z',
   ...p,
 });

@@ -5,3 +5,4 @@ dist/
 coverage/
 .tmp/
 .superpowers/
+!test/fixtures/bundles/**/node_modules/

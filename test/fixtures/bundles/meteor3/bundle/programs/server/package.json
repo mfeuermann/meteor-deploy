@@ -1,0 +1,1 @@
+{"name":"meteor-dev-bundle","private":true,"scripts":{"install":"node npm-rebuild.js"},"dependencies":{"node-gyp":"9.4.0"}}

@@ -12,6 +12,8 @@ export interface CacheEntry {
   imageId: string;
   bundleDir: string;
   nodeVersion: string;
+  /** Content hash of the dependency layer inputs (spec §8.4: future shared deps image). */
+  depsHash: string;
   createdAt: string;
 }
 
