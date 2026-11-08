@@ -184,3 +184,12 @@ describe('shq', () => {
     expect(shq("a'b $x")).toBe(`'a'\\''b $x'`);
   });
 });
+
+describe('shArg', () => {
+  it('keeps safe arguments readable and quotes the rest', async () => {
+    const { shArg } = await import('../../../src/remote/ops.js');
+    expect(shArg('/opt/my.app/config/start.sh')).toBe('/opt/my.app/config/start.sh');
+    expect(shArg('a b')).toBe(`'a b'`);
+    expect(shArg('x;rm')).toBe(`'x;rm'`);
+  });
+});

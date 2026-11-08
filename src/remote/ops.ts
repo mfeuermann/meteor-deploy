@@ -12,6 +12,11 @@ export function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Shell argument: as is when it only has safe characters, otherwise single-quoted. */
+export function shArg(s: string): string {
+  return /^[A-Za-z0-9._/:@=+-]+$/.test(s) ? s : shq(s);
+}
+
 function comet(name: string, vars: Record<string, unknown>): Promise<string> {
   return renderTemplate(`comet/${name}`, { q: shq, ...vars });
 }
