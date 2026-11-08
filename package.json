@@ -1,0 +1,54 @@
+{
+  "name": "comet-deploy",
+  "version": "0.1.0",
+  "description": "Fast, MUP-compatible deployment tool for Meteor apps: build once locally, ship only changed layers.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Marek Feuermann",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mfeuermann/meteor-deploy.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "comet-deploy": "dist/cli/main.js"
+  },
+  "files": [
+    "dist",
+    "templates",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:integration": "vitest run -c vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@zodern/ejs": "2.7.5",
+    "joi": "^17.13.9",
+    "lodash": "^4.18.1",
+    "picocolors": "^1.1.1",
+    "random-seed": "0.3.0",
+    "ssh2": "^1.17.0",
+    "uuid": "^9.0.1",
+    "yargs": "^17.7.3"
+  },
+  "devDependencies": {
+    "@types/lodash": "^4.17.27",
+    "@types/node": "^20.19.43",
+    "@types/ssh2": "^1.15.6",
+    "@types/uuid": "^9.0.8",
+    "@types/yargs": "^17.0.35",
+    "eslint": "^9.39.5",
+    "mup": "1.5.11",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^2.1.9"
+  }
+}
