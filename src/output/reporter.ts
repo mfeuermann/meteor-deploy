@@ -21,6 +21,8 @@ export interface Reporter {
   summary(rows: SummaryRow[]): void;
   phaseTimings(): Array<{ name: string; durationMs: number }>;
   addSecrets(values: string[]): void;
+  /** Masks registered secrets in text printed outside the reporter (e.g. top-level errors). */
+  mask(text: string): string;
   readonly verbose: boolean;
 }
 
@@ -122,6 +124,9 @@ export function createReporter(opts: {
     },
     addSecrets(values) {
       for (const v of values) if (!secrets.includes(v)) secrets.push(v);
+    },
+    mask(text) {
+      return maskSecrets(text, secrets);
     },
   };
 }

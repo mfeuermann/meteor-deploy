@@ -32,13 +32,31 @@ describe('collectSecrets', () => {
 
   it('collects env values, per-server env, passwords and settings JSON', () => {
     const s = collectSecrets(config, { private: { k: 'v' } });
-    expect(s).toContain('https://x.com');
     expect(s).toContain('mongodb://u:p@db/x');
-    expect(s).toContain('8080');
-    expect(s).toContain('true');
     expect(s).toContain('per-server-token');
     expect(s).toContain('serverpass');
     expect(s).toContain(JSON.stringify({ private: { k: 'v' } }));
     expect(s).not.toContain('ab');
+  });
+
+  it('does not treat public URLs, ports and plain numbers/booleans as secrets', () => {
+    const s = collectSecrets(config);
+    expect(s).not.toContain('https://x.com');
+    expect(s).not.toContain('8080');
+    expect(s).not.toContain('true');
+    const c2 = { ...config, app: { ...config.app, env: { STR_NUM: '12345', STR_BOOL: 'false', API_KEY: 'k-12345678' } } } as unknown as NormalizedConfig;
+    const s2 = collectSecrets(c2);
+    expect(s2).toContain('k-12345678');
+    expect(s2).not.toContain('12345');
+    expect(s2).not.toContain('false');
+  });
+
+  it('collects non-public settings string values of 8+ characters', () => {
+    const settings = { public: { siteName: 'public-site-name' }, private: { token: 'example-token-123', short: 'abc', nested: [{ pw: 'nested-password' }] } };
+    const s = collectSecrets(config, settings);
+    expect(s).toContain('example-token-123');
+    expect(s).toContain('nested-password');
+    expect(s).not.toContain('public-site-name');
+    expect(s).not.toContain('abc');
   });
 });
