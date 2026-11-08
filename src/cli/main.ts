@@ -3,6 +3,7 @@ import { createBaseContext, createContext, type SshPoolFactory } from '../core/c
 import { CometError } from '../core/errors.js';
 import { TOOL_VERSION } from '../core/version.js';
 import { createReporter, type Reporter } from '../output/reporter.js';
+import { deployCommand, meteorBuildCommand, meteorDeployCommand, meteorPushCommand } from './commands/deploy.js';
 import { initCommand } from './commands/init.js';
 import { validateCommand } from './commands/validate.js';
 import { registerCommands, type CommandModule } from './registry.js';
@@ -22,7 +23,14 @@ const defaultIO: CliIO = {
   stderr: (s) => void process.stderr.write(s),
 };
 
-export const COMMANDS: CommandModule[] = [initCommand, validateCommand];
+export const COMMANDS: CommandModule[] = [
+  initCommand,
+  validateCommand,
+  deployCommand,
+  meteorDeployCommand,
+  meteorPushCommand,
+  meteorBuildCommand,
+];
 
 /** Builds the yargs instance (without parsing). Commands are registered here. */
 export function buildCli(argv: string[], io: CliIO = defaultIO, deps: MainDeps = {}, onReporter?: (r: Reporter) => void): Argv {
