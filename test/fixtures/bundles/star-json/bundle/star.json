@@ -1,0 +1,1 @@
+{"format":"site-archive-pre1","builtBy":"Meteor METEOR@3.5.4","programs":[{"name":"web.browser","arch":"web.browser","path":"programs/web.browser/program.json"},{"name":"server","arch":"os.linux.x86_64","path":"programs/server/boot.js"}],"meteorRelease":"METEOR@3.5.4","nodeVersion":"24.22.1","npmVersion":"11.6.2","gitCommitHash":"0000000000000000000000000000000000000000"}
