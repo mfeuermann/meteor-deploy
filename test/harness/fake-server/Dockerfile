@@ -1,0 +1,23 @@
+# Fake deploy target for integration tests: Debian (MUP's scripts assume apt-get)
+# with Docker preinstalled (so `setup` tests do not download it every time),
+# sshd, sudo and a passwordless-sudo `deployer` user in the docker group.
+FROM debian:bookworm
+
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+     openssh-server sudo curl ca-certificates bash iproute2 iptables procps \
+  && curl -fsSL https://get.docker.com -o /tmp/get-docker.sh \
+  && sh /tmp/get-docker.sh --version 27.5 \
+  && rm -rf /var/lib/apt/lists/* /tmp/get-docker.sh \
+  && mkdir -p /run/sshd \
+  && useradd -m -s /bin/bash -G docker deployer \
+  && echo 'deployer ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/deployer \
+  && chmod 0440 /etc/sudoers.d/deployer
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Inner Docker data must not live on the container's overlayfs (nested overlay).
+VOLUME /var/lib/docker
+EXPOSE 22
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
