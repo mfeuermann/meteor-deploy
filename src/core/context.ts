@@ -5,6 +5,8 @@ import type { NormalizedConfig, RawConfig } from '../config/types.js';
 import { hasFatal, validateConfig, type Issue } from '../config/validate.js';
 import { createReporter, type Reporter } from '../output/reporter.js';
 import { collectSecrets } from '../output/secrets.js';
+import type { SshConnection } from '../ssh/connection.js';
+import { SshPool } from '../ssh/pool.js';
 import { CometError } from './errors.js';
 import { CommandRunner } from './runner.js';
 
@@ -16,9 +18,9 @@ export interface GlobalArgs {
   'show-hook-names'?: boolean;
 }
 
-/** What the context needs from the SSH layer (implemented by `SshPool`, task 8). */
+/** What commands need from the SSH layer (`SshPool`; tests pass stubs). */
 export interface SshPoolLike {
-  get(name: string): Promise<any>;
+  get(name: string): Promise<SshConnection>;
   closeAll(): Promise<void>;
 }
 
@@ -56,17 +58,7 @@ export interface ContextDeps {
   sshPoolFactory?: SshPoolFactory;
 }
 
-let defaultSshPoolFactory: SshPoolFactory = () => ({
-  async get() {
-    throw new CometError('SSH is not available in this build.');
-  },
-  async closeAll() {},
-});
-
-/** Lets the SSH layer register the real pool without a circular import. */
-export function setDefaultSshPoolFactory(f: SshPoolFactory): void {
-  defaultSshPoolFactory = f;
-}
+const defaultSshPoolFactory: SshPoolFactory = (c, cwd, basePath) => new SshPool(c.servers, { cwd, basePath });
 
 export function formatIssue(i: Issue): string {
   return `${i.path} ${i.message}`;
