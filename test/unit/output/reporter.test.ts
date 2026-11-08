@@ -49,7 +49,6 @@ describe('reporter (plain mode)', () => {
     r.warn('careful');
     r.error('bad');
     r.server('one', 'start', 'failed');
-    // eslint-disable-next-line no-control-regex
     expect(lines.join('')).not.toMatch(/\u001b\[/);
   });
 
