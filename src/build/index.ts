@@ -23,7 +23,7 @@ export interface BuiltImage {
 }
 
 /** MUP's prepareBundleSupported (ref. §2.3). */
-export function prepareBundleSupported(docker: DockerOptions): boolean {
+export function prepareBundleSupported(docker: Pick<DockerOptions, 'image' | 'prepareBundle'>): boolean {
   if ('prepareBundle' in docker) return !!docker.prepareBundle;
   return ['abernix/meteord', 'zodern/meteor'].some((img) => (docker.image ?? '').startsWith(img));
 }

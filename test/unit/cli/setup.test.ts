@@ -89,7 +89,7 @@ describe('setup', () => {
     expect(meteor).toEqual(['one:meteor-setup', 'three:meteor-setup', 'two:meteor-setup']);
     // every docker setup finished before the first meteor setup; docker setups overlap
     expect(s.timeline.findIndex((t) => t.startsWith('start:') && t.endsWith(':meteor-setup'))).toBeGreaterThan(
-      s.timeline.findLastIndex((t) => t.endsWith(':docker-setup')),
+      s.timeline.map((t) => t.endsWith(':docker-setup')).lastIndexOf(true),
     );
     expect(s.timeline.slice(0, 2).every((t) => t.startsWith('start:'))).toBe(true);
     expect(s.out()).toMatch(/mongo.*phase 2/i);
