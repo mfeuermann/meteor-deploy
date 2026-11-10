@@ -32,7 +32,15 @@ export function sampleProject(): { root: string; appDir: string; deployDir: stri
 export function writeTestConfig(
   dir: string,
   servers: FakeServer[],
-  o: { env?: Record<string, string>; strategy?: string; auth?: 'password' | 'pem'; settings?: unknown; appPath?: string } = {},
+  o: {
+    env?: Record<string, string>;
+    strategy?: string;
+    auth?: 'password' | 'pem';
+    settings?: unknown;
+    appPath?: string;
+    /** Extra `app.docker` options (e.g. MUP's useBuildKit for the interop test). */
+    docker?: Record<string, unknown>;
+  } = {},
 ): string {
   const config = {
     servers: fakeServersConfig(servers, o.auth ?? 'password'),
@@ -41,7 +49,7 @@ export function writeTestConfig(
       path: o.appPath ?? '../app',
       servers: Object.fromEntries(servers.map((s) => [s.name, {}])),
       env: { ROOT_URL: 'http://localhost', ...o.env },
-      docker: { image: 'zodern/meteor:latest' },
+      docker: { image: 'zodern/meteor:latest', ...o.docker },
       deployCheckWaitTime: 120,
     },
     ...(o.strategy ? { cometDeploy: { strategy: o.strategy } } : {}),

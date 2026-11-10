@@ -7,7 +7,7 @@ import { localImageRepo } from '../core/naming.js';
 import { TOOL_ID } from '../core/version.js';
 import { buildImage, imageId, pullImage } from '../local/docker.js';
 import { BuildCache } from './cache.js';
-import { argKeysForInstructions, computeDepsHash, DOCKERFILE_VERSION, planBuildContext, renderDockerfile } from './dockerfile.js';
+import { argKeysForInstructions, computeDepsHash, DOCKERFILE_VERSION, planBuildContext, renderDockerfile, writeContextIgnore } from './dockerfile.js';
 import { computeInputHash } from './input-hash.js';
 import { meteorArchFor, runMeteorBuild } from './meteor-build.js';
 import { readNodeVersion } from './node-version.js';
@@ -95,6 +95,7 @@ export async function buildApp(
     });
     const buildArgs: Record<string, string> = { NODE_VERSION: nodeVersion };
     for (const k of argKeys) buildArgs[k] = String(app.env[k]);
+    writeContextIgnore(join(bundleDir, '..'));
     const built = await r.phase(`docker build (${platform})`, () =>
       buildImage({
         contextDir: join(bundleDir, '..'),

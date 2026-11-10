@@ -55,15 +55,18 @@ describe('e2e: deploy the sample app to two servers', () => {
 
   it('4. reconfig that crashes the app: canary reverted, the other server skipped, both still serve', async () => {
     writeConfig({ CRASH_ON_START: '1' });
-    const r = await cli(['reconfig', ...config()], p.root);
-    expect(r.code, r.output).toBe(1);
-    expect(r.output).toMatch(/s1\s+-\s+reverted/);
-    expect(r.output).toMatch(/s2\s+-\s+skipped/);
-    for (const s of servers) expect(await curlApp(s, '/native')).toBe('60');
-    const envList = (await servers[0].exec(`cat /opt/${APP_NAME}/config/env.list`)).stdout;
-    expect(envList).not.toContain('CRASH_ON_START');
-    expect(envList).toContain('SPECIAL=');
-    writeConfig();
+    try {
+      const r = await cli(['reconfig', ...config()], p.root);
+      expect(r.code, r.output).toBe(1);
+      expect(r.output).toMatch(/s1\s+-\s+reverted/);
+      expect(r.output).toMatch(/s2\s+-\s+skipped/);
+      for (const s of servers) expect(await curlApp(s, '/native')).toBe('60');
+      const envList = (await servers[0].exec(`cat /opt/${APP_NAME}/config/env.list`)).stdout;
+      expect(envList).not.toContain('CRASH_ON_START');
+      expect(envList).toContain('SPECIAL=');
+    } finally {
+      writeConfig();
+    }
   });
 
   it('5. rollback, then history shows deploy, the reverted reconfig and the rollback', async () => {

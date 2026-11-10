@@ -25,11 +25,14 @@ function label(script: string): string {
   return script.trim();
 }
 
-function mockConn(health: string) {
+/** `health`: one answer for every check, or one per check (the last one repeats). */
+function mockConn(health: string | string[]) {
+  const healthAnswers = Array.isArray(health) ? [...health] : [health];
+  const nextHealth = () => (healthAnswers.length > 1 ? healthAnswers.shift()! : healthAnswers[0]);
   const calls: string[] = [];
   const writes: Record<string, string> = {};
   const answer = (l: string): string =>
-    ({ health, snapshot: 'ok\n', restore: 'ok\n', 'retag-revert': 'reverted\n', 'retag-activate': 'activated\n', 'retag-swap': 'swapped\n' })[l] ?? '';
+    ({ health: l === 'health' ? nextHealth() : '', snapshot: 'ok\n', restore: 'ok\n', 'retag-revert': 'reverted\n', 'retag-activate': 'activated\n', 'retag-swap': 'swapped\n' })[l] ?? '';
   const res = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: '' });
   const conn = {
     name: 'one',
@@ -85,15 +88,15 @@ describe('activateServer', () => {
   });
 
   it('deploy: a failed health check prints logs and reverts image and config', async () => {
-    const m = mockConn('COMET_HEALTH fail crashed - 2\n');
+    const m = mockConn(['COMET_HEALTH fail crashed - 2\n', 'COMET_HEALTH ok 200 3\n']);
     const r = await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy' });
     expect(r.status).toBe('reverted');
     expect(r.logsTail).toContain('app crashed: boom');
-    expect(m.calls.slice(6)).toEqual(['sudo docker logs --tail 100 myapp 2>&1', 'restore', 'retag-revert', 'sudo bash /opt/myapp/config/start.sh']);
+    expect(m.calls.slice(6)).toEqual(['sudo docker logs --tail 100 myapp 2>&1', 'restore', 'retag-revert', 'sudo bash /opt/myapp/config/start.sh', 'health']);
   });
 
   it('reconfig: no retag, and the revert restores only the config', async () => {
-    const m = mockConn('COMET_HEALTH fail timeout 503 60\n');
+    const m = mockConn(['COMET_HEALTH fail timeout 503 60\n', 'COMET_HEALTH ok 200 3\n']);
     const r = await activateServer(deps(m.conn), { version: null, mode: 'reconfig' });
     expect(r.status).toBe('reverted');
     expect(m.calls).not.toContain('retag-activate');
@@ -109,7 +112,7 @@ describe('activateServer', () => {
   });
 
   it('rollback that fails the health check returns to the image that ran, never to an old config snapshot', async () => {
-    const m = mockConn('COMET_HEALTH fail crashed - 3\n');
+    const m = mockConn(['COMET_HEALTH fail crashed - 3\n', 'COMET_HEALTH ok 200 3\n']);
     const r = await activateServer(deps(m.conn), { version: '20261101-100000', mode: 'rollback' });
     expect(r.status).toBe('reverted');
     expect(m.calls).toContain('retag-revert');
@@ -122,5 +125,17 @@ describe('activateServer', () => {
     const r = await activateServer(deps(m.conn), { version: null, mode: 'rollback' });
     expect(r.status).toBe('healthy');
     expect(m.calls).toEqual(['retag-swap', 'meteor-start', 'health']);
+  });
+
+  it('checks the health of the restored version too: reverted only when it answers', async () => {
+    const ok = mockConn(['COMET_HEALTH fail crashed - 2\n', 'COMET_HEALTH ok 200 3\n']);
+    const r1 = await activateServer(deps(ok.conn), { version: '20261107-183005', mode: 'deploy' });
+    expect(r1.status).toBe('reverted');
+    expect(ok.calls.filter((c) => c === 'health')).toHaveLength(2);
+
+    const bad = mockConn('COMET_HEALTH fail crashed - 2\n');
+    const r2 = await activateServer(deps(bad.conn), { version: '20261107-183005', mode: 'deploy' });
+    expect(r2.status).toBe('revert-failed');
+    expect(r2.error).toMatch(/restored version is not healthy/);
   });
 });

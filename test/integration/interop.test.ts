@@ -16,7 +16,11 @@ describe('interop with MUP 1.5.11', () => {
   beforeAll(async () => {
     [server] = await startFakeServers(1);
     p = sampleProject();
-    writeTestConfig(p.deployDir, [server]);
+    // MUP 1.5.11 without BuildKit COPYs the bundle root-owned and runs `npm install`
+    // as the image's `app` user, which cannot chmod the bin files of packages such
+    // as node-gyp-build (bcrypt): its own deploy fails with EPERM. With BuildKit MUP
+    // extracts the bundle as `app`. comet-deploy ignores the option (COPY --chown).
+    writeTestConfig(p.deployDir, [server], { docker: { useBuildKit: true } });
   });
 
   afterAll(async () => {

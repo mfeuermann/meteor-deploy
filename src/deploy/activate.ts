@@ -141,7 +141,15 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
   try {
     const reverted = await revertServer(d, { revertImage: o.mode !== 'reconfig', restoreConfig: o.mode !== 'rollback' });
     if (!reverted) return done({ status: 'failed', error: `${failure.error} (nothing to revert to)`, logsTail, health: failure.health });
-    r.server(server, 'revert', 'reverted', o.mode === 'reconfig' ? 'previous config restored' : 'previous version restored');
+    const what = o.mode === 'reconfig' ? 'previous config' : 'previous version';
+    // "The old version stays on the server" (spec §10.2): only call it reverted when it answers again.
+    const restored = await healthCheck(conn, healthOptions(config), out);
+    if (!restored.ok) {
+      const error = `${failure.error}; the restored version is not healthy either: ${describeHealth(restored)}`;
+      r.server(server, 'revert', 'failed', `${what} restored, but ${describeHealth(restored)}`);
+      return done({ status: 'revert-failed', error, logsTail, health: failure.health });
+    }
+    r.server(server, 'revert', 'reverted', `${what} restored, ${describeHealth(restored)}`);
     return done({ status: 'reverted', error: failure.error, logsTail, health: failure.health });
   } catch (err) {
     r.server(server, 'revert', 'failed', (err as Error).message);

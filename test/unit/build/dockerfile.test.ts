@@ -1,8 +1,15 @@
-import { cpSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { cpSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { argKeysForInstructions, computeDepsHash, detectDepsFiles, planBuildContext, renderDockerfile } from '../../../src/build/dockerfile.js';
+import {
+  argKeysForInstructions,
+  computeDepsHash,
+  detectDepsFiles,
+  planBuildContext,
+  renderDockerfile,
+  writeContextIgnore,
+} from '../../../src/build/dockerfile.js';
 import { tempDir } from '../../helpers/fs.js';
 
 const bundle = join(dirname(fileURLToPath(import.meta.url)), '../../fixtures/bundles/meteor3/bundle');
@@ -93,10 +100,26 @@ describe('computeDepsHash', () => {
     expect(await computeDepsHash(b, planBuildContext(b))).not.toBe(ha);
   });
 
+  it('ignores the .meteor-portable-2.json markers Meteor adds to node_modules after the first build', async () => {
+    const a = copyBundle();
+    const h = await computeDepsHash(a, planBuildContext(a));
+    writeFileSync(join(a, 'programs/server/npm/node_modules/x/.meteor-portable-2.json'), 'true');
+    writeFileSync(join(a, 'programs/server/npm/.meteor-portable-2.json'), 'true');
+    expect(await computeDepsHash(a, planBuildContext(a))).toBe(h);
+  });
+
   it('does not change when only app code changes', async () => {
     const a = copyBundle();
     const h = await computeDepsHash(a, planBuildContext(a));
     writeFileSync(join(a, 'programs/server/app/app.js'), '// changed');
     expect(await computeDepsHash(a, planBuildContext(a))).toBe(h);
+  });
+});
+
+describe('writeContextIgnore', () => {
+  it('keeps Meteor build-tool markers out of the docker build context, so the deps layer stays cached', () => {
+    const d = tempDir();
+    writeContextIgnore(d);
+    expect(readFileSync(join(d, '.dockerignore'), 'utf8').split('\n')).toContain('**/.meteor-portable*.json');
   });
 });
