@@ -66,6 +66,12 @@ describe('uniqueHosts', () => {
     expect(uniqueHosts(s.ctx.config, ['one', 'two', 'three'])).toEqual(['one', 'three']);
   });
 
+  it('keeps servers on the same host but another SSH port (port forwarding, test harness)', async () => {
+    const s = await setup();
+    s.ctx.config.servers.two = { ...s.ctx.config.servers.two, opts: { port: 2222 } } as never;
+    expect(uniqueHosts(s.ctx.config, ['one', 'two', 'three'])).toEqual(['one', 'two', 'three']);
+  });
+
   it('docker servers are app + mongo + proxy servers (MUP docker setup)', async () => {
     const s = await setup("mongo: { servers: { four: {} } },");
     expect(dockerServers(s.ctx)).toEqual(['one', 'two', 'three', 'four']);

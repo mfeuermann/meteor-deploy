@@ -1,0 +1,66 @@
+/**
+ * Interchangeability with MUP 1.5.11 (spec §13, Review Focus 4): the same
+ * mup.js works with both tools, in both directions, on one server.
+ */
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { startFakeServers, type FakeServer } from '../harness/fake-servers.js';
+import { cli, curlApp, imageId, mup, sampleProject, writeTestConfig } from './helpers.js';
+
+describe('interop with MUP 1.5.11', () => {
+  let server: FakeServer;
+  let p: ReturnType<typeof sampleProject>;
+  let mupImage = '';
+  const config = () => ['--config', join(p.deployDir, 'mup.js')];
+
+  beforeAll(async () => {
+    [server] = await startFakeServers(1);
+    p = sampleProject();
+    writeTestConfig(p.deployDir, [server]);
+  });
+
+  afterAll(async () => {
+    await server?.stop();
+  });
+
+  it('mup setup + mup deploy', async () => {
+    const setup = await mup(['setup', ...config()], p.root);
+    expect(setup.code, setup.output).toBe(0);
+    const deploy = await mup(['deploy', ...config()], p.root);
+    expect(deploy.code, deploy.output).toBe(0);
+    expect(await curlApp(server, '/native')).toBe('60');
+    mupImage = await imageId(server, 'latest');
+    expect(mupImage).not.toBe('');
+  });
+
+  it('history on a server without comet-deploy history is empty, not an error', async () => {
+    const h = await cli(['history', ...config()], p.root);
+    expect(h.code, h.output).toBe(0);
+    expect(h.output).toMatch(/no deploy history/i);
+  });
+
+  it('our deploy after MUP; mup restart and mup logs keep working', async () => {
+    const deploy = await cli(['deploy', ...config()], p.root);
+    expect(deploy.code, deploy.output).toBe(0);
+    expect(await imageId(server, 'previous')).toBe(mupImage);
+    const restart = await mup(['restart', ...config()], p.root);
+    expect(restart.code, restart.output).toBe(0);
+    const logs = await mup(['logs', '--tail', '5', ...config()], p.root);
+    expect(logs.code, logs.output).toBe(0);
+    expect(await curlApp(server, '/native')).toBe('60');
+  });
+
+  it('our rollback returns to the version MUP deployed (:previous)', async () => {
+    const r = await cli(['rollback', ...config()], p.root);
+    expect(r.code, r.output).toBe(0);
+    expect(r.output).toContain(':previous');
+    expect(await imageId(server, 'latest')).toBe(mupImage);
+    expect(await curlApp(server, '/native')).toBe('60');
+  });
+
+  it('mup deploy still works afterwards', async () => {
+    const deploy = await mup(['deploy', ...config()], p.root);
+    expect(deploy.code, deploy.output).toBe(0);
+    expect(await curlApp(server, '/native')).toBe('60');
+  });
+});

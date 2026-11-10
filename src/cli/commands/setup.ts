@@ -6,11 +6,15 @@ import { runOnServers } from '../../remote/on-servers.js';
 import { renderTemplate } from '../../remote/render.js';
 import type { ConfigCommand } from '../registry.js';
 
-/** Keeps the first server of every host (MUP `uniqueSessions`), in the given order. */
+/**
+ * Keeps the first server of every machine (MUP `uniqueSessions`), in the given
+ * order. A machine is host + SSH port: the same address with another port is
+ * another machine behind port forwarding (MUP compares the host only).
+ */
 export function uniqueHosts(c: NormalizedConfig, servers: string[]): string[] {
   const seen = new Set<string>();
   return servers.filter((s) => {
-    const host = c.servers[s]?.host ?? s;
+    const host = `${c.servers[s]?.host ?? s}:${c.servers[s]?.opts?.port ?? 22}`;
     if (seen.has(host)) return false;
     seen.add(host);
     return true;
