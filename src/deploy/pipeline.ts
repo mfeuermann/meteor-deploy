@@ -10,12 +10,13 @@ import { TOOL_ID } from '../core/version.js';
 import { verboseOutput } from '../output/lines.js';
 import { formatDuration, type ServerStatus, type SummaryRow } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStop, renderStartSh } from '../remote/app-files.js';
-import { acquireLock, appendHistory, pruneVersions, releaseLock, type HistoryEntry, type LockInfo } from '../remote/ops.js';
+import { acquireLock, appendHistory, listVersions, pruneVersions, readLock, releaseLock, type HistoryEntry, type LockInfo } from '../remote/ops.js';
 import { distributeToServer } from '../transfer/distribute.js';
 import { ensureLocalRegistry, pushToLocalRegistry, stopLocalRegistry } from '../transfer/local-registry.js';
 import { activateServer, startServer, type ActivationResult } from './activate.js';
 import { deployerName, makeHistoryEntry } from './history.js';
 import { runPreflight } from './preflight.js';
+import { chooseRollbackTarget, type RollbackTarget } from './rollback.js';
 import { runStrategy } from './strategy.js';
 
 export interface PipelineDeps {
@@ -29,6 +30,8 @@ export interface PipelineDeps {
   activateServer: typeof activateServer;
   acquireLock: typeof acquireLock;
   releaseLock: typeof releaseLock;
+  readLock: typeof readLock;
+  listVersions: typeof listVersions;
   appendHistory: typeof appendHistory;
   pruneVersions: typeof pruneVersions;
   readGitInfo: typeof readGitInfo;
@@ -53,6 +56,8 @@ const DEFAULT_DEPS: PipelineDeps = {
   activateServer,
   acquireLock,
   releaseLock,
+  readLock,
+  listVersions,
   appendHistory,
   pruneVersions,
   readGitInfo,
@@ -78,24 +83,47 @@ function aborted(signal?: AbortSignal): void {
 
 const historyResult = (s: ActivationResult['status']): HistoryEntry['result'] => (s === 'healthy' ? 'success' : s === 'reverted' ? 'reverted' : 'failed');
 
+export function describeHolder(h: LockInfo | undefined | null): string {
+  return h ? `${h.user}@${h.machine} ("${h.command}" since ${h.startedAt})` : 'an unknown process';
+}
+
+/** `--force-unlock`: releases existing locks (naming the holder) before acquiring. */
+async function forceUnlock(ctx: CommandContext, servers: string[], d: Pick<PipelineDeps, 'readLock' | 'releaseLock'>): Promise<void> {
+  await Promise.all(
+    servers.map(async (s) => {
+      const conn = await ctx.ssh.get(s);
+      const holder = await d.readLock(conn, ctx.config.app.name);
+      if (!holder) return;
+      ctx.reporter.warn(`Releasing the deploy lock on "${s}" held by ${describeHolder(holder)} (--force-unlock)`);
+      await d.releaseLock(conn, ctx.config.app.name);
+    }),
+  );
+}
+
 /** Locks all servers; on any failure releases what was acquired. Returns the locked servers. */
-export async function lockServers(ctx: CommandContext, servers: string[], command: string, d: Pick<PipelineDeps, 'acquireLock' | 'releaseLock'>): Promise<string[]> {
+export async function lockServers(
+  ctx: CommandContext,
+  servers: string[],
+  command: string,
+  d: Pick<PipelineDeps, 'acquireLock' | 'releaseLock' | 'readLock'>,
+  o: { force?: boolean } = {},
+): Promise<string[]> {
   if (!ctx.config.cometDeploy.lock) return [];
+  if (o.force) await forceUnlock(ctx, servers, d);
   const info = lockInfo(command);
   const results = await Promise.allSettled(servers.map(async (s) => ({ s, r: await d.acquireLock(await ctx.ssh.get(s), ctx.config.app.name, info) })));
   const locked = results.flatMap((x) => (x.status === 'fulfilled' && x.value.r.ok ? [x.value.s] : []));
   const problems = results.flatMap((x, i) => {
     if (x.status === 'rejected') return [`Server "${servers[i]}": ${(x.reason as Error)?.message ?? x.reason}`];
     if (!x.value.r.ok) {
-      const h = x.value.r.holder;
-      return [`Server "${servers[i]}" is locked by ${h ? `${h.user}@${h.machine} ("${h.command}" since ${h.startedAt})` : 'an unknown process'}`];
+      return [`Server "${servers[i]}" is locked by ${describeHolder(x.value.r.holder)}`];
     }
     return [];
   });
   if (problems.length) {
     await releaseServers(ctx, locked, d);
     throw new CometError(`Cannot lock the servers:\n${problems.map((p) => `  - ${p}`).join('\n')}`, {
-      hint: 'Wait for the other deploy to finish. If none is running, release the lock with "comet-deploy unlock".',
+      hint: 'Wait for the other deploy to finish. If none is running, release the lock with "comet-deploy unlock" (or add --force-unlock).',
     });
   }
   return locked;
@@ -166,7 +194,7 @@ export function summaryRows(
  */
 export async function deployPipeline(
   ctx: CommandContext,
-  o: { cachedBuild: boolean; forceBuild: boolean; strategy?: CometOptions['strategy']; stopAfter?: 'build' | 'push' },
+  o: { cachedBuild: boolean; forceBuild: boolean; strategy?: CometOptions['strategy']; stopAfter?: 'build' | 'push'; forceUnlock?: boolean },
   deps: Partial<PipelineDeps> = {},
 ): Promise<DeployOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
@@ -184,7 +212,7 @@ export async function deployPipeline(
   const strategy = o.strategy ?? c.cometDeploy.strategy;
 
   return run.run('meteor.deploy', async () => {
-    const pre = await r.phase('Preflight', () => d.preflight(ctx, servers, { needsBuild: true, checkLocks: c.cometDeploy.lock && o.stopAfter !== 'build' }));
+    const pre = await r.phase('Preflight', () => d.preflight(ctx, servers, { needsBuild: true, checkLocks: c.cometDeploy.lock && o.stopAfter !== 'build' && !o.forceUnlock }));
     const settings = ctx.getSettings();
     let built: BuiltImage[] = [];
     let results: ActivationResult[] = [];
@@ -205,7 +233,7 @@ export async function deployPipeline(
     };
     const targetTag = (s: string) => `${localImageRepo(c)}:${imageFor(s).version}`;
 
-    const locked = await r.phase('Lock', () => lockServers(ctx, servers, 'deploy', d));
+    const locked = await r.phase('Lock', () => lockServers(ctx, servers, 'deploy', d, { force: o.forceUnlock }));
     let registryStarted = false;
     try {
       aborted(d.signal);
@@ -300,14 +328,14 @@ export interface LifecycleOutcome {
 async function writeHistory(
   ctx: CommandContext,
   d: Pick<PipelineDeps, 'appendHistory' | 'readGitInfo'>,
-  o: { action: HistoryEntry['action']; results: ActivationResult[]; startedAt: Date; servers: string[] },
+  o: { action: HistoryEntry['action']; results: ActivationResult[]; startedAt: Date; servers: string[]; versionOf?: (s: string) => string | null },
 ): Promise<void> {
   const git = await d.readGitInfo(resolveAppPath(ctx.config, ctx.basePath)).catch(() => null);
   const durationMs = Date.now() - o.startedAt.getTime();
   await Promise.all(
     o.results.map(async (res) => {
       try {
-        const entry = makeHistoryEntry({ action: o.action, version: null, result: historyResult(res.status), startedAt: o.startedAt, durationMs, git, servers: o.servers });
+        const entry = makeHistoryEntry({ action: o.action, version: o.versionOf?.(res.server) ?? null, result: historyResult(res.status), startedAt: o.startedAt, durationMs, git, servers: o.servers });
         await d.appendHistory(await ctx.ssh.get(res.server), ctx.config.app.name, entry);
       } catch (err) {
         ctx.reporter.warn(`Could not write the deploy history on "${res.server}": ${(err as Error).message}`);
@@ -319,19 +347,19 @@ async function writeHistory(
 /** Lock → `fn` by strategy → history → unlock (locks are released even when `fn` throws). */
 async function lockedRollout(
   ctx: CommandContext,
-  o: { action: 'reconfig' | 'restart'; strategy?: CometOptions['strategy']; phase: string },
+  o: { action: 'reconfig' | 'restart' | 'rollback'; strategy?: CometOptions['strategy']; phase: string; forceUnlock?: boolean; versionOf?: (s: string) => string | null },
   d: PipelineDeps,
   fn: (s: string) => Promise<ActivationResult>,
 ): Promise<LifecycleOutcome> {
   const servers = ctx.appServers();
   if (servers.length === 0) throw new CometError('No app servers selected.');
   const startedAt = new Date();
-  const locked = await ctx.reporter.phase('Lock', () => lockServers(ctx, servers, o.action, d));
+  const locked = await ctx.reporter.phase('Lock', () => lockServers(ctx, servers, o.action, d, { force: o.forceUnlock }));
   let results: ActivationResult[] = [];
   let skipped: string[] = [];
   try {
     ({ results, skipped } = await ctx.reporter.phase(o.phase, () => runStrategy(servers, o.strategy ?? ctx.config.cometDeploy.strategy, fn)));
-    await writeHistory(ctx, d, { action: o.action, results, startedAt, servers });
+    await writeHistory(ctx, d, { action: o.action, results, startedAt, servers, versionOf: o.versionOf });
   } finally {
     await releaseServers(ctx, locked, d);
   }
@@ -344,14 +372,14 @@ async function lockedRollout(
  * writes start.sh/env.list from the current config and settings, restarts the
  * app by strategy with a health check, and restores the previous config on failure.
  */
-export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy'] }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
+export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy']; forceUnlock?: boolean }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
   assertPhase1Supported(ctx);
   return ctx.runner.run('default.reconfig', () =>
     ctx.runner.run('meteor.envconfig', () =>
       ctx.runner.run('meteor.start', async () => {
         const settings = ctx.getSettings();
-        const outcome = await lockedRollout(ctx, { action: 'reconfig', strategy: o.strategy, phase: 'Reconfigure' }, d, async (s) =>
+        const outcome = await lockedRollout(ctx, { action: 'reconfig', strategy: o.strategy, phase: 'Reconfigure', forceUnlock: o.forceUnlock }, d, async (s) =>
           d.activateServer(
             { conn: await ctx.ssh.get(s), config: ctx.config, settings, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: ctx.reporter },
             { version: null, mode: 'reconfig' },
@@ -371,11 +399,11 @@ export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: Come
  * `restart` (MUP `meteor.restart`): stop + start + health check per server by
  * strategy. Nothing changes on the server, so there is nothing to revert.
  */
-export async function restartPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy'] }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
+export async function restartPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy']; forceUnlock?: boolean }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
   return ctx.runner.run('meteor.restart', async () => {
     const stopScript = await renderMeteorStop(ctx.config);
-    const outcome = await lockedRollout(ctx, { action: 'restart', strategy: o.strategy, phase: 'Restart' }, d, async (s) => {
+    const outcome = await lockedRollout(ctx, { action: 'restart', strategy: o.strategy, phase: 'Restart', forceUnlock: o.forceUnlock }, d, async (s) => {
       const conn = await ctx.ssh.get(s);
       ctx.reporter.server(s, 'stop', 'running');
       await conn.runScriptOrThrow(stopScript, 'Stopping the app', verboseOutput(ctx.reporter, s));
@@ -434,5 +462,56 @@ export async function envconfigAll(ctx: CommandContext): Promise<void> {
       await conn.writeFile(`${appDir(ctx.config)}/config/env.list`, await renderEnvList(ctx.config, settings, s, { cwd: ctx.cwd, basePath: ctx.basePath }), 0o600);
       ctx.reporter.server(s, 'envconfig', 'ok');
     }
+  });
+}
+
+/**
+ * `rollback [--to <version>]` (spec §11): lock → per server by strategy: pick
+ * the target from the kept versions → retag → start.sh → health check →
+ * history → unlock. Only the image changes; the current config stays.
+ */
+export async function rollbackPipeline(
+  ctx: CommandContext,
+  o: { to?: string; strategy?: CometOptions['strategy']; forceUnlock?: boolean },
+  deps: Partial<PipelineDeps> = {},
+): Promise<DeployOutcome> {
+  const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
+  assertPhase1Supported(ctx);
+  const targets = new Map<string, RollbackTarget>();
+  const tagOf = (s: string): string | null => {
+    const t = targets.get(s);
+    return t?.kind === 'version' ? t.tag : null;
+  };
+  return ctx.runner.run('default.rollback', async () => {
+    const outcome = await lockedRollout(
+      ctx,
+      { action: 'rollback', strategy: o.strategy, phase: 'Rollback', forceUnlock: o.forceUnlock, versionOf: tagOf },
+      d,
+      async (s) => {
+        const started = Date.now();
+        const conn = await ctx.ssh.get(s);
+        const target = chooseRollbackTarget(await d.listVersions(conn, localImageRepo(ctx.config)), o.to);
+        targets.set(s, target);
+        if (target.kind === 'none') {
+          ctx.reporter.server(s, 'rollback', 'failed', target.reason);
+          return { server: s, status: 'failed', durationMs: Date.now() - started, error: target.reason };
+        }
+        return d.activateServer(
+          { conn, config: ctx.config, settings: null, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: ctx.reporter },
+          { version: tagOf(s), mode: 'rollback' },
+        );
+      },
+    );
+    const label = (s: string) => {
+      const t = targets.get(s);
+      return t?.kind === 'version' ? t.tag : t?.kind === 'previous' ? ':previous' : null;
+    };
+    reportOutcome(ctx, summaryRows(outcome.results, outcome.skipped, label, 'not rolled back (an earlier server failed)'), outcome.results, outcome.skipped, null, {
+      mixed: (healthy, others) =>
+        `MIXED VERSIONS: ${healthy.join(', ')} were rolled back; ${others.join(', ')} were not. ` +
+        `Fix the problem and run "comet-deploy rollback --servers ${others.join(',')}"${o.to ? ` --to ${o.to}` : ''}.`,
+    });
+    const labels = [...new Set(outcome.results.map((r) => label(r.server)).filter((x): x is string => !!x))];
+    return { version: o.to ?? (labels.length === 1 ? labels[0] : 'previous'), ...outcome };
   });
 }

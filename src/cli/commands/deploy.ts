@@ -12,6 +12,7 @@ const deployOptions = (y: Argv) =>
     .option('cached-build', { type: 'boolean', describe: 'Use the previous build even if the app changed' })
     .option('force-build', { type: 'boolean', describe: 'Build even when nothing changed' })
     .option('strategy', { type: 'string', choices: STRATEGIES, describe: 'Rollout strategy (default: cometDeploy.strategy)' })
+    .option('force-unlock', { type: 'boolean', describe: 'Release an existing deploy lock first' })
     .conflicts('cached-build', 'force-build');
 
 /** First Ctrl+C aborts gracefully (locks released, nothing activated); the second quits. */
@@ -35,6 +36,7 @@ async function runDeploy(ctx: CommandContext, argv: Record<string, unknown>, sto
         forceBuild: !!argv['force-build'],
         strategy: argv.strategy as Strategy | undefined,
         stopAfter,
+        forceUnlock: !!argv['force-unlock'],
       },
       { signal },
     ),

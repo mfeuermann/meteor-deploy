@@ -172,6 +172,12 @@ export async function retagRevert(conn: SshConnection, localRepo: string): Promi
   return r.stdout.includes('reverted');
 }
 
+/** Rollback to :previous: swaps latest and previous; false when there is no previous image. */
+export async function retagSwap(conn: SshConnection, localRepo: string): Promise<boolean> {
+  const r = await conn.runScriptOrThrow(await comet('retag.sh', { mode: 'swap', repo: localRepo }), `Rolling ${localRepo} back to :previous`);
+  return r.stdout.includes('swapped');
+}
+
 /** Rollback to a kept version: same retag as activation. */
 export async function retagTo(conn: SshConnection, localRepo: string, version: string): Promise<void> {
   await retagActivate(conn, localRepo, version);

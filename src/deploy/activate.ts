@@ -3,7 +3,7 @@ import { appDir, containerName, localImageRepo } from '../core/naming.js';
 import { verboseOutput } from '../output/lines.js';
 import type { Reporter } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStart, renderStartSh } from '../remote/app-files.js';
-import { restoreConfigSnapshot, retagActivate, retagRevert, shArg, snapshotConfig } from '../remote/ops.js';
+import { restoreConfigSnapshot, retagActivate, retagRevert, retagSwap, shArg, snapshotConfig } from '../remote/ops.js';
 import type { ExecOptions, SshConnection } from '../ssh/connection.js';
 import { healthCheck, type HealthResult } from './health-check.js';
 
@@ -83,10 +83,13 @@ export async function startServer(d: Omit<ActivateDeps, 'settings' | 'cwd' | 'ba
   return done({ status: 'failed', ...failure, logsTail: await containerLogsTail(d) });
 }
 
-/** Restores the config snapshot (and :previous when `revertImage`) and restarts the app. */
-export async function revertServer(d: ActivateDeps, o: { revertImage: boolean }): Promise<boolean> {
+/**
+ * Restores the config snapshot (unless `restoreConfig` is false) and :previous
+ * (when `revertImage`), then restarts the app.
+ */
+export async function revertServer(d: ActivateDeps, o: { revertImage: boolean; restoreConfig?: boolean }): Promise<boolean> {
   const name = d.config.app.name;
-  const restoredConfig = await restoreConfigSnapshot(d.conn, name);
+  const restoredConfig = o.restoreConfig === false ? false : await restoreConfigSnapshot(d.conn, name);
   const restoredImage = o.revertImage ? await retagRevert(d.conn, localImageRepo(d.config)) : false;
   if (!restoredConfig && !restoredImage) return false;
   const r = await d.conn.exec(`sudo bash ${shArg(`${appDir(d.config)}/config/start.sh`)}`, verboseOutput(d.reporter, d.serverName));
@@ -98,6 +101,10 @@ export async function revertServer(d: ActivateDeps, o: { revertImage: boolean })
  * Activation on one server (spec §10.2, without zero downtime): snapshot the
  * config, retag, write start.sh/env.list, start, health check; on failure show
  * the logs and revert.
+ *
+ * `rollback` changes only the image (spec §11): to `version`, or with
+ * `version: null` to :previous (swapped, so the current image stays tagged).
+ * A failed rollback returns to the image that ran and never touches the config.
  */
 export async function activateServer(d: ActivateDeps, o: { version: string | null; mode: 'deploy' | 'reconfig' | 'rollback' }): Promise<ActivationResult> {
   const started = Date.now();
@@ -108,9 +115,13 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
 
   let failure: { error: string; health?: HealthResult };
   try {
-    r.server(server, o.mode === 'rollback' ? `rollback to ${o.version}` : 'activate', 'running');
+    r.server(server, o.mode === 'rollback' ? `rollback to ${o.version ?? ':previous'}` : 'activate', 'running');
     if (o.mode !== 'rollback') await snapshotConfig(conn, app.name);
-    if (o.mode !== 'reconfig' && o.version) await retagActivate(conn, localImageRepo(config), o.version);
+    if (o.mode === 'rollback' && !o.version) {
+      if (!(await retagSwap(conn, localImageRepo(config)))) throw new Error('There is no :previous image on this server');
+    } else if (o.mode !== 'reconfig' && o.version) {
+      await retagActivate(conn, localImageRepo(config), o.version);
+    }
     if (o.mode !== 'rollback') {
       await conn.writeFile(`${appDir(config)}/config/start.sh`, await renderStartSh(config, server));
       await conn.writeFile(`${appDir(config)}/config/env.list`, await renderEnvList(config, d.settings, server, { cwd: d.cwd, basePath: d.basePath }), 0o600);
@@ -128,7 +139,7 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
   r.server(server, 'health', 'failed', failure.error);
   const logsTail = await containerLogsTail(d);
   try {
-    const reverted = await revertServer(d, { revertImage: o.mode !== 'reconfig' });
+    const reverted = await revertServer(d, { revertImage: o.mode !== 'reconfig', restoreConfig: o.mode !== 'rollback' });
     if (!reverted) return done({ status: 'failed', error: `${failure.error} (nothing to revert to)`, logsTail, health: failure.health });
     r.server(server, 'revert', 'reverted', o.mode === 'reconfig' ? 'previous config restored' : 'previous version restored');
     return done({ status: 'reverted', error: failure.error, logsTail, health: failure.health });

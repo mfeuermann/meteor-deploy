@@ -8,7 +8,10 @@ import type { ConfigCommand } from '../registry.js';
 
 const STRATEGIES: Strategy[] = ['canary', 'rolling', 'parallel'];
 
-const strategyOption = (y: Argv) => y.option('strategy', { type: 'string', choices: STRATEGIES, describe: 'Rollout strategy (default: cometDeploy.strategy)' });
+const strategyOption = (y: Argv) =>
+  y
+    .option('strategy', { type: 'string', choices: STRATEGIES, describe: 'Rollout strategy (default: cometDeploy.strategy)' })
+    .option('force-unlock', { type: 'boolean', describe: 'Release an existing deploy lock first' });
 
 /** Options that belong to comet-deploy itself and are never passed to `docker logs`. */
 const OWN_OPTIONS = new Set(['_', '$0', 'config', 'settings', 'servers', 'verbose', 'show-hook-names', 'help', 'h', 'version', 'v']);
@@ -87,11 +90,11 @@ const asDefault = (name: string, fn: (ctx: CommandContext, argv: Record<string, 
   ctx.runner.run(`default.${name}`, () => fn(ctx, argv));
 
 async function reconfig(ctx: CommandContext, argv: Record<string, unknown>): Promise<void> {
-  assertOk('Reconfig', await reconfigPipeline(ctx, { strategy: argv.strategy as Strategy | undefined }));
+  assertOk('Reconfig', await reconfigPipeline(ctx, { strategy: argv.strategy as Strategy | undefined, forceUnlock: !!argv['force-unlock'] }));
 }
 
 async function restart(ctx: CommandContext, argv: Record<string, unknown>): Promise<void> {
-  assertOk('Restart', await restartPipeline(ctx, { strategy: argv.strategy as Strategy | undefined }));
+  assertOk('Restart', await restartPipeline(ctx, { strategy: argv.strategy as Strategy | undefined, forceUnlock: !!argv['force-unlock'] }));
 }
 
 async function start(ctx: CommandContext): Promise<void> {

@@ -12,6 +12,7 @@ import {
   restoreConfigSnapshot,
   retagActivate,
   retagRevert,
+  retagSwap,
   serverFacts,
   snapshotConfig,
   type HistoryEntry,
@@ -87,6 +88,19 @@ describe('remote ops on a fake server', () => {
     expect(await retagRevert(conn, REPO)).toBe(true);
     v = await listVersions(conn, REPO);
     expect(v.latestId).toBe(v.previousId);
+  });
+
+  it('rollback to :previous swaps latest and previous (MUP-only server)', async () => {
+    const repo = `${REPO}-swap`;
+    await server.exec(`tar cf - --files-from /dev/null | docker import --change "LABEL v=prev" - ${repo}:previous`);
+    await server.exec(`tar cf - --files-from /dev/null | docker import --change "LABEL v=cur" - ${repo}:latest`);
+    const before = await listVersions(conn, repo);
+    expect(await retagSwap(conn, repo)).toBe(true);
+    const after = await listVersions(conn, repo);
+    expect(after.latestId).toBe(before.previousId);
+    expect(after.previousId).toBe(before.latestId);
+    const tags = (await server.exec(`docker images --format '{{.Tag}}' ${repo}`)).stdout;
+    expect(tags).not.toContain('comet-swap');
   });
 
   it('snapshots and restores start.sh / env.list', async () => {

@@ -45,17 +45,20 @@ export function makeHistoryEntry(o: {
   return e;
 }
 
-/** One row per deploy (same startedAt + version + action), newest first. */
-export function mergeHistory(perServer: Record<string, HistoryEntry[]>, limit: number): Array<HistoryEntry & { reportedBy: string[] }> {
-  const byKey = new Map<string, HistoryEntry & { reportedBy: string[] }>();
+export type MergedHistoryEntry = HistoryEntry & { reportedBy: string[]; resultBy: Record<string, HistoryEntry['result']> };
+
+/** One row per deploy (same startedAt + version + action), newest first; `resultBy` keeps each server's result. */
+export function mergeHistory(perServer: Record<string, HistoryEntry[]>, limit: number): MergedHistoryEntry[] {
+  const byKey = new Map<string, MergedHistoryEntry>();
   for (const [server, entries] of Object.entries(perServer)) {
     for (const e of entries) {
       const key = `${e.startedAt}\0${e.version}\0${e.action}`;
       const existing = byKey.get(key);
       if (existing) {
         if (!existing.reportedBy.includes(server)) existing.reportedBy.push(server);
+        existing.resultBy[server] = e.result;
       } else {
-        byKey.set(key, { ...e, reportedBy: [server] });
+        byKey.set(key, { ...e, reportedBy: [server], resultBy: { [server]: e.result } });
       }
     }
   }

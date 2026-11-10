@@ -15,6 +15,21 @@ if [ -n "$LATEST_ID" ] && [ "$LATEST_ID" != "$NEW_ID" ]; then
 fi
 sudo docker tag "$REPO:$VERSION" "$REPO:latest"
 echo "activated"
+<% } else if (mode === 'swap') { %>
+# Rollback to :previous: latest <-> previous, so the current image keeps a tag.
+if [ -z "$(image_id "$REPO:previous")" ]; then
+  echo "no-previous"
+  exit 0
+fi
+if [ -n "$(image_id "$REPO:latest")" ]; then
+  sudo docker tag "$REPO:latest" "$REPO:comet-swap"
+  sudo docker tag "$REPO:previous" "$REPO:latest"
+  sudo docker tag "$REPO:comet-swap" "$REPO:previous"
+  sudo docker rmi "$REPO:comet-swap" >/dev/null
+else
+  sudo docker tag "$REPO:previous" "$REPO:latest"
+fi
+echo "swapped"
 <% } else { %>
 if [ -n "$(image_id "$REPO:previous")" ]; then
   sudo docker tag "$REPO:previous" "$REPO:latest"

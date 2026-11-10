@@ -19,6 +19,7 @@ function label(script: string): string {
   if (script.includes('Copies the current start.sh')) return 'snapshot';
   if (script.includes('cp -p "$CONFIG_DIR/.prev/start.sh"')) return 'restore';
   if (script.includes('echo "activated"') && script.includes('VERSION=')) return 'retag-activate';
+  if (script.includes('echo "swapped"')) return 'retag-swap';
   if (script.includes('echo "reverted"')) return 'retag-revert';
   if (script.includes('# start app')) return 'meteor-start';
   return script.trim();
@@ -28,7 +29,7 @@ function mockConn(health: string) {
   const calls: string[] = [];
   const writes: Record<string, string> = {};
   const answer = (l: string): string =>
-    ({ health, snapshot: 'ok\n', restore: 'ok\n', 'retag-revert': 'reverted\n', 'retag-activate': 'activated\n' })[l] ?? '';
+    ({ health, snapshot: 'ok\n', restore: 'ok\n', 'retag-revert': 'reverted\n', 'retag-activate': 'activated\n', 'retag-swap': 'swapped\n' })[l] ?? '';
   const res = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: '' });
   const conn = {
     name: 'one',
@@ -105,5 +106,21 @@ describe('activateServer', () => {
     const r = await activateServer(deps(m.conn), { version: '20261101-100000', mode: 'rollback' });
     expect(r.status).toBe('healthy');
     expect(m.calls).toEqual(['retag-activate', 'meteor-start', 'health']);
+  });
+
+  it('rollback that fails the health check returns to the image that ran, never to an old config snapshot', async () => {
+    const m = mockConn('COMET_HEALTH fail crashed - 3\n');
+    const r = await activateServer(deps(m.conn), { version: '20261101-100000', mode: 'rollback' });
+    expect(r.status).toBe('reverted');
+    expect(m.calls).toContain('retag-revert');
+    expect(m.calls).not.toContain('restore');
+    expect(m.calls).not.toContain('snapshot');
+  });
+
+  it('rollback to :previous swaps latest and previous, so the current image is kept', async () => {
+    const m = mockConn('COMET_HEALTH ok 200 1\n');
+    const r = await activateServer(deps(m.conn), { version: null, mode: 'rollback' });
+    expect(r.status).toBe('healthy');
+    expect(m.calls).toEqual(['retag-swap', 'meteor-start', 'health']);
   });
 });

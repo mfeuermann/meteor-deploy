@@ -4,8 +4,11 @@ import { CometError } from '../core/errors.js';
 import { TOOL_VERSION } from '../core/version.js';
 import { createReporter, type Reporter } from '../output/reporter.js';
 import { deployCommand, meteorBuildCommand, meteorDeployCommand, meteorPushCommand } from './commands/deploy.js';
+import { historyCommand } from './commands/history.js';
 import { initCommand } from './commands/init.js';
 import { LIFECYCLE_COMMANDS } from './commands/lifecycle.js';
+import { rollbackCommand } from './commands/rollback.js';
+import { unlockCommand } from './commands/unlock.js';
 import { validateCommand } from './commands/validate.js';
 import { registerCommands, type CommandModule } from './registry.js';
 
@@ -32,6 +35,9 @@ export const COMMANDS: CommandModule[] = [
   meteorPushCommand,
   meteorBuildCommand,
   ...LIFECYCLE_COMMANDS,
+  rollbackCommand,
+  historyCommand,
+  unlockCommand,
 ];
 
 /** Builds the yargs instance (without parsing). Commands are registered here. */
