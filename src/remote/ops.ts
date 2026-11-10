@@ -163,10 +163,24 @@ export async function pruneVersions(conn: SshConnection, localRepo: string, keep
     .filter((t): t is string => !!t);
 }
 
-/** latest → previous (when latest is another image), version → latest. */
-export async function retagActivate(conn: SshConnection, localRepo: string, version: string): Promise<void> {
+/** Image IDs behind :latest / :previous before an activation ('' = no such tag). */
+export interface ImageTags {
+  latestId: string;
+  previousId: string;
+}
+
+const IMAGE_ID_RE = /^(sha256:)?[0-9a-f]{12,64}$/;
+
+function parseTagsBefore(stdout: string): ImageTags {
+  const get = (k: string) => new RegExp(`^${k}=(\\S*)\\s*$`, 'm').exec(stdout)?.[1] ?? '';
+  return { latestId: get('before-latest'), previousId: get('before-previous') };
+}
+
+/** latest → previous (when latest is another image), version → latest. Returns what the tags named before. */
+export async function retagActivate(conn: SshConnection, localRepo: string, version: string): Promise<ImageTags> {
   assertVersion(version);
-  await conn.runScriptOrThrow(await comet('retag.sh', { mode: 'activate', repo: localRepo, version }), `Activating ${localRepo}:${version}`);
+  const r = await conn.runScriptOrThrow(await comet('retag.sh', { mode: 'activate', repo: localRepo, version }), `Activating ${localRepo}:${version}`);
+  return parseTagsBefore(r.stdout);
 }
 
 /** previous → latest; false when there is no previous image. */
@@ -175,15 +189,23 @@ export async function retagRevert(conn: SshConnection, localRepo: string): Promi
   return r.stdout.includes('reverted');
 }
 
-/** Rollback to :previous: swaps latest and previous; false when there is no previous image. */
-export async function retagSwap(conn: SshConnection, localRepo: string): Promise<boolean> {
+/** Rollback to :previous: swaps latest and previous. Returns the tags before, or null when there is no previous image. */
+export async function retagSwap(conn: SshConnection, localRepo: string): Promise<ImageTags | null> {
   const r = await conn.runScriptOrThrow(await comet('retag.sh', { mode: 'swap', repo: localRepo }), `Rolling ${localRepo} back to :previous`);
-  return r.stdout.includes('swapped');
+  return r.stdout.includes('swapped') ? parseTagsBefore(r.stdout) : null;
+}
+
+/** Puts :latest / :previous back on exactly the images they named before (undoes an activation). */
+export async function retagRestore(conn: SshConnection, localRepo: string, tags: ImageTags): Promise<void> {
+  if (!IMAGE_ID_RE.test(tags.latestId) || (tags.previousId !== '' && !IMAGE_ID_RE.test(tags.previousId))) {
+    throw new CometError(`Invalid image id to restore: ${tags.latestId} / ${tags.previousId}`);
+  }
+  await conn.runScriptOrThrow(await comet('retag.sh', { mode: 'restore', repo: localRepo, ...tags }), `Restoring ${localRepo}:latest`);
 }
 
 /** Rollback to a kept version: same retag as activation. */
-export async function retagTo(conn: SshConnection, localRepo: string, version: string): Promise<void> {
-  await retagActivate(conn, localRepo, version);
+export async function retagTo(conn: SshConnection, localRepo: string, version: string): Promise<ImageTags> {
+  return retagActivate(conn, localRepo, version);
 }
 
 // --- config snapshot ---

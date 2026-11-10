@@ -8,6 +8,7 @@ import { meteorDestroyCommand } from './commands/destroy.js';
 import { DOCKER_COMMANDS } from './commands/docker.js';
 import { historyCommand } from './commands/history.js';
 import { initCommand } from './commands/init.js';
+import { isEntryPoint } from './entry.js';
 import { LIFECYCLE_COMMANDS } from './commands/lifecycle.js';
 import { rollbackCommand } from './commands/rollback.js';
 import { meteorSetupCommand, setupCommand } from './commands/setup.js';
@@ -122,7 +123,10 @@ function reportError(err: unknown, io: CliIO, mask: (t: string) => string): numb
   return 1;
 }
 
-const isEntry = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
-if (isEntry) {
-  main().then((code) => process.exit(code));
+if (isEntryPoint(process.argv[1], import.meta.url)) {
+  void main().then((code) => {
+    // exitCode instead of exit(): stdout pipes are asynchronous on macOS and would be cut off.
+    process.exitCode = code;
+    setTimeout(() => process.exit(code), 3000).unref();
+  });
 }

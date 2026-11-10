@@ -55,4 +55,31 @@ describe('runStrategy', () => {
     });
     expect(out.results[0]).toMatchObject({ server: 'a', status: 'failed', error: 'boom' });
   });
+
+  it('stops starting servers after an abort (I2): canary, rolling and parallel', async () => {
+    const ac = new AbortController();
+    const r = recorder();
+    const fn = async (s: string) => {
+      const res = await r.fn(s);
+      ac.abort();
+      return res;
+    };
+    const canary = await runStrategy(['a', 'b', 'c'], 'canary', fn, ac.signal);
+    expect(canary.results.map((x) => x.server)).toEqual(['a']);
+    expect(canary.skipped).toEqual(['b', 'c']);
+
+    const ac2 = new AbortController();
+    const rolling = await runStrategy(['a', 'b', 'c'], 'rolling', async (s) => {
+      if (s === 'b') ac2.abort();
+      return { server: s, status: 'healthy', durationMs: 1 };
+    }, ac2.signal);
+    expect(rolling.results.map((x) => x.server)).toEqual(['a', 'b']);
+    expect(rolling.skipped).toEqual(['c']);
+
+    const ac3 = new AbortController();
+    ac3.abort();
+    const parallel = await runStrategy(['a', 'b'], 'parallel', r.fn, ac3.signal);
+    expect(parallel.results).toEqual([]);
+    expect(parallel.skipped).toEqual(['a', 'b']);
+  });
 });

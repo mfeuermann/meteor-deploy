@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
-import { readdir, readFile, readlink } from 'node:fs/promises';
+import { readdir, readFile, readlink, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
 const ALWAYS_EXCLUDED = ['.meteor/local', 'node_modules', '.git'];
@@ -16,26 +16,68 @@ function stableStringify(v: unknown): string {
 
 const toPosix = (p: string) => p.split(sep).join('/');
 
-async function listFiles(root: string, excluded: Set<string>): Promise<Array<{ rel: string; dirent: Dirent }>> {
-  const out: Array<{ rel: string; dirent: Dirent }> = [];
-  async function walk(dir: string): Promise<void> {
-    const entries = await readdir(dir, { withFileTypes: true });
-    for (const d of entries) {
-      const rel = toPosix(relative(root, join(dir, d.name)));
-      if (excluded.has(rel)) continue;
-      if (d.isDirectory()) await walk(join(dir, d.name));
-      else if (d.isFile() || d.isSymbolicLink()) out.push({ rel, dirent: d });
+interface Entry {
+  rel: string;
+  /** Absolute path to read (symlinks resolved by readFile); null for a broken link. */
+  abs: string | null;
+  link?: string;
+}
+
+/**
+ * Every file below `root` (sorted by relative path). Symlinks are followed —
+ * a workspace package or a linked directory is part of the build — with a
+ * guard against cycles; a broken link is recorded by its target text.
+ */
+async function listFiles(root: string, excluded: Set<string>, skipNames: Set<string> = new Set()): Promise<Entry[]> {
+  const out: Entry[] = [];
+  const visited = new Set<string>();
+  async function walk(dir: string, relDir: string): Promise<void> {
+    const real = await realpath(dir).catch(() => dir);
+    if (visited.has(real)) return;
+    visited.add(real);
+    for (const d of await readdir(dir, { withFileTypes: true })) {
+      const rel = relDir ? `${relDir}/${d.name}` : d.name;
+      if (excluded.has(rel) || skipNames.has(d.name)) continue;
+      const abs = join(dir, d.name);
+      if (d.isDirectory()) await walk(abs, rel);
+      else if (d.isFile()) out.push({ rel, abs });
+      else if (d.isSymbolicLink()) {
+        const target = await stat(abs).catch(() => null);
+        if (!target) out.push({ rel, abs: null, link: await readlink(abs).catch(() => '?') });
+        else if (target.isDirectory()) await walk(abs, rel);
+        else if (target.isFile()) out.push({ rel, abs });
+      }
     }
   }
-  await walk(root);
+  await walk(root, '');
   return out.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
 }
 
-/** `name@version` of every top-level and scoped package in node_modules. */
+async function contentHash(e: Entry): Promise<string> {
+  return e.abs ? createHash('sha256').update(await readFile(e.abs)).digest('hex') : `broken-link:${e.link}`;
+}
+
+/** Content hash of a linked package (its own node_modules and .git excluded). */
+async function treeHash(dir: string): Promise<string> {
+  const h = createHash('sha256');
+  for (const e of await listFiles(dir, new Set(), new Set(['node_modules', '.git']))) h.update(`${e.rel}\0${await contentHash(e)}\n`);
+  return h.digest('hex');
+}
+
+/**
+ * `name@version` of every top-level and scoped package in node_modules. A
+ * symlinked package (npm/yarn workspaces, `file:` deps) changes without a
+ * version bump, so it is hashed by content instead.
+ */
 async function nodeModulesManifest(appPath: string): Promise<string[]> {
   const nm = join(appPath, 'node_modules');
   const out: string[] = [];
-  const readPkg = async (dir: string) => {
+  const readPkg = async (dir: string, isLink: boolean, name: string) => {
+    if (isLink) {
+      const target = await stat(dir).catch(() => null);
+      if (target?.isDirectory()) out.push(`${name}@link:${await treeHash(dir)}`);
+      return;
+    }
     try {
       const pkg = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8'));
       out.push(`${pkg.name}@${pkg.version}`);
@@ -53,10 +95,10 @@ async function nodeModulesManifest(appPath: string): Promise<string[]> {
     if (!d.isDirectory() && !d.isSymbolicLink()) continue;
     if (d.name.startsWith('@')) {
       for (const s of await readdir(join(nm, d.name), { withFileTypes: true }).catch(() => [] as Dirent[])) {
-        await readPkg(join(nm, d.name, s.name));
+        await readPkg(join(nm, d.name, s.name), s.isSymbolicLink(), `${d.name}/${s.name}`);
       }
     } else if (!d.name.startsWith('.')) {
-      await readPkg(join(nm, d.name));
+      await readPkg(join(nm, d.name), d.isSymbolicLink(), d.name);
     }
   }
   return out.sort();
@@ -74,11 +116,7 @@ export async function computeInputHash(appPath: string, extra: Record<string, un
     if (rel && !rel.startsWith('..') && !isAbsolute(rel)) excluded.add(toPosix(rel).replace(/\/$/, ''));
   }
   const h = createHash('sha256');
-  for (const { rel, dirent } of await listFiles(appPath, excluded)) {
-    const abs = join(appPath, rel);
-    const content = dirent.isSymbolicLink() ? `link:${await readlink(abs)}` : createHash('sha256').update(await readFile(abs)).digest('hex');
-    h.update(`file\0${rel}\0${content}\n`);
-  }
+  for (const e of await listFiles(appPath, excluded)) h.update(`file\0${e.rel}\0${await contentHash(e)}\n`);
   for (const pkg of await nodeModulesManifest(appPath)) h.update(`npm\0${pkg}\n`);
   h.update(`extra\0${stableStringify(extra)}\n`);
   return h.digest('hex');

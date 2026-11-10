@@ -5,6 +5,7 @@ import { CometError } from '../../core/errors.js';
 import { envconfigAll, reconfigPipeline, restartPipeline, startAll, stopAll, type LifecycleOutcome } from '../../deploy/pipeline.js';
 import { shArg } from '../../remote/ops.js';
 import type { ConfigCommand } from '../registry.js';
+import { withAbortOnSignals } from '../signals.js';
 
 const STRATEGIES: Strategy[] = ['canary', 'rolling', 'parallel'];
 
@@ -90,11 +91,13 @@ const asDefault = (name: string, fn: (ctx: CommandContext, argv: Record<string, 
   ctx.runner.run(`default.${name}`, () => fn(ctx, argv));
 
 async function reconfig(ctx: CommandContext, argv: Record<string, unknown>): Promise<void> {
-  assertOk('Reconfig', await reconfigPipeline(ctx, { strategy: argv.strategy as Strategy | undefined, forceUnlock: !!argv['force-unlock'] }));
+  const o = { strategy: argv.strategy as Strategy | undefined, forceUnlock: !!argv['force-unlock'] };
+  assertOk('Reconfig', await withAbortOnSignals(ctx.reporter, (signal) => reconfigPipeline(ctx, o, { signal })));
 }
 
 async function restart(ctx: CommandContext, argv: Record<string, unknown>): Promise<void> {
-  assertOk('Restart', await restartPipeline(ctx, { strategy: argv.strategy as Strategy | undefined, forceUnlock: !!argv['force-unlock'] }));
+  const o = { strategy: argv.strategy as Strategy | undefined, forceUnlock: !!argv['force-unlock'] };
+  assertOk('Restart', await withAbortOnSignals(ctx.reporter, (signal) => restartPipeline(ctx, o, { signal })));
 }
 
 async function start(ctx: CommandContext): Promise<void> {

@@ -3,7 +3,7 @@ import { appDir, containerName, localImageRepo } from '../core/naming.js';
 import { verboseOutput } from '../output/lines.js';
 import type { Reporter } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStart, renderStartSh } from '../remote/app-files.js';
-import { restoreConfigSnapshot, retagActivate, retagRevert, retagSwap, shArg, snapshotConfig } from '../remote/ops.js';
+import { restoreConfigSnapshot, retagActivate, retagRestore, retagSwap, shArg, snapshotConfig, type ImageTags } from '../remote/ops.js';
 import type { ExecOptions, SshConnection } from '../ssh/connection.js';
 import { healthCheck, type HealthResult } from './health-check.js';
 
@@ -84,13 +84,17 @@ export async function startServer(d: Omit<ActivateDeps, 'settings' | 'cwd' | 'ba
 }
 
 /**
- * Restores the config snapshot (unless `restoreConfig` is false) and :previous
- * (when `revertImage`), then restarts the app.
+ * Undoes an activation: restores the config snapshot taken by it (when
+ * `restoreConfig`) and re-tags :latest / :previous to the images they named
+ * before it (`tags`), then restarts the app. False when there is nothing to undo.
  */
-export async function revertServer(d: ActivateDeps, o: { revertImage: boolean; restoreConfig?: boolean }): Promise<boolean> {
-  const name = d.config.app.name;
-  const restoredConfig = o.restoreConfig === false ? false : await restoreConfigSnapshot(d.conn, name);
-  const restoredImage = o.revertImage ? await retagRevert(d.conn, localImageRepo(d.config)) : false;
+export async function revertServer(d: ActivateDeps, o: { tags: ImageTags | null; restoreConfig: boolean }): Promise<boolean> {
+  const restoredConfig = o.restoreConfig ? await restoreConfigSnapshot(d.conn, d.config.app.name) : false;
+  let restoredImage = false;
+  if (o.tags?.latestId) {
+    await retagRestore(d.conn, localImageRepo(d.config), o.tags);
+    restoredImage = true;
+  }
   if (!restoredConfig && !restoredImage) return false;
   const r = await d.conn.exec(`sudo bash ${shArg(`${appDir(d.config)}/config/start.sh`)}`, verboseOutput(d.reporter, d.serverName));
   if (r.code !== 0) throw new Error(`start.sh exited with ${r.code}: ${(r.stderr || r.stdout).trim().slice(-2000)}`);
@@ -114,18 +118,28 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
   const done = (x: Omit<ActivationResult, 'server' | 'durationMs'>): ActivationResult => ({ server, durationMs: Date.now() - started, ...x });
 
   let failure: { error: string; health?: HealthResult };
+  // What this activation changed, so a failure undoes exactly that (and no more).
+  let snapshotTaken = false;
+  let tagsBefore: ImageTags | null = null;
+  let touched = false;
   try {
     r.server(server, o.mode === 'rollback' ? `rollback to ${o.version ?? ':previous'}` : 'activate', 'running');
-    if (o.mode !== 'rollback') await snapshotConfig(conn, app.name);
+    if (o.mode !== 'rollback') snapshotTaken = await snapshotConfig(conn, app.name);
     if (o.mode === 'rollback' && !o.version) {
-      if (!(await retagSwap(conn, localImageRepo(config)))) throw new Error('There is no :previous image on this server');
+      tagsBefore = await retagSwap(conn, localImageRepo(config));
+      if (!tagsBefore) throw new Error('There is no :previous image on this server');
+      touched = true;
     } else if (o.mode !== 'reconfig' && o.version) {
-      await retagActivate(conn, localImageRepo(config), o.version);
+      // retag.sh changes :latest last, so a failure inside it leaves the running image as it was.
+      tagsBefore = await retagActivate(conn, localImageRepo(config), o.version);
+      touched = true;
     }
     if (o.mode !== 'rollback') {
+      touched = true;
       await conn.writeFile(`${appDir(config)}/config/start.sh`, await renderStartSh(config, server));
       await conn.writeFile(`${appDir(config)}/config/env.list`, await renderEnvList(config, d.settings, server, { cwd: d.cwd, basePath: d.basePath }), 0o600);
     }
+    touched = true;
     const health = await startAndCheck(d, out);
     if (health.ok) {
       r.server(server, 'health', 'ok', describeHealth(health));
@@ -136,10 +150,14 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
     failure = { error: (err as Error)?.message ?? String(err) };
   }
 
+  if (!touched) {
+    r.server(server, o.mode === 'rollback' ? 'rollback' : 'activate', 'failed', failure.error);
+    return done({ status: 'failed', error: `${failure.error} (the server was not changed)`, health: failure.health });
+  }
   r.server(server, 'health', 'failed', failure.error);
   const logsTail = await containerLogsTail(d);
   try {
-    const reverted = await revertServer(d, { revertImage: o.mode !== 'reconfig', restoreConfig: o.mode !== 'rollback' });
+    const reverted = await revertServer(d, { tags: tagsBefore, restoreConfig: snapshotTaken });
     if (!reverted) return done({ status: 'failed', error: `${failure.error} (nothing to revert to)`, logsTail, health: failure.health });
     const what = o.mode === 'reconfig' ? 'previous config' : 'previous version';
     // "The old version stays on the server" (spec §10.2): only call it reverted when it answers again.

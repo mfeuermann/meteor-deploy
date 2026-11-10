@@ -1,4 +1,4 @@
-import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { computeInputHash } from '../../../src/build/input-hash.js';
@@ -72,5 +72,32 @@ describe('computeInputHash', () => {
     writeFileSync(join(a, 'build-out/x'), 'x');
     expect(await computeInputHash(a, {}, { exclude: ['build-out'] })).toBe(h);
     expect(await computeInputHash(a, {}, { exclude: [join(a, 'build-out')] })).toBe(h);
+  });
+
+  it('follows symlinked workspace packages in node_modules (I4: monorepo shared code)', async () => {
+    const root = tempDir({ 'packages/shared/package.json': '{"name":"@me/shared","version":"1.0.0"}', 'packages/shared/index.js': 'v1', 'app/.meteor/release': 'METEOR@3.5.4', 'app/server/main.js': 'x' });
+    const app = join(root, 'app');
+    mkdirSync(join(app, 'node_modules/@me'), { recursive: true });
+    symlinkSync(join(root, 'packages/shared'), join(app, 'node_modules/@me/shared'));
+    const h1 = await computeInputHash(app, {});
+    writeFileSync(join(root, 'packages/shared/index.js'), 'v2');
+    expect(await computeInputHash(app, {})).not.toBe(h1);
+  });
+
+  it('follows symlinked directories and files inside the app', async () => {
+    const root = tempDir({ 'shared/lib.js': 'v1', 'app/.meteor/release': 'METEOR@3.5.4' });
+    const app = join(root, 'app');
+    mkdirSync(join(app, 'imports'), { recursive: true });
+    symlinkSync(join(root, 'shared'), join(app, 'imports/shared'));
+    const h1 = await computeInputHash(app, {});
+    writeFileSync(join(root, 'shared/lib.js'), 'v2');
+    expect(await computeInputHash(app, {})).not.toBe(h1);
+  });
+
+  it('survives symlink cycles and broken links', async () => {
+    const app = tempDir({ '.meteor/release': 'METEOR@3.5.4', 'a/x.js': '1' });
+    symlinkSync(join(app, 'a'), join(app, 'a/loop'));
+    symlinkSync(join(app, 'missing'), join(app, 'broken'));
+    expect(await computeInputHash(app, {})).toMatch(/^[0-9a-f]{64}$/);
   });
 });

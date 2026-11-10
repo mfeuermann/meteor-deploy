@@ -19,11 +19,14 @@ function label(script: string): string {
   if (script.includes('Copies the current start.sh')) return 'snapshot';
   if (script.includes('cp -p "$CONFIG_DIR/.prev/start.sh"')) return 'restore';
   if (script.includes('echo "activated"') && script.includes('VERSION=')) return 'retag-activate';
+  if (script.includes('echo "restored"')) return 'retag-restore';
   if (script.includes('echo "swapped"')) return 'retag-swap';
   if (script.includes('echo "reverted"')) return 'retag-revert';
   if (script.includes('# start app')) return 'meteor-start';
   return script.trim();
 }
+
+const BEFORE = 'before-latest=sha256:aaaaaaaaaaaa\nbefore-previous=sha256:bbbbbbbbbbbb\n';
 
 /** `health`: one answer for every check, or one per check (the last one repeats). */
 function mockConn(health: string | string[]) {
@@ -32,7 +35,7 @@ function mockConn(health: string | string[]) {
   const calls: string[] = [];
   const writes: Record<string, string> = {};
   const answer = (l: string): string =>
-    ({ health: l === 'health' ? nextHealth() : '', snapshot: 'ok\n', restore: 'ok\n', 'retag-revert': 'reverted\n', 'retag-activate': 'activated\n', 'retag-swap': 'swapped\n' })[l] ?? '';
+    ({ health: l === 'health' ? nextHealth() : '', snapshot: 'ok\n', restore: 'ok\n', 'retag-revert': 'reverted\n', 'retag-activate': BEFORE + 'activated\n', 'retag-swap': BEFORE + 'swapped\n', 'retag-restore': 'restored\n' })[l] ?? '';
   const res = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: '' });
   const conn = {
     name: 'one',
@@ -92,7 +95,7 @@ describe('activateServer', () => {
     const r = await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy' });
     expect(r.status).toBe('reverted');
     expect(r.logsTail).toContain('app crashed: boom');
-    expect(m.calls.slice(6)).toEqual(['sudo docker logs --tail 100 myapp 2>&1', 'restore', 'retag-revert', 'sudo bash /opt/myapp/config/start.sh', 'health']);
+    expect(m.calls.slice(6)).toEqual(['sudo docker logs --tail 100 myapp 2>&1', 'restore', 'retag-restore', 'sudo bash /opt/myapp/config/start.sh', 'health']);
   });
 
   it('reconfig: no retag, and the revert restores only the config', async () => {
@@ -115,7 +118,7 @@ describe('activateServer', () => {
     const m = mockConn(['COMET_HEALTH fail crashed - 3\n', 'COMET_HEALTH ok 200 3\n']);
     const r = await activateServer(deps(m.conn), { version: '20261101-100000', mode: 'rollback' });
     expect(r.status).toBe('reverted');
-    expect(m.calls).toContain('retag-revert');
+    expect(m.calls).toContain('retag-restore');
     expect(m.calls).not.toContain('restore');
     expect(m.calls).not.toContain('snapshot');
   });
@@ -137,5 +140,36 @@ describe('activateServer', () => {
     const r2 = await activateServer(deps(bad.conn), { version: '20261107-183005', mode: 'deploy' });
     expect(r2.status).toBe('revert-failed');
     expect(r2.error).toMatch(/restored version is not healthy/);
+  });
+
+  it('C2: revert re-tags exactly the images that ran before (same image re-activated → no downgrade)', async () => {
+    const m = mockConn(['COMET_HEALTH fail timeout 503 60\n', 'COMET_HEALTH ok 200 3\n']);
+    const scripts: string[] = [];
+    const run = m.conn.runScriptOrThrow.bind(m.conn);
+    (m.conn as unknown as { runScriptOrThrow: typeof run }).runScriptOrThrow = async (sc: string, ...rest: unknown[]) => {
+      scripts.push(sc);
+      return (run as (...a: unknown[]) => ReturnType<typeof run>)(sc, ...rest);
+    };
+    const r = await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy' });
+    expect(r.status).toBe('reverted');
+    expect(m.calls).not.toContain('retag-revert');
+    const restore = scripts.find((x) => x.includes('echo "restored"'))!;
+    expect(restore).toContain("'sha256:aaaaaaaaaaaa'");
+    expect(restore).toContain("'sha256:bbbbbbbbbbbb'");
+  });
+
+  it('C2: a failure before anything changed reverts nothing and says so', async () => {
+    const m = mockConn('COMET_HEALTH ok 200 1\n');
+    const run = m.conn.runScriptOrThrow.bind(m.conn);
+    (m.conn as unknown as { runScriptOrThrow: (s: string) => Promise<unknown> }).runScriptOrThrow = async (sc: string) => {
+      if (sc.includes('Copies the current start.sh')) throw new Error('disk full');
+      return run(sc, 'test');
+    };
+    const r = await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy' });
+    expect(r.status).toBe('failed');
+    expect(r.error).toMatch(/disk full.*not changed/);
+    expect(m.calls).not.toContain('restore');
+    expect(m.calls).not.toContain('retag-restore');
+    expect(m.calls).not.toContain('sudo bash /opt/myapp/config/start.sh');
   });
 });

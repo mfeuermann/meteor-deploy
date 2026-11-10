@@ -183,9 +183,28 @@ describe('deployPipeline', () => {
     const out = await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false, strategy: 'parallel' }, s.deps);
     expect(out.ok).toBe(false);
     expect(s.output()).toContain('MIXED VERSIONS');
-    expect(s.output()).toContain('comet-deploy rollback');
+    // I3: only the servers that got the new version roll back
+    expect(s.output()).toContain('comet-deploy rollback --servers two');
     expect(s.calls).toContain('prune:two');
     expect(s.calls).not.toContain('prune:one');
+  });
+
+  it('Ctrl+C during the canary: the other servers are not touched, locks released, exit 130 after the summary (I2)', async () => {
+    const s = await setup();
+    const ac = new AbortController();
+    const activate = s.deps.activateServer!;
+    s.deps.activateServer = async (d, x) => {
+      const r = await activate(d, x);
+      ac.abort();
+      return r;
+    };
+    const err = await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, { ...s.deps, signal: ac.signal }).catch((e) => e);
+    expect(err).toBeInstanceOf(CometError);
+    expect(err.exitCode).toBe(130);
+    expect(s.calls).toContain('activate:one:20261107-183005');
+    expect(s.calls).not.toContain('activate:two:20261107-183005');
+    expect(s.calls).toEqual(expect.arrayContaining(['history:one', 'release:one', 'release:two', 'stop-registry']));
+    expect(s.output()).toMatch(/two\s+-\s+skipped/);
   });
 
   it('meteor build / push stop early', async () => {

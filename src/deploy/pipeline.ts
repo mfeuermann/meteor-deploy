@@ -77,8 +77,8 @@ export function lockInfo(command: string): LockInfo {
   return { user: deployerName(), machine: hostname(), pid: process.pid, startedAt: new Date().toISOString(), command, tool: TOOL_ID };
 }
 
-function aborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new CometError('Deploy aborted', { exitCode: 130 });
+function aborted(signal?: AbortSignal, what = 'Deploy'): void {
+  if (signal?.aborted) throw new CometError(`${what} aborted`, { exitCode: 130, hint: 'Servers that were not reached kept their previous state.' });
 }
 
 const historyResult = (s: ActivationResult['status']): HistoryEntry['result'] => (s === 'healthy' ? 'success' : s === 'reverted' ? 'reverted' : 'failed');
@@ -162,7 +162,7 @@ export function reportOutcome(
       o.mixed
         ? o.mixed(healthy, others)
         : `MIXED VERSIONS: ${healthy.join(', ')} run ${version ?? 'the new version'}; ${others.join(', ')} do not. ` +
-            'Fix the problem and deploy again, or run "comet-deploy rollback" to return all servers to the previous version.',
+            `Fix the problem and deploy again, or run "comet-deploy rollback --servers ${healthy.join(',')}" to return those servers to the previous version.`,
     );
   }
 }
@@ -273,11 +273,15 @@ export async function deployPipeline(
         run.run('meteor.envconfig', () =>
           run.run('meteor.start', () =>
             r.phase('Activate', async () =>
-              runStrategy(servers, strategy, async (s) =>
-                d.activateServer(
-                  { conn: await ctx.ssh.get(s), config: c, settings, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: r },
-                  { version: imageFor(s).version, mode: 'deploy' },
-                ),
+              runStrategy(
+                servers,
+                strategy,
+                async (s) =>
+                  d.activateServer(
+                    { conn: await ctx.ssh.get(s), config: c, settings, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: r },
+                    { version: imageFor(s).version, mode: 'deploy' },
+                  ),
+                d.signal,
               ),
             ),
           ),
@@ -313,6 +317,7 @@ export async function deployPipeline(
     }
 
     reportOutcome(ctx, summaryRows(results, skipped, (s) => imageFor(s).version), results, skipped, version);
+    aborted(d.signal);
     const ok = skipped.length === 0 && results.every((x) => x.status === 'healthy');
     return { version, results, skipped, ok };
   });
@@ -358,7 +363,7 @@ async function lockedRollout(
   let results: ActivationResult[] = [];
   let skipped: string[] = [];
   try {
-    ({ results, skipped } = await ctx.reporter.phase(o.phase, () => runStrategy(servers, o.strategy ?? ctx.config.cometDeploy.strategy, fn)));
+    ({ results, skipped } = await ctx.reporter.phase(o.phase, () => runStrategy(servers, o.strategy ?? ctx.config.cometDeploy.strategy, fn, d.signal)));
     await writeHistory(ctx, d, { action: o.action, results, startedAt, servers, versionOf: o.versionOf });
   } finally {
     await releaseServers(ctx, locked, d);
@@ -389,6 +394,7 @@ export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: Come
           mixed: (healthy, others) =>
             `MIXED CONFIGURATION: ${healthy.join(', ')} run the new configuration; ${others.join(', ')} kept the previous one. Fix the problem and run "comet-deploy reconfig" again.`,
         });
+        aborted(d.signal, 'Reconfig');
         return outcome;
       }),
     ),
@@ -412,6 +418,7 @@ export async function restartPipeline(ctx: CommandContext, o: { strategy?: Comet
     reportOutcome(ctx, summaryRows(outcome.results, outcome.skipped, () => null, 'not restarted (an earlier server failed)'), outcome.results, outcome.skipped, null, {
       mixed: (healthy, others) => `${healthy.join(', ')} restarted; ${others.join(', ')} did not. Check the logs with "comet-deploy logs".`,
     });
+    aborted(d.signal, 'Restart');
     return outcome;
   });
 }
@@ -511,6 +518,7 @@ export async function rollbackPipeline(
         `MIXED VERSIONS: ${healthy.join(', ')} were rolled back; ${others.join(', ')} were not. ` +
         `Fix the problem and run "comet-deploy rollback --servers ${others.join(',')}"${o.to ? ` --to ${o.to}` : ''}.`,
     });
+    aborted(d.signal, 'Rollback');
     const labels = [...new Set(outcome.results.map((r) => label(r.server)).filter((x): x is string => !!x))];
     return { version: o.to ?? (labels.length === 1 ? labels[0] : 'previous'), ...outcome };
   });

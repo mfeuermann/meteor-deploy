@@ -92,6 +92,33 @@ describe('restartPipeline', () => {
   });
 });
 
+describe('Ctrl+C in reconfig / restart / rollback (I1)', () => {
+  it('restart: stops before the next server, releases the locks and exits 130', async () => {
+    const s = await setup();
+    const ac = new AbortController();
+    s.deps.startServer = async (d) => {
+      ac.abort();
+      return { server: d.serverName, status: 'healthy', durationMs: 1 };
+    };
+    const err = await restartPipeline(s.ctx, { strategy: 'rolling' }, { ...s.deps, signal: ac.signal }).catch((e) => e);
+    expect(err).toBeInstanceOf(CometError);
+    expect(err.exitCode).toBe(130);
+    expect(s.log.filter((l) => l.endsWith(':meteor-stop'))).toEqual(['one:meteor-stop']);
+    expect(s.calls).toEqual(expect.arrayContaining(['release:one', 'release:two']));
+  });
+
+  it('reconfig: an abort before the rollout changes nothing and still releases the locks', async () => {
+    const s = await setup();
+    const ac = new AbortController();
+    ac.abort();
+    const seen: string[] = [];
+    s.deps.activateServer = async (d) => (seen.push(d.serverName), { server: d.serverName, status: 'healthy', durationMs: 1 });
+    await expect(reconfigPipeline(s.ctx, {}, { ...s.deps, signal: ac.signal })).rejects.toMatchObject({ exitCode: 130 });
+    expect(seen).toEqual([]);
+    expect(s.calls).toEqual(expect.arrayContaining(['release:one', 'release:two']));
+  });
+});
+
 describe('start / stop', () => {
   function overlapped(timeline: Array<[string, 'start' | 'end']>): boolean {
     const firstEnd = timeline.findIndex(([, e]) => e === 'end');

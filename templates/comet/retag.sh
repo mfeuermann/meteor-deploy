@@ -1,6 +1,11 @@
 set -e
 REPO=<%- q(repo) %>
 image_id() { sudo docker image inspect --format '{{.Id}}' "$1" 2>/dev/null || true; }
+<% if (mode === 'activate' || mode === 'swap') { %>
+# What ran before, so a failed activation can re-tag exactly these images.
+echo "before-latest=$(image_id "$REPO:latest")"
+echo "before-previous=$(image_id "$REPO:previous")"
+<% } %>
 <% if (mode === 'activate') { %>
 VERSION=<%- q(version) %>
 NEW_ID=$(image_id "$REPO:$VERSION")
@@ -30,6 +35,17 @@ else
   sudo docker tag "$REPO:previous" "$REPO:latest"
 fi
 echo "swapped"
+<% } else if (mode === 'restore') { %>
+# Puts :latest / :previous back on the images they named before the activation.
+LATEST_ID=<%- q(latestId) %>
+PREVIOUS_ID=<%- q(previousId) %>
+sudo docker tag "$LATEST_ID" "$REPO:latest"
+if [ -n "$PREVIOUS_ID" ]; then
+  sudo docker tag "$PREVIOUS_ID" "$REPO:previous"
+else
+  sudo docker rmi "$REPO:previous" >/dev/null 2>&1 || true
+fi
+echo "restored"
 <% } else { %>
 if [ -n "$(image_id "$REPO:previous")" ]; then
   sudo docker tag "$REPO:previous" "$REPO:latest"

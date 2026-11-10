@@ -41,6 +41,11 @@ function addCommand(y: Argv, m: CommandModule, makeCtx: MakeContext): Argv {
   const handler = async (argv: Record<string, unknown>) => {
     const needsConfig = m.needsConfig !== false;
     const ctx = await makeCtx(argv as GlobalArgs & Record<string, unknown>, needsConfig);
+    if (argv['show-hook-names']) {
+      ctx.reporter.info('Hooks are not supported yet: they are planned for phase 2 of comet-deploy.');
+      if ('ssh' in ctx) await ctx.ssh.closeAll();
+      return;
+    }
     try {
       await m.run(ctx as CommandContext, argv);
     } finally {

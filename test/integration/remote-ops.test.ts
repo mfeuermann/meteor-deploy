@@ -11,6 +11,7 @@ import {
   releaseLock,
   restoreConfigSnapshot,
   retagActivate,
+  retagRestore,
   retagRevert,
   retagSwap,
   serverFacts,
@@ -95,12 +96,35 @@ describe('remote ops on a fake server', () => {
     await server.exec(`tar cf - --files-from /dev/null | docker import --change "LABEL v=prev" - ${repo}:previous`);
     await server.exec(`tar cf - --files-from /dev/null | docker import --change "LABEL v=cur" - ${repo}:latest`);
     const before = await listVersions(conn, repo);
-    expect(await retagSwap(conn, repo)).toBe(true);
+    expect(await retagSwap(conn, repo)).not.toBeNull();
     const after = await listVersions(conn, repo);
     expect(after.latestId).toBe(before.previousId);
     expect(after.previousId).toBe(before.latestId);
     const tags = (await server.exec(`docker images --format '{{.Tag}}' ${repo}`)).stdout;
     expect(tags).not.toContain('comet-swap');
+  });
+
+  it('restores exactly the tags from before an activation, also when the same image was re-activated (C2)', async () => {
+    const repo = `${REPO}-restore`;
+    const [v1, v2, v3] = ['20260201-000001', '20260201-000002', '20260201-000003'];
+    for (const [i, t] of [v1, v2, v3].entries()) {
+      await server.exec(`tar cf - --files-from /dev/null | docker import --change "LABEL r=${i}" - ${repo}:${t}`);
+    }
+    await retagActivate(conn, repo, v1);
+    await retagActivate(conn, repo, v2);
+    const running = await listVersions(conn, repo);
+    const id = (t: string) => running.versions.find((x) => x.tag === t)!.id;
+    // same image again (a build-cache hit): a revert must not fall back to v1
+    const same = await retagActivate(conn, repo, v2);
+    await retagRestore(conn, repo, same);
+    let v = await listVersions(conn, repo);
+    expect([v.latestId, v.previousId]).toEqual([id(v2), id(v1)]);
+    // a new version, then undo it
+    const before = await retagActivate(conn, repo, v3);
+    expect((await listVersions(conn, repo)).latestId).toBe(id(v3));
+    await retagRestore(conn, repo, before);
+    v = await listVersions(conn, repo);
+    expect([v.latestId, v.previousId]).toEqual([id(v2), id(v1)]);
   });
 
   it('snapshots and restores start.sh / env.list', async () => {

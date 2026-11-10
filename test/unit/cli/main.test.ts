@@ -35,3 +35,13 @@ describe('CometError', () => {
     expect(e).toBeInstanceOf(Error);
   });
 });
+
+describe('--show-hook-names (I5)', () => {
+  it('says hooks are phase 2 instead of silently doing nothing', async () => {
+    const { main } = await import('../../../src/cli/main.js');
+    const { captureIO } = await import('../../helpers/fs.js');
+    const io = captureIO();
+    expect(await main(['validate', '--show-hook-names'], io.io, { cwd: process.cwd() })).toBe(0);
+    expect(io.stdout()).toMatch(/hooks.*phase 2/i);
+  });
+});

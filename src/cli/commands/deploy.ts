@@ -4,6 +4,7 @@ import type { CommandContext } from '../../core/context.js';
 import { CometError } from '../../core/errors.js';
 import { deployPipeline } from '../../deploy/pipeline.js';
 import type { ConfigCommand } from '../registry.js';
+import { withAbortOnSignals } from '../signals.js';
 
 const STRATEGIES: Strategy[] = ['canary', 'rolling', 'parallel'];
 
@@ -15,20 +16,8 @@ const deployOptions = (y: Argv) =>
     .option('force-unlock', { type: 'boolean', describe: 'Release an existing deploy lock first' })
     .conflicts('cached-build', 'force-build');
 
-/** First Ctrl+C aborts gracefully (locks released, nothing activated); the second quits. */
-export function withAbortOnSigint<T>(ctx: CommandContext, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const ac = new AbortController();
-  const onSigint = () => {
-    if (ac.signal.aborted) process.exit(130);
-    ctx.reporter.warn('Aborting after the current step… (press Ctrl+C again to quit immediately)');
-    ac.abort();
-  };
-  process.on('SIGINT', onSigint);
-  return fn(ac.signal).finally(() => process.off('SIGINT', onSigint));
-}
-
 async function runDeploy(ctx: CommandContext, argv: Record<string, unknown>, stopAfter?: 'build' | 'push'): Promise<void> {
-  const outcome = await withAbortOnSigint(ctx, (signal) =>
+  const outcome = await withAbortOnSignals(ctx.reporter, (signal) =>
     deployPipeline(
       ctx,
       {
@@ -52,7 +41,7 @@ export const deployCommand: ConfigCommand = {
   command: 'deploy',
   describe: 'Build the app once locally and deploy it to the servers',
   builder: deployOptions,
-  run: (ctx, argv) => runDeploy(ctx, argv),
+  run: (ctx, argv) => ctx.runner.run('default.deploy', () => runDeploy(ctx, argv)),
 };
 
 export const meteorDeployCommand: ConfigCommand = {

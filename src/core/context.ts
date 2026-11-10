@@ -116,7 +116,7 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
     ...project,
     serverFilter,
     ssh: (deps.sshPoolFactory ?? defaultSshPoolFactory)(config, cwd, basePath),
-    runner: new CommandRunner(),
+    runner: new CommandRunner((config.hooks as Record<string, unknown> | undefined) ?? {}),
     getSettings() {
       if (!settingsLoaded) {
         settings = loadSettings({ cwd, basePath, settingsFlag: argv.settings }).settings;
