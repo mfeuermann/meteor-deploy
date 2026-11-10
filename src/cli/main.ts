@@ -5,6 +5,7 @@ import { TOOL_VERSION } from '../core/version.js';
 import { createReporter, type Reporter } from '../output/reporter.js';
 import { deployCommand, meteorBuildCommand, meteorDeployCommand, meteorPushCommand } from './commands/deploy.js';
 import { initCommand } from './commands/init.js';
+import { LIFECYCLE_COMMANDS } from './commands/lifecycle.js';
 import { validateCommand } from './commands/validate.js';
 import { registerCommands, type CommandModule } from './registry.js';
 
@@ -30,6 +31,7 @@ export const COMMANDS: CommandModule[] = [
   meteorDeployCommand,
   meteorPushCommand,
   meteorBuildCommand,
+  ...LIFECYCLE_COMMANDS,
 ];
 
 /** Builds the yargs instance (without parsing). Commands are registered here. */

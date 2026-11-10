@@ -5,18 +5,21 @@ import { resolveAppPath } from '../config/normalize.js';
 import type { CometOptions } from '../config/types.js';
 import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
-import { localImageRepo } from '../core/naming.js';
+import { appDir, localImageRepo } from '../core/naming.js';
 import { TOOL_ID } from '../core/version.js';
+import { verboseOutput } from '../output/lines.js';
 import { formatDuration, type ServerStatus, type SummaryRow } from '../output/reporter.js';
+import { renderEnvList, renderMeteorStop, renderStartSh } from '../remote/app-files.js';
 import { acquireLock, appendHistory, pruneVersions, releaseLock, type HistoryEntry, type LockInfo } from '../remote/ops.js';
 import { distributeToServer } from '../transfer/distribute.js';
 import { ensureLocalRegistry, pushToLocalRegistry, stopLocalRegistry } from '../transfer/local-registry.js';
-import { activateServer, type ActivationResult } from './activate.js';
+import { activateServer, startServer, type ActivationResult } from './activate.js';
 import { deployerName, makeHistoryEntry } from './history.js';
 import { runPreflight } from './preflight.js';
 import { runStrategy } from './strategy.js';
 
 export interface PipelineDeps {
+  startServer: typeof startServer;
   preflight: typeof runPreflight;
   buildApp: typeof buildApp;
   ensureLocalRegistry: typeof ensureLocalRegistry;
@@ -40,6 +43,7 @@ export interface DeployOutcome {
 }
 
 const DEFAULT_DEPS: PipelineDeps = {
+  startServer,
   preflight: runPreflight,
   buildApp,
   ensureLocalRegistry,
@@ -110,7 +114,14 @@ export async function releaseServers(ctx: CommandContext, servers: string[], d: 
 }
 
 /** Prints the per-server table and, when servers differ, the mixed-versions warning. */
-export function reportOutcome(ctx: CommandContext, rows: SummaryRow[], results: ActivationResult[], skipped: string[], version: string | null): void {
+export function reportOutcome(
+  ctx: CommandContext,
+  rows: SummaryRow[],
+  results: ActivationResult[],
+  skipped: string[],
+  version: string | null,
+  o: { mixed?: (healthy: string[], others: string[]) => string } = {},
+): void {
   ctx.reporter.summary(rows);
   const healthy = results.filter((r) => r.status === 'healthy').map((r) => r.server);
   const notHealthy = results.filter((r) => r.status !== 'healthy');
@@ -118,17 +129,24 @@ export function reportOutcome(ctx: CommandContext, rows: SummaryRow[], results: 
     if (r.logsTail) ctx.reporter.info(`\nLast log lines on "${r.server}":\n${r.logsTail.trimEnd()}`);
   }
   if (healthy.length > 0 && (notHealthy.length > 0 || skipped.length > 0)) {
+    const others = [...notHealthy.map((r) => r.server), ...skipped];
     ctx.reporter.warn(
-      `MIXED VERSIONS: ${healthy.join(', ')} run ${version ?? 'the new version'}; ` +
-        `${[...notHealthy.map((r) => r.server), ...skipped].join(', ')} do not. ` +
-        'Fix the problem and deploy again, or run "comet-deploy rollback" to return all servers to the previous version.',
+      o.mixed
+        ? o.mixed(healthy, others)
+        : `MIXED VERSIONS: ${healthy.join(', ')} run ${version ?? 'the new version'}; ${others.join(', ')} do not. ` +
+            'Fix the problem and deploy again, or run "comet-deploy rollback" to return all servers to the previous version.',
     );
   }
 }
 
 const ROW_STATUS: Record<ActivationResult['status'], ServerStatus> = { healthy: 'ok', reverted: 'reverted', 'revert-failed': 'failed', failed: 'failed' };
 
-export function summaryRows(results: ActivationResult[], skipped: string[], versionOf: (s: string) => string | null): SummaryRow[] {
+export function summaryRows(
+  results: ActivationResult[],
+  skipped: string[],
+  versionOf: (s: string) => string | null,
+  skipNote = 'not deployed (an earlier server failed)',
+): SummaryRow[] {
   return [
     ...results.map((r) => ({
       server: r.server,
@@ -137,7 +155,7 @@ export function summaryRows(results: ActivationResult[], skipped: string[], vers
       durationMs: r.durationMs,
       note: r.status === 'healthy' ? undefined : r.error,
     })),
-    ...skipped.map((s): SummaryRow => ({ server: s, result: 'skipped', note: 'not deployed (an earlier server failed)' })),
+    ...skipped.map((s): SummaryRow => ({ server: s, result: 'skipped', note: skipNote })),
   ];
 }
 
@@ -269,5 +287,152 @@ export async function deployPipeline(
     reportOutcome(ctx, summaryRows(results, skipped, (s) => imageFor(s).version), results, skipped, version);
     const ok = skipped.length === 0 && results.every((x) => x.status === 'healthy');
     return { version, results, skipped, ok };
+  });
+}
+
+export interface LifecycleOutcome {
+  results: ActivationResult[];
+  skipped: string[];
+  ok: boolean;
+}
+
+/** Appends one history entry per server that was touched; failures only warn. */
+async function writeHistory(
+  ctx: CommandContext,
+  d: Pick<PipelineDeps, 'appendHistory' | 'readGitInfo'>,
+  o: { action: HistoryEntry['action']; results: ActivationResult[]; startedAt: Date; servers: string[] },
+): Promise<void> {
+  const git = await d.readGitInfo(resolveAppPath(ctx.config, ctx.basePath)).catch(() => null);
+  const durationMs = Date.now() - o.startedAt.getTime();
+  await Promise.all(
+    o.results.map(async (res) => {
+      try {
+        const entry = makeHistoryEntry({ action: o.action, version: null, result: historyResult(res.status), startedAt: o.startedAt, durationMs, git, servers: o.servers });
+        await d.appendHistory(await ctx.ssh.get(res.server), ctx.config.app.name, entry);
+      } catch (err) {
+        ctx.reporter.warn(`Could not write the deploy history on "${res.server}": ${(err as Error).message}`);
+      }
+    }),
+  );
+}
+
+/** Lock → `fn` by strategy → history → unlock (locks are released even when `fn` throws). */
+async function lockedRollout(
+  ctx: CommandContext,
+  o: { action: 'reconfig' | 'restart'; strategy?: CometOptions['strategy']; phase: string },
+  d: PipelineDeps,
+  fn: (s: string) => Promise<ActivationResult>,
+): Promise<LifecycleOutcome> {
+  const servers = ctx.appServers();
+  if (servers.length === 0) throw new CometError('No app servers selected.');
+  const startedAt = new Date();
+  const locked = await ctx.reporter.phase('Lock', () => lockServers(ctx, servers, o.action, d));
+  let results: ActivationResult[] = [];
+  let skipped: string[] = [];
+  try {
+    ({ results, skipped } = await ctx.reporter.phase(o.phase, () => runStrategy(servers, o.strategy ?? ctx.config.cometDeploy.strategy, fn)));
+    await writeHistory(ctx, d, { action: o.action, results, startedAt, servers });
+  } finally {
+    await releaseServers(ctx, locked, d);
+  }
+  const ok = skipped.length === 0 && results.every((x) => x.status === 'healthy');
+  return { results, skipped, ok };
+}
+
+/**
+ * `reconfig` (MUP `default.reconfig` → `meteor.envconfig` → `meteor.start`):
+ * writes start.sh/env.list from the current config and settings, restarts the
+ * app by strategy with a health check, and restores the previous config on failure.
+ */
+export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy'] }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
+  const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
+  assertPhase1Supported(ctx);
+  return ctx.runner.run('default.reconfig', () =>
+    ctx.runner.run('meteor.envconfig', () =>
+      ctx.runner.run('meteor.start', async () => {
+        const settings = ctx.getSettings();
+        const outcome = await lockedRollout(ctx, { action: 'reconfig', strategy: o.strategy, phase: 'Reconfigure' }, d, async (s) =>
+          d.activateServer(
+            { conn: await ctx.ssh.get(s), config: ctx.config, settings, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: ctx.reporter },
+            { version: null, mode: 'reconfig' },
+          ),
+        );
+        reportOutcome(ctx, summaryRows(outcome.results, outcome.skipped, () => null, 'not reconfigured (an earlier server failed)'), outcome.results, outcome.skipped, null, {
+          mixed: (healthy, others) =>
+            `MIXED CONFIGURATION: ${healthy.join(', ')} run the new configuration; ${others.join(', ')} kept the previous one. Fix the problem and run "comet-deploy reconfig" again.`,
+        });
+        return outcome;
+      }),
+    ),
+  );
+}
+
+/**
+ * `restart` (MUP `meteor.restart`): stop + start + health check per server by
+ * strategy. Nothing changes on the server, so there is nothing to revert.
+ */
+export async function restartPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy'] }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
+  const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
+  return ctx.runner.run('meteor.restart', async () => {
+    const stopScript = await renderMeteorStop(ctx.config);
+    const outcome = await lockedRollout(ctx, { action: 'restart', strategy: o.strategy, phase: 'Restart' }, d, async (s) => {
+      const conn = await ctx.ssh.get(s);
+      ctx.reporter.server(s, 'stop', 'running');
+      await conn.runScriptOrThrow(stopScript, 'Stopping the app', verboseOutput(ctx.reporter, s));
+      return d.startServer({ conn, config: ctx.config, serverName: s, reporter: ctx.reporter });
+    });
+    reportOutcome(ctx, summaryRows(outcome.results, outcome.skipped, () => null, 'not restarted (an earlier server failed)'), outcome.results, outcome.skipped, null, {
+      mixed: (healthy, others) => `${healthy.join(', ')} restarted; ${others.join(', ')} did not. Check the logs with "comet-deploy logs".`,
+    });
+    return outcome;
+  });
+}
+
+/** `stop` (MUP `meteor.stop`): `meteor-stop.sh` on all app servers in parallel. */
+export async function stopAll(ctx: CommandContext): Promise<void> {
+  const servers = ctx.appServers();
+  const script = await renderMeteorStop(ctx.config);
+  const res = await Promise.allSettled(
+    servers.map(async (s) => {
+      ctx.reporter.server(s, 'stop', 'running');
+      await (await ctx.ssh.get(s)).runScriptOrThrow(script, 'Stopping the app', verboseOutput(ctx.reporter, s));
+      ctx.reporter.server(s, 'stop', 'ok');
+    }),
+  );
+  const failed = res.flatMap((x, i) => (x.status === 'rejected' ? [`${servers[i]}: ${(x.reason as Error)?.message ?? x.reason}`] : []));
+  for (const f of failed) ctx.reporter.error(f);
+  if (failed.length) throw new CometError(`Stopping the app failed on ${failed.length} server(s):\n${failed.map((f) => `  - ${f}`).join('\n')}`);
+}
+
+/** `start` (MUP `meteor.start`): `meteor-start.sh` + health check on all app servers in parallel. */
+export async function startAll(ctx: CommandContext, deps: Partial<Pick<PipelineDeps, 'startServer'>> = {}): Promise<ActivationResult[]> {
+  const start = deps.startServer ?? startServer;
+  const results = await Promise.all(
+    ctx.appServers().map(async (s) => {
+      const t = Date.now();
+      try {
+        return await start({ conn: await ctx.ssh.get(s), config: ctx.config, serverName: s, reporter: ctx.reporter });
+      } catch (err) {
+        return { server: s, status: 'failed', durationMs: Date.now() - t, error: (err as Error)?.message ?? String(err) } satisfies ActivationResult;
+      }
+    }),
+  );
+  reportOutcome(ctx, summaryRows(results, [], () => null), results, [], null, {
+    mixed: (healthy, others) => `${healthy.join(', ')} started; ${others.join(', ')} did not. Check the logs with "comet-deploy logs".`,
+  });
+  return results;
+}
+
+/** Hidden `meteor envconfig`: writes start.sh/env.list on all app servers without restarting. */
+export async function envconfigAll(ctx: CommandContext): Promise<void> {
+  assertPhase1Supported(ctx);
+  await ctx.runner.run('meteor.envconfig', async () => {
+    const settings = ctx.getSettings();
+    for (const s of ctx.appServers()) {
+      const conn = await ctx.ssh.get(s);
+      await conn.writeFile(`${appDir(ctx.config)}/config/start.sh`, await renderStartSh(ctx.config, s));
+      await conn.writeFile(`${appDir(ctx.config)}/config/env.list`, await renderEnvList(ctx.config, settings, s, { cwd: ctx.cwd, basePath: ctx.basePath }), 0o600);
+      ctx.reporter.server(s, 'envconfig', 'ok');
+    }
   });
 }

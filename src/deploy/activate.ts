@@ -4,7 +4,7 @@ import { verboseOutput } from '../output/lines.js';
 import type { Reporter } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStart, renderStartSh } from '../remote/app-files.js';
 import { restoreConfigSnapshot, retagActivate, retagRevert, shArg, snapshotConfig } from '../remote/ops.js';
-import type { SshConnection } from '../ssh/connection.js';
+import type { ExecOptions, SshConnection } from '../ssh/connection.js';
 import { healthCheck, type HealthResult } from './health-check.js';
 
 export interface ActivationResult {
@@ -35,6 +35,52 @@ function describeHealth(h: HealthResult): string {
   if (h.reason === 'crashed') return `the container stopped or is restarting (${h.seconds}s${last})`;
   if (h.reason === 'no-ip') return `the container got no IP address (${h.seconds}s)`;
   return `no healthy answer within ${h.seconds}s${last}`;
+}
+
+function healthOptions(config: NormalizedConfig) {
+  const app = config.app;
+  return {
+    container: containerName(config),
+    port: Number(app.deployCheckPort ?? app.docker.imagePort),
+    path: config.cometDeploy.healthCheck.path,
+    maxStatus: config.cometDeploy.healthCheck.maxStatus,
+    timeoutSec: Number(app.deployCheckWaitTime ?? DEFAULT_WAIT_SEC),
+  };
+}
+
+/** `meteor-start.sh` (runs config/start.sh as it is on the server) + health check. */
+async function startAndCheck(d: Pick<ActivateDeps, 'conn' | 'config'>, out: ExecOptions): Promise<HealthResult> {
+  await d.conn.runScriptOrThrow(await renderMeteorStart(d.config), 'Starting the app', out);
+  return healthCheck(d.conn, healthOptions(d.config), out);
+}
+
+async function containerLogsTail(d: Pick<ActivateDeps, 'conn' | 'config'>): Promise<string | undefined> {
+  const logs = await d.conn.exec(`sudo docker logs --tail ${LOG_TAIL_LINES} ${shArg(containerName(d.config))} 2>&1`).catch(() => null);
+  return logs?.stdout;
+}
+
+/**
+ * Starts the app from the files already on the server and checks its health
+ * (`start`, `restart`). No revert: nothing was changed.
+ */
+export async function startServer(d: Omit<ActivateDeps, 'settings' | 'cwd' | 'basePath'>, o: { step?: string } = {}): Promise<ActivationResult> {
+  const started = Date.now();
+  const { serverName: server, reporter: r } = d;
+  const done = (x: Omit<ActivationResult, 'server' | 'durationMs'>): ActivationResult => ({ server, durationMs: Date.now() - started, ...x });
+  let failure: { error: string; health?: HealthResult };
+  try {
+    r.server(server, o.step ?? 'start', 'running');
+    const health = await startAndCheck(d, verboseOutput(r, server));
+    if (health.ok) {
+      r.server(server, 'health', 'ok', describeHealth(health));
+      return done({ status: 'healthy', health });
+    }
+    failure = { error: `Health check failed: ${describeHealth(health)}`, health };
+  } catch (err) {
+    failure = { error: (err as Error)?.message ?? String(err) };
+  }
+  r.server(server, 'health', 'failed', failure.error);
+  return done({ status: 'failed', ...failure, logsTail: await containerLogsTail(d) });
 }
 
 /** Restores the config snapshot (and :previous when `revertImage`) and restarts the app. */
@@ -69,18 +115,7 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
       await conn.writeFile(`${appDir(config)}/config/start.sh`, await renderStartSh(config, server));
       await conn.writeFile(`${appDir(config)}/config/env.list`, await renderEnvList(config, d.settings, server, { cwd: d.cwd, basePath: d.basePath }), 0o600);
     }
-    await conn.runScriptOrThrow(await renderMeteorStart(config), 'Starting the app', out);
-    const health = await healthCheck(
-      conn,
-      {
-        container: containerName(config),
-        port: Number(app.deployCheckPort ?? app.docker.imagePort),
-        path: config.cometDeploy.healthCheck.path,
-        maxStatus: config.cometDeploy.healthCheck.maxStatus,
-        timeoutSec: Number(app.deployCheckWaitTime ?? DEFAULT_WAIT_SEC),
-      },
-      out,
-    );
+    const health = await startAndCheck(d, out);
     if (health.ok) {
       r.server(server, 'health', 'ok', describeHealth(health));
       return done({ status: 'healthy', health });
@@ -91,8 +126,7 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
   }
 
   r.server(server, 'health', 'failed', failure.error);
-  const logs = await conn.exec(`sudo docker logs --tail ${LOG_TAIL_LINES} ${shArg(containerName(config))} 2>&1`).catch(() => null);
-  const logsTail = logs?.stdout;
+  const logsTail = await containerLogsTail(d);
   try {
     const reverted = await revertServer(d, { revertImage: o.mode !== 'reconfig' });
     if (!reverted) return done({ status: 'failed', error: `${failure.error} (nothing to revert to)`, logsTail, health: failure.health });
