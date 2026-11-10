@@ -4,10 +4,14 @@ import { CometError } from '../core/errors.js';
 import { TOOL_VERSION } from '../core/version.js';
 import { createReporter, type Reporter } from '../output/reporter.js';
 import { deployCommand, meteorBuildCommand, meteorDeployCommand, meteorPushCommand } from './commands/deploy.js';
+import { meteorDestroyCommand } from './commands/destroy.js';
+import { DOCKER_COMMANDS } from './commands/docker.js';
 import { historyCommand } from './commands/history.js';
 import { initCommand } from './commands/init.js';
 import { LIFECYCLE_COMMANDS } from './commands/lifecycle.js';
 import { rollbackCommand } from './commands/rollback.js';
+import { meteorSetupCommand, setupCommand } from './commands/setup.js';
+import { meteorStatusCommand, statusCommand } from './commands/status.js';
 import { unlockCommand } from './commands/unlock.js';
 import { validateCommand } from './commands/validate.js';
 import { registerCommands, type CommandModule } from './registry.js';
@@ -30,6 +34,7 @@ const defaultIO: CliIO = {
 export const COMMANDS: CommandModule[] = [
   initCommand,
   validateCommand,
+  setupCommand,
   deployCommand,
   meteorDeployCommand,
   meteorPushCommand,
@@ -38,6 +43,11 @@ export const COMMANDS: CommandModule[] = [
   rollbackCommand,
   historyCommand,
   unlockCommand,
+  statusCommand,
+  meteorSetupCommand,
+  meteorStatusCommand,
+  meteorDestroyCommand,
+  ...DOCKER_COMMANDS,
 ];
 
 /** Builds the yargs instance (without parsing). Commands are registered here. */

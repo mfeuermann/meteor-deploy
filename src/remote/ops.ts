@@ -21,6 +21,9 @@ function comet(name: string, vars: Record<string, unknown>): Promise<string> {
   return renderTemplate(`comet/${name}`, { q: shq, ...vars });
 }
 
+/** Renders a `templates/comet/*` script (values are passed through `q()` = shell single-quoting). */
+export const cometScript = comet;
+
 const configDir = (appName: string) => `/opt/${appName}/config`;
 const lockDir = (appName: string) => `${configDir(appName)}/deploy.lock`;
 const historyFile = (appName: string) => `${configDir(appName)}/deploy-history.jsonl`;
