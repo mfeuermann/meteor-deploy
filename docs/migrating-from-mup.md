@@ -1,0 +1,236 @@
+# Migrating from Meteor Up
+
+[README](../README.md) · [Getting started](getting-started.md) · [Configuration](configuration.md) · [Commands](commands.md) · [How it works](how-it-works.md) · **Migrating from MUP** · [Troubleshooting](troubleshooting.md)
+
+comet-deploy is a drop-in replacement for Meteor Up (MUP) 1.5.11. It reads the same `mup.js`, uses the same commands, and leaves the servers in the same state as MUP. You can switch an app over, and switch it back, without changing the servers.
+
+- [In short](#in-short)
+- [Check first: what does not work yet](#check-first-what-does-not-work-yet)
+- [Step by step](#step-by-step)
+- [Commands](#commands)
+- [What stays the same](#what-stays-the-same)
+- [What changes](#what-changes)
+- [MUP and comet-deploy side by side](#mup-and-comet-deploy-side-by-side)
+- [Going back to MUP](#going-back-to-mup)
+- [Differences at a glance](#differences-at-a-glance)
+
+## In short
+
+1. Install Docker with buildx on your machine. **This is new**: MUP does not need it.
+2. Install comet-deploy.
+3. In the folder with your `mup.js`, run `comet-deploy validate` and fix any errors.
+4. Run `comet-deploy deploy`. No `setup` is needed on servers that MUP set up.
+
+## Check first: what does not work yet
+
+comet-deploy 0.1.0 is phase 1. If your config uses one of these, keep using MUP for that app for now:
+
+| In your config | What comet-deploy does | What you can do |
+|---|---|---|
+| `proxy` section (nginx-proxy, Let's Encrypt, load balancing) | `deploy`, `reconfig` and `rollback` stop: `The "proxy" section is not supported yet (planned for phase 2 of comet-deploy).` | Keep MUP for this app. |
+| `mongo` section (MongoDB run by MUP) | stop: `The "mongo" section is not supported yet …` | Point `app.env.MONGO_URL` at a database you run yourself, or keep MUP. |
+| `privateDockerRegistry` | stop: `"privateDockerRegistry" is not supported yet …` | Keep MUP. |
+| `hooks` | A command that has a hook on any of its steps stops before it does anything: `Hook "pre.deploy" is not supported yet …` | Remove the hooks, or keep MUP. See [Configuration → Hooks](configuration.md#hooks). |
+| No `docker.image`, or `kadirahq/meteord`, or `docker.prepareBundle: false` (MUP bundle mode) | The build stops: `The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode).` | Set `docker.image: 'zodern/meteor:root'`. This is also the image in MUP's own `mup init` sample, so the config keeps working with MUP. |
+| `swarm.enabled: true` | Error: `swarm.enabled Docker Swarm is not supported by comet-deploy` | Keep MUP. Swarm is not planned. |
+| `app.ssl`, `app.nginx`, `app.docker.imageFrontendServer` (deprecated since MUP 1.4) | Error, for example `app.ssl is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section, which comet-deploy plans for phase 2; until then, keep deploying this app with MUP.` | Keep MUP. |
+| `plugins` | Warning; the plugins do not run. | Make sure your deploy does not depend on them. |
+
+**HTTPS.** Without the `proxy` section, comet-deploy publishes the app on a plain port (`app.env.PORT`, default 80), like MUP does without a proxy. If you terminate TLS in your own proxy or load balancer, nothing changes.
+
+## Step by step
+
+### 1. Prepare your machine
+
+Install Docker with BuildKit and buildx: Docker Desktop, OrbStack, or Docker Engine on Linux. Check it:
+
+```bash
+docker buildx version
+docker buildx inspect | grep Platforms
+```
+
+The list of platforms must include your servers' platform (usually `linux/amd64`). On an Apple Silicon Mac, enable emulation, see [Troubleshooting](troubleshooting.md#building-on-an-arm64-mac-for-amd64-servers).
+
+You still need Meteor locally, as with MUP: `meteor build` runs on your machine in both tools.
+
+Install comet-deploy: [Getting started → Install](getting-started.md#1-install-comet-deploy).
+
+### 2. Validate the config
+
+Run it in the folder where you run `mup`:
+
+```bash
+cd ~/code/myapp/.deploy
+comet-deploy validate
+```
+
+comet-deploy uses MUP's validation rules and reports problems with the same paths. The difference: MUP prints problems and continues, comet-deploy stops on **errors** (problems that would break the deploy) and prints **warnings**.
+
+Typical warnings on a MUP config, which you can leave as they are:
+
+```
+Warning: app.docker.useBuildKit ignored: comet-deploy always builds locally with BuildKit
+Warning: app.docker.prepareBundleLocally ignored: comet-deploy always builds locally with BuildKit
+```
+
+`validate` itself exits with code 1 on warnings too, as `mup validate` does. `deploy` and the other commands only stop on errors.
+
+The full list of errors and warnings: [Configuration → Validation](configuration.md#validation).
+
+### 3. Check the servers
+
+The server requirements are the ones MUP has, plus one:
+
+- SSH user `root` or a user with passwordless sudo (same as MUP).
+- Docker 18 or newer (MUP's `setup` installed it).
+- `curl` on the server (MUP's deploy check uses it too).
+- **SSH TCP forwarding must be allowed** (`AllowTcpForwarding yes`, the OpenSSH default). comet-deploy sends the image through an SSH reverse tunnel. MUP uploads the bundle with SFTP and does not need it.
+
+You do not have to check these by hand: the first step of every deploy (preflight) checks all of them on all servers and reports every problem before it builds anything.
+
+### 4. Deploy
+
+```bash
+comet-deploy deploy
+```
+
+Do not run `comet-deploy setup` first on servers that MUP already set up. It is safe to run (it is MUP's own setup script), but it is not needed: comet-deploy uses the same `/opt/<name>` layout.
+
+What to expect on the first deploy:
+
+- The first local build runs the full `npm install` inside Docker. Later builds reuse that layer until your dependencies change.
+- Each server pulls the base image (`docker.image`) from Docker Hub itself, then receives the app layers through the SSH tunnel. The first time this is the whole app; later only the changed layers.
+- The image that MUP deployed becomes `mup-<name>:previous`. The new one is `mup-<name>:latest` and also `mup-<name>:<version>`.
+
+### 5. Check the result
+
+```bash
+comet-deploy status
+comet-deploy history
+comet-deploy logs --tail 50
+```
+
+If something is wrong with the new version, `comet-deploy rollback` switches back to the version MUP deployed.
+
+## Commands
+
+The commands have the same names and the same options as in MUP.
+
+| MUP 1.5.11 | comet-deploy | Notes |
+|---|---|---|
+| `mup init` | `comet-deploy init` | Same files, same rules for where they go. |
+| `mup validate [--show] [--scrub]` | `comet-deploy validate [--show] [--scrub]` | Same output format for `--show` and `--scrub`. |
+| `mup setup` | `comet-deploy setup` | Runs MUP's own setup scripts. Not needed on servers MUP set up. |
+| `mup deploy [--cached-build]` | `comet-deploy deploy [--cached-build]` | New: `--strategy`, `--force-build`, `--force-unlock`. |
+| `mup reconfig` | `comet-deploy reconfig` | Now with the lock, the rollout strategy and a history entry. |
+| `mup restart`, `start`, `stop` | `comet-deploy restart`, `start`, `stop` | `restart` follows the rollout strategy. |
+| `mup logs [docker logs options]` | `comet-deploy logs [options]` | Same: the options go to `docker logs`. |
+| `mup status [--overview]` | `comet-deploy status` | A one-line overview per server. MUP's full status report is phase 2. |
+| `mup meteor deploy`, `push`, `build`, `setup`, `envconfig`, `start`, `stop`, `restart`, `logs`, `status`, `destroy` | the same | Listed by `comet-deploy meteor --help`, not in the top-level help. |
+| `mup docker setup`, `update`, `restart`, `ps`, `status` | the same | |
+| `mup proxy …`, `mup mongo …`, `mup ssh`, `mup meteor debug` | exist, but print `… is not supported yet: it is planned for phase 2 of comet-deploy.` and exit 1 | Use MUP for these meanwhile; it works on the same config and servers. |
+| - | `comet-deploy rollback [--to <version>]` | New. |
+| - | `comet-deploy history` | New. |
+| - | `comet-deploy unlock` | New. |
+
+Global options are the same: `--config`, `--settings`, `--servers`, `--verbose`, `--show-hook-names`. Details: [Commands](commands.md).
+
+## What stays the same
+
+- **The config.** `mup.js` or `mup.json`, the `servers` and `app` (or `meteor`) sections, `settings.json`, the defaults, and the path rules. comet-deploy loads `./mup.js`, then `./mup.json`, or `--config`.
+- **The server layout.** `/opt/<name>/config/start.sh` and `env.list`, the container `<name>`, the images `mup-<name>:latest` and `:previous`. `start.sh` is rendered from MUP 1.5.11's template with the same template engine, so it is the same file MUP writes.
+- **The container.** Same `docker run` options: `--restart=always`, `--env-file`, the published port, the log options, `docker.args`, volumes, networks.
+- **The scripts.** `setup`, `docker setup`, starting, stopping and destroying the app use MUP's own shell scripts.
+- **Settings and env.** `METEOR_SETTINGS` and the env variables reach the app exactly as with MUP, in the same `env.list` format.
+- **SSH.** Authentication with `pem`, `password` or the ssh agent; `servers.<name>.opts.port`; sudo for every remote command.
+- **The health check timeout.** `app.deployCheckWaitTime` (default 60 seconds).
+
+## What changes
+
+**Docker on your machine.** The image is built locally with `docker buildx`. MUP builds it on each server (unless you use `prepareBundleLocally` with a private registry).
+
+**The app keeps running during the build.** MUP stops the app on a server while it builds the image there (`docker.stopAppDuringPrepareBundle`, `true` by default), so the downtime includes the build. comet-deploy builds on your machine and sends the image while the old version keeps running. The downtime per server is one container restart. `stopAppDuringPrepareBundle` is ignored.
+
+**SSH TCP forwarding.** The image travels through an SSH reverse tunnel, so the server must allow it (`AllowTcpForwarding yes`). See [Troubleshooting](troubleshooting.md#allowtcpforwarding-is-disabled-on-the-server).
+
+**Only changed layers travel.** The first deploy to a server sends the app's dependency layer once. After that, a code-only change sends only the small app-code layers. MUP uploads the whole bundle and runs `npm install` on every server for every deploy.
+
+**All servers at once.** MUP deploys one server after another. comet-deploy distributes the image to all servers in parallel and then activates them by a rollout strategy: `canary` by default (the first server in `app.servers`, then the rest in parallel if it is healthy), or `rolling` or `parallel`. See [How it works → Rollout strategies](how-it-works.md#rollout-strategies).
+
+**A stricter health check.** MUP accepts any HTTP answer, including a 500. comet-deploy counts a status up to 499 as healthy (`cometDeploy.healthCheck.maxStatus`), so a 5xx fails the deploy. A 4xx still passes. The path is configurable (`cometDeploy.healthCheck.path`). A container that stops or restarts fails the check at once instead of after the timeout.
+
+**`deployCheckPort` is used.** MUP 1.5.11 accepts `app.deployCheckPort` but checks `docker.imagePort`. comet-deploy checks `deployCheckPort` when you set it. If you set it to a different port than the app listens on, remove it or fix it.
+
+**A better automatic revert.** When the health check fails, MUP runs the `:previous` image with the new `start.sh` and `env.list`. comet-deploy restores the previous `start.sh`, `env.list` and image tags, starts the old version, and checks that it is healthy again.
+
+**Validation errors stop the command.** MUP prints validation problems and continues. comet-deploy stops on errors, such as a missing `ROOT_URL` (or no `env` at all), a server in `app.servers` that is not in `servers`, or a `.pub` file as `pem`. In the other direction, comet-deploy accepts any SSH option in `servers.<name>.opts` (for example `passphrase`) without the warning MUP prints.
+
+**`--servers` accepts commas.** `--servers one,two` and `--servers "one two"` both work. An unknown server name is an error. MUP splits on spaces only.
+
+**Per-server CPU architecture.** comet-deploy reads `uname -m` on each server and builds for `linux/amd64` or `linux/arm64`, once per platform. MUP always builds the bundle for `os.linux.x86_64`.
+
+**Env values stay out of the image.** MUP writes every `app.env` value into the generated Dockerfile as a build argument default, so they end up in the image metadata on the server. comet-deploy only passes the env keys that a `docker.buildInstructions` line references (`$KEY` or `${KEY}`), and warns about them.
+
+**New files on the servers.** Version tags `mup-<name>:<version>`, `/opt/<name>/config/deploy-history.jsonl`, `/opt/<name>/config/.prev/` and, while a command runs, `/opt/<name>/config/deploy.lock/`. MUP ignores all of them. See [How it works → What is on the servers](how-it-works.md#what-is-on-the-servers).
+
+**New local state.** Local images `mup-<name>:<version>` (the last 20 builds per app; older ones are removed), a stopped `comet-deploy-registry` container with a volume that is never cleaned up, and the build cache state in `~/.cache/comet-deploy/`.
+
+## MUP and comet-deploy side by side
+
+Because the server state is the same, you can use both tools on the same app. The integration tests check this sequence against MUP 1.5.11: `mup setup` and `mup deploy`, then `comet-deploy deploy` without `setup`, then `mup restart` and `mup logs`, then `comet-deploy rollback` back to MUP's version, then `mup deploy` again.
+
+Things to know:
+
+- **Do not run both at the same time.** MUP does not know comet-deploy's lock.
+- After a `mup deploy`, `comet-deploy status` shows `-` as the version, because `:latest` is not a comet-deploy version. `comet-deploy rollback` then picks the newest kept comet-deploy version.
+- `mup deploy` moves `:latest` to `:previous` as usual. comet-deploy's version tags stay on the server.
+- MUP 1.5.11 reports the `cometDeploy` section as `cometDeploy is an unknown property` and continues. Only `mup validate` exits with code 1 because of it.
+- For the commands that are phase 2 in comet-deploy (`mup proxy`, `mup mongo`, `mup ssh`, `mup meteor debug`), use MUP on the same config.
+
+## Going back to MUP
+
+Nothing on the servers has to be undone. Run MUP again:
+
+```bash
+mup deploy
+```
+
+If your config is `mup.json`, pass it to MUP explicitly: `mup deploy --config mup.json` (MUP looks only for `mup.js` on its own).
+
+Optional cleanup on each server (MUP ignores these, so you can also leave them):
+
+```bash
+ssh root@192.0.2.10
+sudo docker images mup-myapp                       # list the tags
+sudo docker rmi mup-myapp:20261111-091502-3f2a1c9  # remove version tags you do not need
+sudo rm -rf /opt/myapp/config/.prev /opt/myapp/config/deploy-history.jsonl /opt/myapp/config/deploy.lock
+```
+
+`docker rmi` on a tag only removes the tag when `:latest` or `:previous` points to the same image.
+
+On your machine, you can remove the local images `mup-myapp:<version>` and the local registry (see [Troubleshooting → Leftover local images](troubleshooting.md#leftover-local-images-and-the-registry-volume)).
+
+## Differences at a glance
+
+| | MUP 1.5.11 | comet-deploy 0.1.0 |
+|---|---|---|
+| Config | `mup.js` | the same `mup.js` (and `mup.json`), plus an optional `cometDeploy` section |
+| Docker on your machine | not needed | required, with buildx |
+| Where the image is built | on each server | once, on your machine |
+| `npm install` | on every server, every deploy | cached; runs again only when the dependencies change |
+| What is sent to a server | the whole bundle, with SFTP | only the missing image layers, through an SSH reverse tunnel |
+| Order of servers | one after another | distribution in parallel; activation by strategy (`canary`, `rolling`, `parallel`) |
+| App during the build | stopped by default | keeps running |
+| Health check passes on | any HTTP answer | HTTP status ≤ 499 (configurable) |
+| Health check port | `docker.imagePort` | `deployCheckPort`, default `docker.imagePort` |
+| After a failed check | `:previous` image with the new config | previous image and previous config, checked again |
+| Rollback command | - | `rollback`, `rollback --to <version>` |
+| Deploy history | - | per server, `history` |
+| Protection against two deploys at once | - | lock on each server |
+| Validation problems | printed, the command continues | errors stop the command |
+| `--servers` | space separated | space or comma separated |
+| Server CPU | any (built on the server) | `x86_64` or `aarch64`, detected per server |
+| Env values in the image | yes, as build argument defaults | only keys used in `buildInstructions` |
+| SSH TCP forwarding | not needed | required |
+| `proxy`, `mongo`, hooks, private registry, bundle mode | supported | phase 2 |
+| Docker Swarm, MUP plugins | supported | not planned |
