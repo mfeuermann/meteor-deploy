@@ -19,7 +19,7 @@ const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 // The image is only built when its tag is missing: bump IMAGE_REVISION after changing
 // fake-server/, or an old image is reused.
-const IMAGE_REVISION = 2;
+const IMAGE_REVISION = 3;
 /** The Docker releases a fake server can run: the default one, and the newest major (29). */
 export type FakeDockerVersion = '27.5' | '29';
 /** The exact release of each major; 29.9 was the newest 29.x when the proxy gate was added. */
@@ -37,6 +37,11 @@ export interface FakeServer {
   host: '127.0.0.1';
   /** The host port that the container's port 22 is published on. */
   port: number;
+  /**
+   * The container's IP on the local Docker network, where the fake servers reach each other
+   * (the `privateIp` of load-balancing tests).
+   */
+  ip: string;
   /** `root` or `deployer`, as chosen in `startFakeServers`. */
   username: string;
   /** The password of `username`. */
@@ -150,10 +155,12 @@ export async function startFakeServers(
       ]);
       const mapping = await docker(['port', containerId, '22/tcp']);
       const port = Number(mapping.split('\n')[0].split(':').pop());
+      const ip = (await docker(['inspect', '-f', '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}', containerId])).split(/\s+/)[0] ?? '';
       const server: FakeServer = {
         name: `s${i + 1}`,
         host: '127.0.0.1',
         port,
+        ip,
         username: user,
         password: user === 'root' ? ROOT_PASSWORD : DEPLOYER_PASSWORD,
         pemPath,

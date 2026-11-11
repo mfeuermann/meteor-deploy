@@ -1,20 +1,14 @@
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../../src/config/load.js';
 import { normalizeConfig } from '../../../src/config/normalize.js';
 import type { NormalizedConfig } from '../../../src/config/types.js';
-import { loadBalancingHosts, PROXY_NAME, proxyDomains, upstreamPort } from '../../../src/proxy/render.js';
+import { upstreamPort } from '../../../src/proxy/render.js';
 import { desiredEntries, formatUpstream, parseUpstream, UpstreamController, type UpstreamEntry } from '../../../src/proxy/upstream.js';
-import { tempDir } from '../../helpers/fs.js';
+import { mupUpstreamFile } from '../../oracle/mup-oracle.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
-const ejs = require('@zodern/ejs');
-const upstreamSh = join(dirname(require.resolve('mup/package.json')), 'lib/plugins/proxy/assets/upstream.sh');
 
 function lbConfig(o: { sticky?: boolean; port?: number; servers?: Record<string, string> } = {}): NormalizedConfig {
   const dir = join(here, '../../fixtures/configs/proxy-lb');
@@ -26,29 +20,6 @@ function lbConfig(o: { sticky?: boolean; port?: number; servers?: Record<string,
     raw.app.servers = Object.fromEntries(Object.keys(o.servers).map((n) => [n, {}]));
   }
   return normalizeConfig(raw, { basePath });
-}
-
-/** What MUP's upstream.sh writes into upstream/<app>: its heredoc, run by bash into a temp file. */
-function mupUpstreamFile(c: NormalizedConfig): string {
-  const script = ejs.render(
-    readFileSync(upstreamSh, 'utf8'),
-    {
-      domains: proxyDomains(c),
-      name: c.app.name,
-      setUpstream: true,
-      stickySessions: c.proxy!.stickySessions !== false,
-      proxyName: PROXY_NAME,
-      port: c.app.env.PORT,
-      hostnames: loadBalancingHosts(c),
-    },
-    { filename: upstreamSh },
-  ) as string;
-  const start = script.indexOf('cat <<"EOT"');
-  const end = script.indexOf('\nEOT\n', start) + '\nEOT\n'.length;
-  const out = join(tempDir(), 'upstream');
-  const heredoc = script.slice(start, end).replace('/opt/$PROXYNAME/upstream/$APPNAME', out);
-  execFileSync('bash', ['-c', heredoc]);
-  return readFileSync(out, 'utf8');
 }
 
 /** A recording `apply` that also counts concurrent calls. */

@@ -44,12 +44,18 @@ export function writeTestConfig(
     proxy?: Record<string, unknown>;
     /** Extra `cometDeploy` options; `strategy` above is merged in. */
     cometDeploy?: Record<string, unknown>;
+    /** The app name (default `APP_NAME`), for a second app on the same servers. */
+    name?: string;
+    /** Sets each server's `privateIp` to its container IP (the load balancing upstream). */
+    privateIp?: boolean;
   } = {},
 ): string {
+  const serversConfig = fakeServersConfig(servers, o.auth ?? 'password');
+  if (o.privateIp) for (const s of servers) Object.assign(serversConfig[s.name], { privateIp: s.ip });
   const config = {
-    servers: fakeServersConfig(servers, o.auth ?? 'password'),
+    servers: serversConfig,
     app: {
-      name: APP_NAME,
+      name: o.name ?? APP_NAME,
       path: o.appPath ?? '../app',
       servers: Object.fromEntries(servers.map((s) => [s.name, {}])),
       env: { ROOT_URL: 'http://localhost', ...o.env },
@@ -93,6 +99,50 @@ export function mup(args: string[], cwd: string): Promise<{ code: number; output
 export async function curlApp(server: FakeServer, path: string): Promise<string> {
   const r = await server.exec(`curl -s --max-time 15 http://localhost${path}`);
   return r.stdout.trim();
+}
+
+/** `curl` inside a fake server through the reverse proxy on port 80, with `host` as the Host header. */
+export async function curlVia(server: FakeServer, host: string, path: string): Promise<string> {
+  const r = await server.exec(`curl -s --max-time 15 -H 'Host: ${host}' http://localhost${path}`);
+  return r.stdout.trim();
+}
+
+let loopCount = 0;
+
+/**
+ * Sends a request through the reverse proxy on `server` every 50 ms, in the background inside
+ * the fake server, until `stop()`. Every answer other than HTTP 200 counts as failed (000 = no
+ * connection); `codes` lists the distinct failed statuses for the assertion message. It waits
+ * for the first answers before it resolves, so the command under test starts with traffic.
+ */
+export async function requestLoop(
+  server: FakeServer,
+  host: string,
+  path = '/native',
+): Promise<{ stop(): Promise<{ total: number; failed: number; codes: string[] }> }> {
+  // A new name per loop, so no file of an earlier loop is read.
+  const id = `/tmp/comet-loop-${process.pid}-${++loopCount}`;
+  await server.exec(
+    `cat > ${id}.sh <<'EOF'
+: > ${id}.log
+while [ ! -f ${id}.stop ]; do
+  curl -s -o /dev/null -w '%{http_code}\\n' --max-time 10 -H 'Host: ${host}' http://localhost${path} >> ${id}.log
+  sleep 0.05
+done
+touch ${id}.done
+EOF
+setsid nohup bash ${id}.sh > /dev/null 2>&1 &`,
+  );
+  await waitFor(async () => Number((await server.exec(`wc -l < ${id}.log 2>/dev/null || echo 0`)).stdout.trim()) >= 5, 30_000);
+  return {
+    async stop() {
+      await server.exec(`touch ${id}.stop`);
+      await waitFor(async () => (await server.exec(`test -f ${id}.done`)).code === 0, 30_000);
+      const codes = (await server.exec(`cat ${id}.log`)).stdout.split('\n').filter(Boolean);
+      const failed = codes.filter((c) => c !== '200');
+      return { total: codes.length, failed: failed.length, codes: [...new Set(failed)] };
+    },
+  };
 }
 
 /** Image id behind `mup-<app>:<tag>` on a fake server ('' when missing). */

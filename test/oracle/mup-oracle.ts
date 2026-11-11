@@ -2,8 +2,13 @@
  * Access to Meteor Up 1.5.11 (devDependency) as a test oracle. Everything here
  * runs MUP's own code paths so our ports can be compared against them.
  */
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import type { NormalizedConfig } from '../../src/config/types.js';
+import { loadBalancingHosts, PROXY_NAME, proxyDomains } from '../../src/proxy/render.js';
 
 process.env.MUP_SKIP_UPDATE_CHECK = 'true';
 
@@ -16,6 +21,35 @@ const PluginAPI = require(join(mupLib, 'plugin-api.js')).default;
 
 export function mupRequire(rel: string): any {
   return require(join(mupLib, rel));
+}
+
+/**
+ * What MUP's `upstream.sh` (proxy setup with load balancing) writes into
+ * `/opt/mup-nginx-proxy/upstream/<app>` for config `c`: its heredoc, rendered by MUP's ejs and run
+ * by bash into a temp file.
+ */
+export function mupUpstreamFile(c: NormalizedConfig): string {
+  const ejs = require('@zodern/ejs');
+  const upstreamSh = join(mupLib, 'plugins/proxy/assets/upstream.sh');
+  const script = ejs.render(
+    readFileSync(upstreamSh, 'utf8'),
+    {
+      domains: proxyDomains(c),
+      name: c.app.name,
+      setUpstream: true,
+      stickySessions: c.proxy!.stickySessions !== false,
+      proxyName: PROXY_NAME,
+      port: c.app.env.PORT,
+      hostnames: loadBalancingHosts(c),
+    },
+    { filename: upstreamSh },
+  ) as string;
+  const start = script.indexOf('cat <<"EOT"');
+  const end = script.indexOf('\nEOT\n', start) + '\nEOT\n'.length;
+  const out = join(mkdtempSync(join(tmpdir(), 'comet-upstream-')), 'upstream');
+  const heredoc = script.slice(start, end).replace('/opt/$PROXYNAME/upstream/$APPNAME', out);
+  execFileSync('bash', ['-c', heredoc]);
+  return readFileSync(out, 'utf8');
 }
 
 export function createMupApi(configPath: string, opts: { settings?: string; servers?: string } = {}): any {
