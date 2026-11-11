@@ -40,7 +40,7 @@ import {
   type ProxyFileState,
   type ProxySyncPlan,
 } from './sync.js';
-import { parseUpstream, UpstreamController, type UpstreamApply, type UpstreamEntry } from './upstream.js';
+import { UpstreamController, type UpstreamApply } from './upstream.js';
 
 /** The commands that run a rollout behind the proxy. */
 export type RolloutAction = 'deploy' | 'reconfig' | 'rollback' | 'restart';
@@ -55,7 +55,7 @@ export interface ProxyRollout {
 }
 
 /** What `finish` and `activate` use of `UpstreamController`. */
-export type UpstreamControl = Pick<UpstreamController, 'drain' | 'healthy' | 'finalize' | 'downServers' | 'failures'>;
+export type UpstreamControl = Pick<UpstreamController, 'drain' | 'healthy' | 'finalize' | 'downServers' | 'missingServers' | 'failures'>;
 
 /** The proxy I/O of a rollout; the defaults use SSH (`PROXY_ROLLOUT_DEPS`), tests replace them. */
 export interface ProxyRolloutDeps {
@@ -63,7 +63,8 @@ export interface ProxyRolloutDeps {
   applyProxySync: typeof applyProxySync;
   writeUpstreamFile: typeof writeUpstreamFile;
   sharedSettingsDrift: typeof sharedSettingsDrift;
-  upstreamController: (c: NormalizedConfig, current: UpstreamEntry[], apply: UpstreamApply) => UpstreamControl;
+  /** `files`: the upstream file per proxy server; `applyConfig`: deploy and reconfig (see UpstreamController). */
+  upstreamController: (c: NormalizedConfig, files: ReadonlyMap<string, string | null>, apply: UpstreamApply, o: { applyConfig: boolean }) => UpstreamControl;
   /** Whether the app's running container publishes a host port (false when there is none). */
   publishesHostPort: (conn: SshConnection, c: NormalizedConfig) => Promise<boolean>;
 }
@@ -79,7 +80,7 @@ export const PROXY_ROLLOUT_DEPS: ProxyRolloutDeps = {
   applyProxySync,
   writeUpstreamFile,
   sharedSettingsDrift,
-  upstreamController: (c, current, apply) => new UpstreamController(c, current, apply),
+  upstreamController: (c, files, apply, o) => new UpstreamController(c, files, apply, o),
   publishesHostPort,
 };
 
@@ -187,9 +188,9 @@ class Rollout implements ProxyRollout {
     return this.c.proxy?.loadBalancing && state.upstreamLinks.length > 0 ? 'keep' : 'none';
   }
 
-  /** `UpstreamApply` over `proxies`: writes in parallel and reports the proxies where that failed. */
-  private applyUpstream(proxies: string[]): UpstreamApply {
-    return async (content) => {
+  /** `UpstreamApply`: writes to the given proxies in parallel and reports the ones where that failed. */
+  private applyUpstream(): UpstreamApply {
+    return async (content, proxies) => {
       const res = await Promise.allSettled(
         proxies.map(async (p) => this.d.writeUpstreamFile(await this.ctx.ssh.get(p), this.c, content, verboseOutput(this.ctx.reporter, p))),
       );
@@ -227,9 +228,10 @@ class Rollout implements ProxyRollout {
     this.lbActive = !!c.proxy?.loadBalancing && keep.length > 0;
     this.blocker = zeroDowntimeBlocker(c, { loadBalancingActive: this.lbActive });
     if (keep.length) {
-      // The proxies share one upstream; the first one's is the starting point (setup writes the same file everywhere).
-      const current = parseUpstream(states.get(keep[0])!.upstream ?? '');
-      this.controller = d.upstreamController(c, current, this.applyUpstream(keep));
+      // The proxies share one upstream; deploy and reconfig move the servers to the config's
+      // address and port, restart and rollback only drain them (they run the server's start.sh).
+      const files = new Map(keep.map((p) => [p, states.get(p)!.upstream] as const));
+      this.controller = d.upstreamController(c, files, this.applyUpstream(), { applyConfig: desired !== null });
     }
     this.prepared = true;
   }
@@ -267,14 +269,19 @@ class Rollout implements ProxyRollout {
     if (!ctl) return run(mode);
     if (this.drains && (await ctl.drain(server))) this.ctx.reporter.server(server, 'drain', 'ok', 'out of load balancing');
     const result = await run(mode);
-    // A reverted server runs its previous version and passed its health check again.
-    if (result.status === 'healthy' || result.status === 'reverted') await ctl.healthy(server);
+    // A reverted server runs its previous version (and port) and passed its health check again.
+    if (result.status === 'healthy' || result.status === 'reverted') {
+      await ctl.healthy(server, { applied: result.status === 'healthy' && this.s.desired !== null });
+    }
     return result;
   }
 
   async finish(results: ActivationResult[]): Promise<string[]> {
     const warnings: string[] = [];
     if (!this.prepared) return warnings;
+    /** Per proxy: the errors, whether the file sync failed, and the servers that may be down there. */
+    const byProxy = new Map<string, { errors: Set<string>; sync: boolean; down: Set<string> }>();
+    const entry = (p: string) => byProxy.get(p) ?? byProxy.set(p, { errors: new Set(), sync: false, down: new Set() }).get(p)!;
     try {
       await this.syncAfter(results, warnings);
       if (this.controller) {
@@ -283,15 +290,34 @@ class Rollout implements ProxyRollout {
         for (const s of keepDown) {
           warnings.push(`"${s}" stays out of load balancing because it did not end healthy. Once it is healthy, run "comet-deploy restart --servers ${s}" to put it back.`);
         }
-        this.failed.push(...this.controller.failures());
+        for (const s of this.controller.missingServers()) {
+          warnings.push(`"${s}" is not in load balancing: it does not run this config yet. Run "comet-deploy deploy --servers ${s}" to add it.`);
+        }
+        for (const f of this.controller.failures()) {
+          const e = entry(f.proxy);
+          e.errors.add(f.error);
+          for (const s of f.down) e.down.add(s);
+        }
       }
     } catch (err) {
       warnings.push(`Finishing the reverse proxy failed: ${message(err)}. Run "comet-deploy proxy setup" to bring it in line.`);
     }
-    const byProxy = new Map<string, Set<string>>();
-    for (const f of this.failed) (byProxy.get(f.proxy) ?? byProxy.set(f.proxy, new Set()).get(f.proxy)!).add(f.error);
-    for (const [p, errors] of byProxy) {
-      warnings.push(`Could not update the reverse proxy on "${p}": ${[...errors].join('; ')}. Run "comet-deploy proxy setup" once it is reachable.`);
+    for (const f of this.failed) {
+      const e = entry(f.proxy);
+      e.errors.add(f.error);
+      e.sync = true;
+    }
+    for (const [p, e] of byProxy) {
+      const text = `Could not update the reverse proxy on "${p}": ${[...e.errors].join('; ')}.`;
+      const down = [...e.down].join(',');
+      if (e.down.size === 0) warnings.push(`${text} Run "comet-deploy proxy setup" once it is reachable.`);
+      else if (!e.sync) {
+        warnings.push(`${text} Its upstream may still have ${[...e.down].join(', ')} out of load balancing: once "${p}" is reachable, run "comet-deploy restart --servers ${down}".`);
+      } else {
+        warnings.push(
+          `${text} Its upstream may still have ${[...e.down].join(', ')} out of load balancing: once "${p}" is reachable, run "comet-deploy proxy setup", then "comet-deploy restart --servers ${down}".`,
+        );
+      }
     }
     return warnings;
   }

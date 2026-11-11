@@ -6,6 +6,7 @@ import { createReporter } from '../../../src/output/reporter.js';
 import { createProxyRollout, lockTargets, rolloutProxies, type ProxyRollout } from '../../../src/proxy/rollout.js';
 import type { SshConnection } from '../../../src/ssh/connection.js';
 import { tempDir } from '../../helpers/fs.js';
+import { formatUpstream, parseUpstream } from '../../../src/proxy/upstream.js';
 import { fakeProxyDeps, inSyncState } from '../../helpers/proxy.js';
 
 const mup = (proxy: string | null, extra = '') => `module.exports = {
@@ -52,6 +53,21 @@ async function roll(rollout: ProxyRollout, servers: string[], calls: string[], s
 
 const flow = (calls: string[]) => calls.filter((c) => /^(drain|run|healthy|finalize):/.test(c));
 
+/** `host:port[ down]` of every server line of an upstream file. */
+const lines = (content: string | null | undefined) => parseUpstream(content ?? '').map((e) => `${e.host}:${e.port}${e.down ? ' down' : ''}`);
+
+/** A load-balanced state whose upstream lists both servers on `port`. */
+async function lbOn(ctx: Awaited<ReturnType<typeof context>>['ctx'], port: number) {
+  const upstream = formatUpstream(ctx.config, [
+    { host: '10.0.0.1', port, down: false },
+    { host: '10.0.0.2', port, down: false },
+  ]);
+  return { ...(await inSyncState(ctx, { lb: 'keep' })), upstream };
+}
+
+const LB_4100 = "{ domains: 'a.example.com', loadBalancing: true }";
+const PORT_4100 = (cfg: string) => cfg.replace("env: { ROOT_URL", "env: { PORT: 4100, ROOT_URL");
+
 describe('createProxyRollout', () => {
   it('is null without a proxy section', async () => {
     const { ctx } = await context(mup(null));
@@ -95,7 +111,7 @@ describe('createProxyRollout', () => {
     const r = (await createProxyRollout(ctx, { action: 'deploy', strategy: 'rolling' }, fakeProxyDeps({ one: state, two: state }, calls)))!;
     await r.prepare();
     const warnings = await r.finish(await roll(r, ['one', 'two'], calls, { one: 'reverted', two: 'revert-failed' }));
-    expect(flow(calls)).toEqual(['drain:one', 'run:one:restart', 'healthy:one', 'drain:two', 'run:two:restart', 'finalize:two']);
+    expect(flow(calls)).toEqual(['drain:one', 'run:one:restart', 'healthy:one:kept', 'drain:two', 'run:two:restart', 'finalize:two']);
     expect(warnings.join('\n')).toContain('comet-deploy restart --servers two');
     // The upstream as finalize leaves it: two still down (its drain already wrote that).
     expect(calls.filter((c) => c.startsWith('upstream:')).at(-1)).toBe('upstream:two:10.0.0.1,10.0.0.2 down');
@@ -111,7 +127,7 @@ describe('createProxyRollout', () => {
     expect(flow(calls)).toEqual(['drain:one', 'run:one:restart', 'healthy:one', 'finalize:']);
   });
 
-  it('a proxy that cannot be written is named in the warnings and the rollout goes on (Review Focus 4)', async () => {
+  it('a proxy that cannot be written is named in the warnings, with the command that puts the servers back (Review Focus 4)', async () => {
     const { ctx } = await context(mup(LB));
     const calls: string[] = [];
     const state = await inSyncState(ctx, { lb: 'keep' });
@@ -120,8 +136,80 @@ describe('createProxyRollout', () => {
     const results = await roll(r, ['one', 'two'], calls);
     expect(results.map((x) => x.status)).toEqual(['healthy', 'healthy']);
     const warnings = (await r.finish(results)).join('\n');
-    expect(warnings).toMatch(/"two"/);
-    expect(warnings).toContain('connection refused');
+    expect(warnings).toContain(
+      'Could not update the reverse proxy on "two": connection refused. Its upstream may still have one, two out of load balancing: once "two" is reachable, run "comet-deploy restart --servers one,two".',
+    );
+    expect(warnings).not.toContain('proxy setup');
+  });
+
+  it('a proxy that missed the restore of a server gets it at the end (Review Focus 4)', async () => {
+    const { ctx } = await context(mup(LB));
+    const calls: string[] = [];
+    const files: Record<string, string | null> = {};
+    const state = await inSyncState(ctx, { lb: 'keep' });
+    // Proxy two: drain one, restore one, drain two, restore two (fails), finalize.
+    const deps = fakeProxyDeps({ one: state, two: state }, calls, { failWrite: 'two', failWriteCalls: [4], files });
+    const r = (await createProxyRollout(ctx, { action: 'deploy', strategy: 'canary' }, deps))!;
+    await r.prepare();
+    expect(await r.finish(await roll(r, ['one', 'two'], calls))).toEqual([]);
+    expect(files.two).toBe(state.upstream);
+  });
+
+  it('a failed canary after a PORT change leaves every server on the port it listens on', async () => {
+    const { ctx } = await context(PORT_4100(mup(LB_4100)));
+    const calls: string[] = [];
+    const files: Record<string, string | null> = {};
+    const state = await lbOn(ctx, 4000);
+    const r = (await createProxyRollout(ctx, { action: 'deploy', strategy: 'canary' }, fakeProxyDeps({ one: state, two: state }, calls, { files })))!;
+    await r.prepare();
+    // The canary reverts to its previous start.sh (port 4000); two is not activated.
+    await r.finish(await roll(r, ['one'], calls, { one: 'reverted' }));
+    expect(lines(files.one)).toEqual(['10.0.0.1:4000', '10.0.0.2:4000']);
+    expect(lines(files.two)).toEqual(['10.0.0.1:4000', '10.0.0.2:4000']);
+  });
+
+  it('a PORT change moves each server once it deployed, and the end result is the MUP file', async () => {
+    const { ctx } = await context(PORT_4100(mup(LB_4100)));
+    const calls: string[] = [];
+    const files: Record<string, string | null> = {};
+    const state = await lbOn(ctx, 4000);
+    const r = (await createProxyRollout(ctx, { action: 'deploy', strategy: 'canary' }, fakeProxyDeps({ one: state, two: state }, calls, { files })))!;
+    await r.prepare();
+    await roll(r, ['one'], calls);
+    expect(lines(files.one)).toEqual(['10.0.0.1:4100', '10.0.0.2:4000']);
+    await r.finish([...(await roll(r, ['two'], calls)), { server: 'one', status: 'healthy', durationMs: 1 }]);
+    expect(files.one).toBe(formatUpstream(ctx.config, [
+      { host: '10.0.0.1', port: 4100, down: false },
+      { host: '10.0.0.2', port: 4100, down: false },
+    ]));
+  });
+
+  it('restart and rollback after a PORT edit in mup.js keep the ports the servers run', async () => {
+    for (const action of ['restart', 'rollback'] as const) {
+      const { ctx } = await context(PORT_4100(mup(LB_4100)));
+      const calls: string[] = [];
+      const files: Record<string, string | null> = {};
+      const state = await lbOn(ctx, 4000);
+      const r = (await createProxyRollout(ctx, { action, strategy: 'canary' }, fakeProxyDeps({ one: state, two: state }, calls, { files })))!;
+      await r.prepare();
+      expect(await r.finish(await roll(r, ['one', 'two'], calls))).toEqual([]);
+      expect(flow(calls)).toEqual(['drain:one', 'run:one:restart', 'healthy:one:kept', 'drain:two', 'run:two:restart', 'healthy:two:kept', 'finalize:']);
+      expect(files.one).toBe(state.upstream);
+    }
+  });
+
+  it('a new server that did not deploy is named: it is not in load balancing', async () => {
+    const cfg = mup(LB).replace("servers: { one: {}, two: {} }", "servers: { one: {}, two: {}, three: {} }");
+    const { ctx } = await context(cfg);
+    const calls: string[] = [];
+    const state = await inSyncState(ctx, { lb: 'keep', upstream: formatUpstream(ctx.config, [
+      { host: '10.0.0.1', port: 80, down: false },
+      { host: '10.0.0.2', port: 80, down: false },
+    ]) });
+    const r = (await createProxyRollout(ctx, { action: 'deploy', strategy: 'rolling' }, fakeProxyDeps({ one: state, two: state, three: state }, calls)))!;
+    await r.prepare();
+    const warnings = await r.finish(await roll(r, ['one', 'two', 'three'], calls, { three: 'failed' }));
+    expect(warnings).toContain('"three" is not in load balancing: it does not run this config yet. Run "comet-deploy deploy --servers three" to add it.');
   });
 
   it('while load balancing is being enabled the servers switch with zero downtime: nginx still routes to the containers', async () => {

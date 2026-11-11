@@ -41,12 +41,23 @@ const describeUpstream = (proxy: string, content: string | null) =>
  * `sync:<phase>:<proxy>:<steps>`, `upstream:…`, `shared:<proxy>`, `publishes:<server>` (`o.publishes`
  * lists the servers whose container publishes a host port), and the controller's
  * `drain:<s>`, `healthy:<s>`, `finalize:<keepDown>` (a real `UpstreamController` without the wait).
+ * `o.files` receives the upstream content each proxy holds after a successful write; `o.failWrite`
+ * makes the upstream writes to that proxy fail (only its `o.failWriteCalls`-th writes, 1-based,
+ * when given).
  */
 export function fakeProxyDeps(
   states: Record<string, ProxyFileState | Error>,
   calls: string[],
-  o: { failWrite?: string; failAfter?: boolean; drift?: boolean; publishes?: string[] } = {},
+  o: {
+    failWrite?: string;
+    failWriteCalls?: number[];
+    failAfter?: boolean;
+    drift?: boolean;
+    publishes?: string[];
+    files?: Record<string, string | null>;
+  } = {},
 ): ProxyRolloutDeps {
+  const writes = new Map<string, number>();
   return {
     readProxyFileState: async (conn) => {
       const s = states[conn.name];
@@ -60,7 +71,10 @@ export function fakeProxyDeps(
     },
     writeUpstreamFile: async (conn, _c, content) => {
       calls.push(describeUpstream(conn.name, content));
-      if (conn.name === o.failWrite) throw new Error('connection refused');
+      const n = (writes.get(conn.name) ?? 0) + 1;
+      writes.set(conn.name, n);
+      if (conn.name === o.failWrite && (!o.failWriteCalls || o.failWriteCalls.includes(n))) throw new Error('connection refused');
+      if (o.files) o.files[conn.name] = content;
     },
     sharedSettingsDrift: async (conn) => {
       calls.push(`shared:${conn.name}`);
@@ -70,13 +84,14 @@ export function fakeProxyDeps(
       calls.push(`publishes:${conn.name}`);
       return o.publishes?.includes(conn.name) ?? false;
     },
-    upstreamController: (c, current, apply) => {
-      const real = new UpstreamController(c, current, apply, { waitMs: 0 });
+    upstreamController: (c, files, apply, opts) => {
+      const real = new UpstreamController(c, files, apply, { ...opts, waitMs: 0 });
       return {
         drain: (s) => (calls.push(`drain:${s}`), real.drain(s)),
-        healthy: (s) => (calls.push(`healthy:${s}`), real.healthy(s)),
+        healthy: (s, h) => (calls.push(`healthy:${s}${h.applied ? '' : ':kept'}`), real.healthy(s, h)),
         finalize: (keepDown) => (calls.push(`finalize:${[...keepDown].join(',')}`), real.finalize(keepDown)),
         downServers: () => real.downServers(),
+        missingServers: () => real.missingServers(),
         failures: () => real.failures(),
       };
     },
