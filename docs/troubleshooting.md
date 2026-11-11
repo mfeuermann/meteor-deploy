@@ -62,6 +62,7 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [The shared proxy settings differ](#the-shared-proxy-settings-differ)
 - [Load balancing was not enabled](#load-balancing-was-not-enabled)
 - [Updating the reverse proxy failed](#updating-the-reverse-proxy-failed)
+- [A load-balanced server is down for longer](#a-load-balanced-server-is-down-for-longer)
 - [No Let's Encrypt certificate](#no-lets-encrypt-certificate)
 
 ---
@@ -676,6 +677,12 @@ Warning: "three" is not in load balancing: it does not run this config yet. Run 
 ```
 
 A new server, or a server whose `privateIp` or `host` changed, joins the upstream only once it is healthy with the new config. It did not get there in this run (it failed, was reverted or was not selected); fix it and deploy it again.
+
+### A load-balanced server is down for longer
+
+With `proxy.loadBalancing`, `deploy`, `reconfig`, `restart` and `rollback` lock every app server and read the proxy on every proxy server, also with `--servers`, because they all share one upstream. A server that cannot be reached therefore stops them (`Cannot connect …`, or `The reverse proxy is not ready:`), even `restart --servers` of a healthy server.
+
+If the server stays down for a while, take it out of the config: remove it from `app.servers` (and from `proxy.servers`, if it is listed there) and run `comet-deploy deploy`. The deploy removes it from the upstream on the other proxy servers, so nginx stops sending requests there. When the server is back, add it to the config again and deploy: it joins the upstream once it is healthy.
 
 ### No Let's Encrypt certificate
 
