@@ -1,3 +1,8 @@
+/**
+ * The deploy history kept on every server in `/opt/<app>/config/deploy-history.jsonl`: building
+ * the entries the pipelines append, merging the per-server files for `history`, and reading which
+ * versions ran healthy, which drives pruning and the automatic rollback target.
+ */
 import { spawnSync } from 'node:child_process';
 import { hostname, userInfo } from 'node:os';
 import type { readGitInfo } from '../build/version.js';
@@ -6,7 +11,10 @@ import type { HistoryEntry } from '../remote/ops.js';
 
 let cachedUser: string | undefined;
 
-/** git `user.name`, otherwise the OS user. */
+/**
+ * Who deploys, for history entries and lock records: git `user.name` (read once per process with
+ * a local `git config`), otherwise the OS user.
+ */
 export function deployerName(): string {
   if (cachedUser) return cachedUser;
   const git = spawnSync('git', ['config', 'user.name'], { encoding: 'utf8' });
@@ -21,6 +29,11 @@ export function deployerName(): string {
   return cachedUser;
 }
 
+/**
+ * One history entry for one server. `startedAt` is the start of the whole run and `servers` all
+ * servers of the run, the same on every server, so `mergeHistory` can join the entries again.
+ * `version` is null when the action did not name one (reconfig, restart, rollback to :previous).
+ */
 export function makeHistoryEntry(o: {
   action: HistoryEntry['action'];
   version: string | null;
@@ -45,9 +58,16 @@ export function makeHistoryEntry(o: {
   return e;
 }
 
+/**
+ * One run as seen by all servers: `reportedBy` lists the servers whose history has the entry,
+ * `resultBy` each one's result. The other fields come from the first server read.
+ */
 export type MergedHistoryEntry = HistoryEntry & { reportedBy: string[]; resultBy: Record<string, HistoryEntry['result']> };
 
-/** One row per deploy (same startedAt + version + action), newest first; `resultBy` keeps each server's result. */
+/**
+ * One row per run (same startedAt + version + action), newest first, at most `limit` rows;
+ * `resultBy` keeps each server's result. ISO 8601 UTC timestamps sort correctly as strings.
+ */
 export function mergeHistory(perServer: Record<string, HistoryEntry[]>, limit: number): MergedHistoryEntry[] {
   const byKey = new Map<string, MergedHistoryEntry>();
   for (const [server, entries] of Object.entries(perServer)) {

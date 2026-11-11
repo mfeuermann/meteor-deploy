@@ -1,3 +1,32 @@
+/**
+ * Orchestrates every command that changes the app on the servers: `deploy` (plus the hidden
+ * `meteor build` / `meteor push`, which stop early), `reconfig`, `restart` and `rollback`, and the
+ * plain `start`, `stop` and `meteor envconfig`.
+ *
+ * `deployPipeline` runs these phases, in this order:
+ *
+ *  1. Checks: unsupported config sections, the version name, preflight (locally Docker, buildx and
+ *     meteor; on every server in parallel SSH, sudo, Docker, architecture, disk space, reverse port
+ *     forwarding and the deploy lock), the settings and one render of every server's env.list.
+ *     Every problem is reported here, before anything is built or changed.
+ *  2. Build: once per target platform, locally, or reused from the build cache.
+ *     `meteor build` stops here.
+ *  3. Lock: the deploy lock on every server. Everything before this step only reads from the
+ *     servers; everything after it runs in a `try` whose `finally` releases the locks.
+ *  4. Distribute: push to the local registry, then every server pulls the missing layers through
+ *     an SSH reverse tunnel. The running app is not touched yet. `meteor push` stops here.
+ *  5. Activate: server by server according to the strategy (canary, rolling or parallel); see
+ *     `activateServer` for snapshot → retag → write config → start → health check → revert.
+ *  6. History: one entry per server that was activated.
+ *  7. Prune: old version tags and dangling images, on the servers that ended healthy.
+ *  8. Unlock (`finally`): release the locks and this deploy's lease on the local registry.
+ *  9. Summary: the per-server table, the log tails of failed servers and a warning when the
+ *     servers ended on different versions.
+ *
+ * `reconfig`, `restart` and `rollback` share the lock → strategy → history → unlock part
+ * (`lockedRollout`). Every step runs inside `ctx.runner.run()` under MUP's command key and in MUP's
+ * nesting, so a hook configured for any of them is refused instead of silently skipped.
+ */
 import { hostname } from 'node:os';
 import { buildApp, type BuiltImage } from '../build/index.js';
 import { makeVersion, readGitInfo } from '../build/version.js';
@@ -31,6 +60,10 @@ import { runPreflight } from './preflight.js';
 import { chooseRollbackTarget, type RollbackTarget } from './rollback.js';
 import { runStrategy } from './strategy.js';
 
+/**
+ * Everything the pipelines call that touches Docker, SSH, the servers or git. The defaults are
+ * the real implementations (`DEFAULT_DEPS`); tests replace single functions.
+ */
 export interface PipelineDeps {
   startServer: typeof startServer;
   preflight: typeof runPreflight;
@@ -49,13 +82,25 @@ export interface PipelineDeps {
   pruneImages: typeof pruneImages;
   readHistory: typeof readHistory;
   readGitInfo: typeof readGitInfo;
+  /**
+   * Aborted by the CLI on the first Ctrl+C / SIGTERM: the running step finishes, no further
+   * server is started, the locks are released and the command exits with code 130.
+   */
   signal?: AbortSignal;
 }
 
+/** Result of `deployPipeline` and `rollbackPipeline`. */
 export interface DeployOutcome {
+  /**
+   * Deploy: the version of the image (comma-separated when the platforms came from different
+   * builds). Rollback: the `--to` version, else the target all servers share, else `previous`.
+   */
   version: string;
+  /** One result per server the strategy reached. */
   results: ActivationResult[];
+  /** Servers the strategy did not reach because an earlier server failed or the run was aborted. */
   skipped: string[];
+  /** True when every selected server ended healthy (always true when `stopAfter` ended the run). */
   ok: boolean;
 }
 
@@ -79,7 +124,11 @@ const DEFAULT_DEPS: PipelineDeps = {
   readGitInfo,
 };
 
-/** Config parts whose runtime is not in phase 1. */
+/**
+ * Refuses the config sections this release cannot run yet (`proxy`, `mongo`,
+ * `privateDockerRegistry`, the `registry` / `stream` transfers) with a `CometError`. Called before
+ * anything else, so such a config fails up front instead of halfway through a deploy.
+ */
 export function assertPhase1Supported(ctx: CommandContext): void {
   const c = ctx.config;
   const phase2 = (what: string) => new CometError(`${what} is not supported yet (planned for phase 2 of comet-deploy).`);
@@ -90,22 +139,31 @@ export function assertPhase1Supported(ctx: CommandContext): void {
 }
 
 /**
- * Renders the env.list of every server once, so a config Docker could not read
- * (e.g. METEOR_SETTINGS over 64 KiB) fails before the build and before any
- * server is locked or changed.
+ * Renders the env.list of every server once and discards it, so a config Docker could not read
+ * (e.g. METEOR_SETTINGS over 64 KiB) fails before the build and before any server is locked or
+ * changed. Throws `CometError`.
  */
 async function checkEnvLists(ctx: CommandContext, servers: string[], settings: unknown): Promise<void> {
   for (const s of servers) await renderEnvList(ctx.config, settings, s, { cwd: ctx.cwd, basePath: ctx.basePath });
 }
 
+/**
+ * The lock holder record stored in the server's `deploy.lock`: who runs `command`, from which
+ * machine and process, and since when. Shown to anyone who finds the lock taken.
+ */
 export function lockInfo(command: string): LockInfo {
   return { user: deployerName(), machine: hostname(), pid: process.pid, startedAt: new Date().toISOString(), command, tool: TOOL_ID };
 }
 
+/**
+ * Throws the abort `CometError` (exit code 130) once `signal` is aborted. Called between steps,
+ * never inside one, so the step that was running when the user pressed Ctrl+C finishes first.
+ */
 function aborted(signal?: AbortSignal, what = 'Deploy'): void {
   if (signal?.aborted) throw new CometError(`${what} aborted`, { exitCode: 130, hint: 'Servers that were not reached kept their previous state.' });
 }
 
+/** The history result of an activation status; `revert-failed` counts as `failed`. */
 const historyResult = (s: ActivationResult['status']): HistoryEntry['result'] => (s === 'healthy' ? 'success' : s === 'reverted' ? 'reverted' : 'failed');
 
 /** How many history entries are read to learn which versions ran on a server. */
@@ -120,11 +178,15 @@ async function serverVersionOutcomes(d: Pick<PipelineDeps, 'readHistory'>, conn:
   return entries.length ? versionOutcomes(entries) : null;
 }
 
+/** The lock holder for messages (also used by `status` and `unlock`). */
 export function describeHolder(h: LockInfo | undefined | null): string {
   return h ? `${h.user}@${h.machine} ("${h.command}" since ${h.startedAt})` : 'an unknown process';
 }
 
-/** `--force-unlock`: releases existing locks (naming the holder) before acquiring. */
+/**
+ * `--force-unlock`: releases the existing locks before acquiring, with a warning that names each
+ * holder so it is clear whose deploy may still be running.
+ */
 async function forceUnlock(ctx: CommandContext, servers: string[], d: Pick<PipelineDeps, 'readLock' | 'releaseLock'>): Promise<void> {
   await Promise.all(
     servers.map(async (s) => {
@@ -137,7 +199,12 @@ async function forceUnlock(ctx: CommandContext, servers: string[], d: Pick<Pipel
   );
 }
 
-/** Locks all servers; on any failure releases what was acquired. Returns the locked servers. */
+/**
+ * Takes the deploy lock on every server in parallel, all or nothing: when any server is locked by
+ * someone else or cannot be reached, the locks taken so far are released again and a `CometError`
+ * lists every problem. Returns the servers that were locked (none when `cometDeploy.lock` is off);
+ * that list is what the caller passes to `releaseServers`.
+ */
 export async function lockServers(
   ctx: CommandContext,
   servers: string[],
@@ -166,6 +233,10 @@ export async function lockServers(
   return locked;
 }
 
+/**
+ * Releases the deploy lock on `servers`. It runs in `finally` blocks, so it never throws: a server
+ * whose lock cannot be released only gets a warning with the command that releases it by hand.
+ */
 export async function releaseServers(ctx: CommandContext, servers: string[], d: Pick<PipelineDeps, 'releaseLock'>): Promise<void> {
   await Promise.all(
     servers.map(async (s) => {
@@ -178,7 +249,12 @@ export async function releaseServers(ctx: CommandContext, servers: string[], d: 
   );
 }
 
-/** Prints the per-server table and, when servers differ, the mixed-versions warning. */
+/**
+ * Prints the per-server summary table, the last log lines of every server that did not end
+ * healthy and, when some servers ended healthy while others did not (or were skipped), a warning:
+ * a partial rollout must never pass for a success. `o.mixed` words that warning for commands other
+ * than deploy.
+ */
 export function reportOutcome(
   ctx: CommandContext,
   rows: SummaryRow[],
@@ -204,8 +280,13 @@ export function reportOutcome(
   }
 }
 
+/** Summary-table status of each activation status. */
 const ROW_STATUS: Record<ActivationResult['status'], ServerStatus> = { healthy: 'ok', reverted: 'reverted', 'revert-failed': 'failed', failed: 'failed' };
 
+/**
+ * Summary-table rows: one per result (with the error as the note unless it is healthy), then one
+ * per skipped server with `skipNote`. `versionOf` fills the version column (null leaves it empty).
+ */
 export function summaryRows(
   results: ActivationResult[],
   skipped: string[],
@@ -225,9 +306,14 @@ export function summaryRows(
 }
 
 /**
- * The deploy pipeline (spec §5): preflight → build once → lock → push to the
- * local registry → distribute through tunnels → activate by strategy →
- * history → prune → unlock.
+ * `deploy`: preflight → build once → lock → push to the local registry → distribute through
+ * tunnels → activate by strategy → history → prune → unlock → summary (the module header
+ * describes each phase). `stopAfter: 'build'` / `'push'` implement the hidden `meteor build` /
+ * `meteor push`.
+ *
+ * Servers that fail their health check do not make it throw: they are in the returned outcome
+ * (`ok: false`). It throws `CometError` for problems found before activation (preflight, build,
+ * lock, distribution) and when aborted.
  */
 export async function deployPipeline(
   ctx: CommandContext,
@@ -242,6 +328,8 @@ export async function deployPipeline(
 
   const servers = ctx.appServers();
   if (servers.length === 0) throw new CometError('No app servers selected.');
+  // `startedAt` names the version (UTC timestamp + git sha) and is also the `startedAt` of every
+  // history entry of this run, which is how `history` joins the entries of different servers.
   const startedAt = new Date();
   const appPath = resolveAppPath(c, ctx.basePath);
   const git = await d.readGitInfo(appPath);
@@ -249,41 +337,63 @@ export async function deployPipeline(
   const strategy = o.strategy ?? c.cometDeploy.strategy;
 
   return run.run('meteor.deploy', async () => {
+    // A held lock only matters when this run will take one: `meteor build` never locks, and
+    // `--force-unlock` releases the lock anyway.
     const pre = await r.phase('Preflight', () => d.preflight(ctx, servers, { needsBuild: true, checkLocks: c.cometDeploy.lock && o.stopAfter !== 'build' && !o.forceUnlock }));
+    // Loaded before the build, as MUP's deploy does first: a missing or invalid settings file
+    // fails now, and its values are registered as secrets before any later output is printed.
     const settings = ctx.getSettings();
     await checkEnvLists(ctx, servers, settings);
     let built: BuiltImage[] = [];
     let results: ActivationResult[] = [];
     let skipped: string[] = [];
 
+    // In MUP `meteor.push` is build + upload + `meteor.prepareBundle`. Here the lock sits between
+    // the build and the distribution, so `meteor.push` wraps only the build and
+    // `meteor.prepareBundle` is entered after the lock; the keys still run in MUP's order.
     await run.run('meteor.push', async () => {
       built = await run.run('meteor.build', () =>
         r.phase('Build', () => d.buildApp(ctx, { platforms: pre.platforms, version, cachedBuild: o.cachedBuild, forceBuild: o.forceBuild })),
       );
     });
-    // After a build-cache hit the image carries the version of the build it came from (M1).
+    // A build-cache hit reuses the image of an earlier build, which keeps that build's version
+    // tag, so the version reported and deployed is the image's, not the one generated above.
+    // Platforms reused from different builds can differ, hence the join.
     const deployedVersion = [...new Set(built.map((b) => b.version))].join(', ') || version;
     if (o.stopAfter === 'build') return { version: deployedVersion, results, skipped, ok: true };
     aborted(d.signal);
 
+    // Each server gets the image built for its platform (detected by preflight).
     const imageFor = (s: string): BuiltImage => {
       const b = built.find((x) => x.platform === pre.platformByServer[s]);
       if (!b) throw new CometError(`No image was built for ${pre.platformByServer[s]} (server "${s}").`);
       return b;
     };
+    // The tag the server keeps the image under: `mup-<app>:<version>`, next to MUP's
+    // `:latest` / `:previous`, so it stays available for `rollback`.
     const targetTag = (s: string) => `${localImageRepo(c)}:${imageFor(s).version}`;
 
+    // Everything above only reads from the servers. The lock is taken only now because the build
+    // does not touch them and can take minutes, which would block every other deploy, rollback or
+    // restart for that long; preflight has already reported a held lock before the build.
+    // `lockServers` cleans up after itself when it fails, so it stays outside the `try`.
     const locked = await r.phase('Lock', () => lockServers(ctx, servers, 'deploy', d, { force: o.forceUnlock }));
+    // Tells the `finally` whether this deploy holds a lease on the shared local registry.
     let registryStarted = false;
     try {
+      // Inside the `try`, so an abort that arrived while locking still releases the locks.
       aborted(d.signal);
       await run.run('meteor.prepareBundle', () =>
         r.phase('Distribute', async () => {
           const { port } = await d.ensureLocalRegistry();
           registryStarted = true;
+          // One push per platform. The registry keeps its layers between deploys, so only
+          // changed layers are uploaded.
           const refs = new Map<string, string>();
           for (const b of built) refs.set(b.platform, await d.pushToLocalRegistry(b.localTag, port, (l) => r.verboseLine(null, l)));
           aborted(d.signal);
+          // Distribution only adds an image next to the running app. A failure on any server
+          // fails the whole deploy here, before activation, so no server has been changed.
           const dist = await Promise.allSettled(
             servers.map(async (s) => {
               r.server(s, 'distribute', 'running');
@@ -309,6 +419,9 @@ export async function deployPipeline(
       aborted(d.signal);
       if (o.stopAfter === 'push') return { version: deployedVersion, results, skipped, ok: true };
 
+      // MUP's deploy continues with `default.reconfig` → `meteor.envconfig` → `meteor.start`.
+      // One activation per server does all three, but the keys are entered in the same nesting
+      // so that hooks on them are refused.
       ({ results, skipped } = await run.run('default.reconfig', () =>
         run.run('meteor.envconfig', () =>
           run.run('meteor.start', () =>
@@ -328,6 +441,9 @@ export async function deployPipeline(
         ),
       ));
 
+      // History before pruning: pruning reads it to find the versions that never ran healthy.
+      // Every server the strategy reached gets an entry, failed and reverted ones included;
+      // skipped servers were not touched and get none. A failed write only warns.
       const durationMs = Date.now() - startedAt.getTime();
       await Promise.all(
         results.map(async (res) => {
@@ -339,6 +455,10 @@ export async function deployPipeline(
           }
         }),
       );
+      // Pruning runs only where the new version is healthy; a server that failed or was reverted
+      // keeps all its images for a manual rollback. Versions that never ran healthy on a server
+      // do not use up one of its `keepVersions` slots. Removing version tags can leave untagged
+      // images behind, which `pruneImages` removes. Pruning is housekeeping: errors only warn.
       await Promise.all(
         results
           .filter((res) => res.status === 'healthy')
@@ -355,10 +475,14 @@ export async function deployPipeline(
           }),
       );
     } finally {
+      // Runs on success, on any error and on abort (including the `meteor push` return above).
+      // Neither call throws. `stopLocalRegistry` drops this deploy's lease and stops the
+      // container only when no other deploy on this machine still holds one.
       await releaseServers(ctx, locked, d);
       if (registryStarted) await d.stopLocalRegistry().catch(() => {});
     }
 
+    // The summary is printed even after an abort; the abort error (exit code 130) follows it.
     reportOutcome(ctx, summaryRows(results, skipped, (s) => imageFor(s).version), results, skipped, deployedVersion);
     aborted(d.signal);
     const ok = skipped.length === 0 && results.every((x) => x.status === 'healthy');
@@ -366,13 +490,17 @@ export async function deployPipeline(
   });
 }
 
+/** Result of `reconfig` and `restart`: `DeployOutcome` without a version. */
 export interface LifecycleOutcome {
   results: ActivationResult[];
   skipped: string[];
   ok: boolean;
 }
 
-/** Appends one history entry per server that was touched; failures only warn. */
+/**
+ * Appends one history entry to every server the strategy reached. Nothing here fails the
+ * command: git info is optional and a failed write only warns.
+ */
 async function writeHistory(
   ctx: CommandContext,
   d: Pick<PipelineDeps, 'appendHistory' | 'readGitInfo'>,
@@ -392,7 +520,12 @@ async function writeHistory(
   );
 }
 
-/** Lock → `fn` by strategy → history → unlock (locks are released even when `fn` throws). */
+/**
+ * The common part of `reconfig`, `restart` and `rollback`: lock → `fn` on each server by strategy
+ * → history → unlock. The locks are released even when something throws. `fn` handles one server;
+ * if it throws, `runStrategy` records a failed result instead. Printing the summary is left to
+ * the caller, which knows how to word it.
+ */
 async function lockedRollout(
   ctx: CommandContext,
   o: { action: 'reconfig' | 'restart' | 'rollback'; strategy?: CometOptions['strategy']; phase: string; forceUnlock?: boolean; versionOf?: (s: string) => string | null },
@@ -419,6 +552,7 @@ async function lockedRollout(
  * `reconfig` (MUP `default.reconfig` → `meteor.envconfig` → `meteor.start`):
  * writes start.sh/env.list from the current config and settings, restarts the
  * app by strategy with a health check, and restores the previous config on failure.
+ * The image does not change.
  */
 export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy']; forceUnlock?: boolean }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
@@ -426,6 +560,8 @@ export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: Come
   return ctx.runner.run('default.reconfig', () =>
     ctx.runner.run('meteor.envconfig', () =>
       ctx.runner.run('meteor.start', async () => {
+        // Before the lock, as in deploy: a settings file or env.list that cannot be used fails
+        // while no server is locked yet.
         const settings = ctx.getSettings();
         await checkEnvLists(ctx, ctx.appServers(), settings);
         const outcome = await lockedRollout(ctx, { action: 'reconfig', strategy: o.strategy, phase: 'Reconfigure', forceUnlock: o.forceUnlock }, d, async (s) =>
@@ -448,6 +584,8 @@ export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: Come
 /**
  * `restart` (MUP `meteor.restart`): stop + start + health check per server by
  * strategy. Nothing changes on the server, so there is nothing to revert.
+ * MUP restarts server after server; here the strategy decides, and the deploy
+ * lock keeps a restart from running into a deploy.
  */
 export async function restartPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy']; forceUnlock?: boolean }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
@@ -467,7 +605,10 @@ export async function restartPipeline(ctx: CommandContext, o: { strategy?: Comet
   });
 }
 
-/** `stop` (MUP `meteor.stop`): `meteor-stop.sh` on all app servers in parallel. */
+/**
+ * `stop` (MUP `meteor.stop`): `meteor-stop.sh` on all app servers in parallel, without lock or
+ * strategy, as in MUP. Throws one `CometError` that lists every server that failed.
+ */
 export async function stopAll(ctx: CommandContext): Promise<void> {
   const servers = ctx.appServers();
   const script = await renderMeteorStop(ctx.config);
@@ -483,7 +624,11 @@ export async function stopAll(ctx: CommandContext): Promise<void> {
   if (failed.length) throw new CometError(`Stopping the app failed on ${failed.length} server(s):\n${failed.map((f) => `  - ${f}`).join('\n')}`);
 }
 
-/** `start` (MUP `meteor.start`): `meteor-start.sh` + health check on all app servers in parallel. */
+/**
+ * `start` (MUP `meteor.start`): `meteor-start.sh` + health check on all app servers in parallel,
+ * without lock or strategy, as in MUP. Never throws: a server that cannot be reached becomes a
+ * failed result, and the caller turns failed results into the exit code.
+ */
 export async function startAll(ctx: CommandContext, deps: Partial<Pick<PipelineDeps, 'startServer'>> = {}): Promise<ActivationResult[]> {
   const start = deps.startServer ?? startServer;
   const results = await Promise.all(
@@ -502,7 +647,10 @@ export async function startAll(ctx: CommandContext, deps: Partial<Pick<PipelineD
   return results;
 }
 
-/** Hidden `meteor envconfig`: writes start.sh/env.list on all app servers without restarting. */
+/**
+ * Hidden `meteor envconfig`: writes start.sh/env.list on all app servers without restarting, as
+ * MUP's does. No lock, no snapshot: the new files take effect on the next start.
+ */
 export async function envconfigAll(ctx: CommandContext): Promise<void> {
   assertPhase1Supported(ctx);
   await ctx.runner.run('meteor.envconfig', async () => {
@@ -519,6 +667,7 @@ export async function envconfigAll(ctx: CommandContext): Promise<void> {
     for (const f of files) {
       const conn = await ctx.ssh.get(f.s);
       await conn.writeFile(`${appDir(ctx.config)}/config/start.sh`, f.startSh);
+      // env.list carries the settings and other secrets: readable by its owner only.
       await conn.writeFile(`${appDir(ctx.config)}/config/env.list`, f.envList, 0o600);
       ctx.reporter.server(f.s, 'envconfig', 'ok');
     }
@@ -526,9 +675,11 @@ export async function envconfigAll(ctx: CommandContext): Promise<void> {
 }
 
 /**
- * `rollback [--to <version>]` (spec §11): lock → per server by strategy: pick
- * the target from the kept versions → retag → start.sh → health check →
- * history → unlock. Only the image changes; the current config stays.
+ * `rollback [--to <version>]`: lock → per server by strategy: pick the target
+ * from the versions kept on that server → retag → start.sh → health check →
+ * history → unlock. Nothing is built or transferred. Only the image changes;
+ * the current config stays, because an old env.list could bring back secrets
+ * that were rotated since. A config is changed with `reconfig`.
  */
 export async function rollbackPipeline(
   ctx: CommandContext,
@@ -537,7 +688,10 @@ export async function rollbackPipeline(
 ): Promise<DeployOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
   assertPhase1Supported(ctx);
+  // The target chosen on each server, for the summary table and the history entries.
   const targets = new Map<string, RollbackTarget>();
+  // A server's target version tag; null for `:previous` (an image without a version tag, e.g.
+  // one deployed by MUP) and when there is no target.
   const tagOf = (s: string): string | null => {
     const t = targets.get(s);
     return t?.kind === 'version' ? t.tag : null;
@@ -550,6 +704,8 @@ export async function rollbackPipeline(
       async (s) => {
         const started = Date.now();
         const conn = await ctx.ssh.get(s);
+        // The history is only needed for the automatic choice, which skips versions that never
+        // ran healthy on this server; an explicit `--to` is taken as given.
         const [versions, outcomes] = await Promise.all([
           d.listVersions(conn, localImageRepo(ctx.config)),
           o.to ? Promise.resolve(null) : serverVersionOutcomes(d, conn, ctx.config.app.name),
@@ -576,6 +732,7 @@ export async function rollbackPipeline(
         `Fix the problem and run "comet-deploy rollback --servers ${others.join(',')}"${o.to ? ` --to ${o.to}` : ''}.`,
     });
     aborted(d.signal, 'Rollback');
+    // One version is reported when every server rolled back to the same target.
     const labels = [...new Set(outcome.results.map((r) => label(r.server)).filter((x): x is string => !!x))];
     return { version: o.to ?? (labels.length === 1 ? labels[0] : 'previous'), ...outcome };
   });

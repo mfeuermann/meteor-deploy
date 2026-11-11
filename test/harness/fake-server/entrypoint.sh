@@ -2,6 +2,8 @@
 # Env: ROOT_PASSWORD, DEPLOYER_PASSWORD, AUTHORIZED_KEY, ALLOW_TCP_FORWARDING (yes|no)
 set -e
 
+# Both users accept their own password and the same public key, so tests can use either
+# authentication method with either user.
 echo "root:${ROOT_PASSWORD:?}" | chpasswd
 echo "deployer:${DEPLOYER_PASSWORD:?}" | chpasswd
 for home in /root /home/deployer; do
@@ -12,6 +14,7 @@ for home in /root /home/deployer; do
 done
 chown -R deployer:deployer /home/deployer/.ssh
 
+# AllowTcpForwarding=no simulates a server that blocks the SSH reverse tunnel.
 cat > /etc/ssh/sshd_config.d/comet-test.conf <<CONF
 PermitRootLogin yes
 PasswordAuthentication yes
@@ -25,5 +28,7 @@ if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
   sed -e 's/ / +/g' -e 's/^/+/' < /sys/fs/cgroup/cgroup.controllers > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || :
 fi
 
+# dockerd in the background; sshd replaces this shell as the container's main process
+# (-D: no daemonizing, -e: log to stderr, i.e. `docker logs`).
 dockerd > /var/log/dockerd.log 2>&1 &
 exec /usr/sbin/sshd -D -e

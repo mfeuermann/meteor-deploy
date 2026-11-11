@@ -1,9 +1,17 @@
+/**
+ * Placeholders for the MUP commands that comet-deploy does not implement yet: `proxy …`,
+ * `mongo …`, `ssh` and `meteor debug`.
+ */
 import { CometError } from '../../core/errors.js';
 import type { NoConfigCommand } from '../registry.js';
 
 /**
  * MUP commands that belong to phase 2 of comet-deploy. They are registered so
  * that a MUP user gets a clear answer instead of yargs' "Unknown argument".
+ *
+ * The placeholder loads no config and accepts any argument or option (`strict: false`), so
+ * `proxy logs --tail 5` gets the same answer. `run` always throws a `CometError` (exit 1)
+ * that quotes the command words as typed (`"proxy logs"`).
  */
 function planned(command: string, describe: string | false, group?: NoConfigCommand['group']): NoConfigCommand {
   return {
@@ -21,6 +29,7 @@ function planned(command: string, describe: string | false, group?: NoConfigComm
   };
 }
 
+/** Listed in `--help`, except `meteor debug`, which is hidden like every `meteor …` command. */
 export const PHASE2_COMMANDS: NoConfigCommand[] = [
   planned('proxy [command..]', 'Reverse proxy commands (planned for phase 2)'),
   planned('mongo [command..]', 'MongoDB commands (planned for phase 2)'),

@@ -1,5 +1,14 @@
+/**
+ * Wrappers around the local `docker` CLI used by preflight and the build: daemon availability,
+ * the platforms of the buildx builder, image ids, the base image pull and the image build. Every
+ * call runs `docker` without a shell.
+ */
 import { run } from './exec.js';
 
+/**
+ * Whether the local Docker daemon answers, not only the CLI: `docker version` prints the server
+ * version only when it can reach the daemon. Never throws.
+ */
 export async function dockerAvailable(): Promise<{ ok: boolean; version?: string; error?: string }> {
   const r = await run('docker', ['version', '--format', '{{.Server.Version}}']);
   if (r.code === 0 && r.stdout.trim()) return { ok: true, version: r.stdout.trim() };
@@ -7,6 +16,11 @@ export async function dockerAvailable(): Promise<{ ok: boolean; version?: string
   return { ok: false, error: r.stderr.trim() || `docker version exited with ${r.code}` };
 }
 
+/**
+ * Platforms from the `Platforms:` lines of `docker buildx inspect` (one line per builder node),
+ * without duplicates. buildx marks platforms that were configured explicitly with a trailing `*`,
+ * which is dropped.
+ */
 export function parseBuildxPlatforms(stdout: string): string[] {
   const out: string[] = [];
   for (const line of stdout.split('\n')) {
@@ -20,7 +34,10 @@ export function parseBuildxPlatforms(stdout: string): string[] {
   return out;
 }
 
-/** Platforms the current buildx builder can build for (from `docker buildx inspect`). */
+/**
+ * Platforms the current buildx builder can build for (from `docker buildx inspect`); empty when
+ * buildx is missing or fails. A foreign platform appears here only when emulation is set up.
+ */
 export async function buildxPlatforms(): Promise<string[]> {
   const r = await run('docker', ['buildx', 'inspect']);
   return r.code === 0 ? parseBuildxPlatforms(r.stdout) : [];
@@ -38,7 +55,17 @@ export async function pullImage(image: string, platform: string, onLine?: (l: st
   return r.code === 0;
 }
 
-/** `docker buildx build --load` with the Dockerfile on stdin. */
+/**
+ * `docker buildx build --load` with the Dockerfile on stdin (`-f -`), so no Dockerfile is written
+ * into the build context. `--load` puts the result into the local image store, where the
+ * registry push takes it from (a buildx builder with a non-default driver would otherwise keep
+ * it only in its own cache). `--progress plain` gives line-based output for the verbose log.
+ *
+ * Returns the image id of the new tag and the full build log.
+ *
+ * @throws CometError when the build fails (with the last 60 log lines) or the tag is missing
+ *   afterwards.
+ */
 export async function buildImage(o: {
   contextDir: string;
   dockerfile: string;

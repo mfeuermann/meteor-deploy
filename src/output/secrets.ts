@@ -1,9 +1,18 @@
+/**
+ * Secret masking for all output. collectSecrets gathers the values from the config and the
+ * settings that must never be printed (env values, passwords, settings), and the reporter
+ * replaces them with `***` in every line, including verbose remote output and error messages.
+ */
 import type { NormalizedConfig } from '../config/types.js';
 
+// Shorter values are not masked: they would also match ordinary text and garble the output.
 const MIN_SECRET_LENGTH = 4;
 const MASK = '***';
 
-/** Replaces every occurrence of each secret (longest first) with `***`. */
+/**
+ * Replaces every occurrence of each secret with `***`. Longest first, so a secret that
+ * contains a shorter one is masked whole instead of leaving its remainder visible.
+ */
 export function maskSecrets(text: string, secrets: string[]): string {
   const usable = [...new Set(secrets)].filter((s) => s.length >= MIN_SECRET_LENGTH).sort((a, b) => b.length - a.length);
   let out = text;
@@ -13,6 +22,8 @@ export function maskSecrets(text: string, secrets: string[]): string {
   return out;
 }
 
+// Settings hold many short strings that are not secret ("en", "debug"); masking them
+// would garble the output, so settings leaves need a longer minimum.
 const MIN_SETTINGS_SECRET_LENGTH = 8;
 
 /** Env keys whose values are public by design (URLs, ports, proxy routing). */
@@ -33,7 +44,10 @@ function push(list: string[], v: unknown) {
   if (s.length >= MIN_SECRET_LENGTH) list.push(s);
 }
 
-/** Env values that could be secret: strings that are not plain numbers or booleans. */
+/**
+ * Env values that could be secret: strings that are not plain numbers or booleans (masking
+ * `3000` or `true` would hit unrelated output). Keys in PUBLIC_ENV_KEYS are skipped.
+ */
 function pushEnv(list: string[], env: Record<string, unknown> | undefined) {
   for (const [k, v] of Object.entries(env ?? {})) {
     if (PUBLIC_ENV_KEYS.has(k) || typeof v !== 'string' || /^(\d+|true|false)$/i.test(v)) continue;
@@ -59,7 +73,8 @@ function pushSettingsLeaves(list: string[], v: unknown, isRoot = true) {
  * Values that must never be printed: app env and per-server env (except public
  * keys and plain numbers/booleans), SSH passwords and key passphrases, the
  * registry password, and for the Meteor settings and every per-server settings
- * file: the serialized JSON and its non-public string values.
+ * file: the serialized JSON and its non-public string values. The serialized JSON is
+ * included because it appears whole as the `METEOR_SETTINGS` line of env.list.
  */
 export function collectSecrets(config: NormalizedConfig, settings?: unknown, perServerSettings: unknown[] = []): string[] {
   const out: string[] = [];

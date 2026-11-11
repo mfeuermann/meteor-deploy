@@ -1,7 +1,12 @@
+/**
+ * The SSH connections of one command: at most one per server, opened on first use and shared by
+ * every step (preflight, lock, distribution, activation, unlock).
+ */
 import type { ServerConfig } from '../config/types.js';
 import { CometError } from '../core/errors.js';
 import { SshConnection } from './connection.js';
 
+/** Opens a connection (`SshConnection.connect`; tests pass a fake). */
 type Connect = (name: string, server: ServerConfig, o: { cwd: string; basePath: string }) => Promise<SshConnection>;
 
 interface Entry {
@@ -25,6 +30,11 @@ export class SshPool {
     private readonly connect: Connect = SshConnection.connect,
   ) {}
 
+  /**
+   * The connection to server `name`. Callers that ask while it is still being opened share the
+   * same attempt. Rejects with a CometError when `name` is not in `servers` or the connection
+   * cannot be opened; the next call then tries again.
+   */
   get(name: string): Promise<SshConnection> {
     const existing = this.entries.get(name);
     // A pending connection is shared; an open one only while it is alive.
@@ -36,12 +46,17 @@ export class SshPool {
     this.entries.set(name, entry);
     entry.promise.then(
       (c) => void (entry.conn = c),
-      // A failed connection may be retried later.
+      // A failed connection may be retried later. Only remove this attempt's entry, not a newer
+      // one that replaced it meanwhile.
       () => this.entries.get(name) === entry && this.entries.delete(name),
     );
     return entry.promise;
   }
 
+  /**
+   * Closes every connection, including ones still being opened (closed once they are open).
+   * Errors are ignored: this runs at the end of a command, often after a failure.
+   */
   async closeAll(): Promise<void> {
     const all = [...this.entries.values()];
     this.entries.clear();

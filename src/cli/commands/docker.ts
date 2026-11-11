@@ -1,3 +1,9 @@
+/**
+ * The `docker …` command group (MUP's docker plugin): setup, update, restart, ps, status and
+ * the hidden destroy-cluster. Commands that act on Docker run once per machine
+ * (`uniqueHosts`) of the app, mongo and proxy servers selected by `--servers`; `status` only
+ * reports and checks every entry of `servers`.
+ */
 import type { CommandContext } from '../../core/context.js';
 import { verboseOutput } from '../../output/lines.js';
 import { runOnServers } from '../../remote/on-servers.js';
@@ -7,8 +13,13 @@ import type { ConfigCommand } from '../registry.js';
 import { logsPassthrough } from './lifecycle.js';
 import { dockerServers, dockerSetup, uniqueHosts } from './setup.js';
 
+/** Oldest Docker major version accepted, as in MUP. */
 const MIN_DOCKER_MAJOR = 18;
 
+/**
+ * Renders one of MUP's docker scripts once and runs it on every machine in parallel, under
+ * the runner key `key`. Throws a `CometError` listing the machines where it failed.
+ */
 async function runTemplateOnHosts(ctx: CommandContext, key: string, template: string, step: string): Promise<void> {
   await ctx.runner.run(key, async () => {
     const script = await renderTemplate(template, { privateRegistry: ctx.config.privateDockerRegistry });
@@ -18,8 +29,13 @@ async function runTemplateOnHosts(ctx: CommandContext, key: string, template: st
   });
 }
 
-/** `docker ps [opts]`: `sudo docker ps <opts> 2>&1` on the unique hosts, one after another (MUP). */
+/**
+ * `docker ps [opts]`: `sudo docker ps <opts> 2>&1` on the unique hosts, one after another (MUP).
+ * The exit code is not checked: with `2>&1` Docker's own error message is part of the output.
+ */
 export async function dockerPs(ctx: CommandContext, passthrough: Array<string | number>): Promise<void> {
+  // The options come from the command line and end up in a remote shell command: quote them so
+  // that values with spaces or shell characters arrive as typed.
   const args = ['ps', ...passthrough.map((a) => shArg(String(a)))].join(' ');
   for (const s of uniqueHosts(ctx.config, dockerServers(ctx))) {
     const r = await (await ctx.ssh.get(s)).exec(`sudo docker ${args} 2>&1`);
@@ -28,8 +44,13 @@ export async function dockerPs(ctx: CommandContext, passthrough: Array<string | 
   }
 }
 
-/** `docker status`: the Docker server version on all selected servers (MUP: red below 18, warns on mixed versions). */
+/**
+ * `docker status`: the Docker server version on all selected servers (MUP: red below 18,
+ * warns on mixed versions). It only reports: a server that is unreachable or has no usable Docker is marked as failed,
+ * but the command itself does not throw.
+ */
 export async function dockerStatus(ctx: CommandContext): Promise<void> {
+  // All entries of `servers`, not only the app servers, as in MUP.
   const all = Object.keys(ctx.config.servers);
   const servers = ctx.serverFilter ? all.filter((s) => ctx.serverFilter!.includes(s)) : all;
   const versions = new Map<string, string>();
@@ -38,6 +59,7 @@ export async function dockerStatus(ctx: CommandContext): Promise<void> {
       try {
         const r = await (await ctx.ssh.get(s)).exec('sudo docker version --format "{{.Server.Version}}"');
         const v = r.stdout.trim();
+        // MUP's check: 127 is the shell's "command not found".
         if (r.code === 127) return ctx.reporter.server(s, 'docker', 'failed', 'not installed (run "comet-deploy setup")');
         if (r.code !== 0 || !v) return ctx.reporter.server(s, 'docker', 'failed', 'not running (run "comet-deploy docker restart")');
         versions.set(s, v);
@@ -54,6 +76,7 @@ export async function dockerStatus(ctx: CommandContext): Promise<void> {
 
 const group = 'docker' as const;
 
+/** The `docker …` subcommands, registered by `main.ts`. */
 export const DOCKER_COMMANDS: ConfigCommand[] = [
   { command: 'setup', describe: 'Install or start Docker on the servers', group, run: (ctx) => dockerSetup(ctx) },
   { command: 'update', describe: 'Update Docker on the servers', group, run: (ctx) => runTemplateOnHosts(ctx, 'docker.update', 'mup/docker/docker-update.sh', 'docker update') },
@@ -66,6 +89,7 @@ export const DOCKER_COMMANDS: ConfigCommand[] = [
     run: (ctx, argv) => ctx.runner.run('docker.ps', () => dockerPs(ctx, logsPassthrough(argv, ['docker', 'ps']))),
   },
   { command: 'status', describe: 'Docker version on the servers', group, run: (ctx) => ctx.runner.run('docker.status', () => dockerStatus(ctx)) },
+  // MUP's Docker Swarm command. Hidden; it only explains that there is no cluster and exits 0.
   {
     command: 'destroy-cluster',
     describe: false,

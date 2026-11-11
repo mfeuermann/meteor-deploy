@@ -2,6 +2,7 @@
 CONTAINER=<%- q(container) %>
 REPO=<%- q(repo) %>
 LOCK_DIR=<%- q(lockDir) %>
+# PORT is a number, so it goes in unquoted.
 PORT=<%- port %>
 HC_PATH=<%- q(path) %>
 
@@ -17,9 +18,11 @@ fi
 echo "container=$STATE"
 
 if [ -d "$LOCK_DIR" ]; then
+  # info.json joined into one line, to fit the key=value format.
   echo "lock=$(tr -d '\n' < "$LOCK_DIR/info.json" 2>/dev/null)"
 fi
 
+# The same container IP lookup as health-check.sh; one quick request, no polling.
 if [ "$STATE" = running ]; then
   if sudo docker inspect "$CONTAINER" --format "{{(index .NetworkSettings.Networks)}}" 2>/dev/null | grep -q '\[host'; then
     IP=localhost

@@ -1,3 +1,9 @@
+/**
+ * Preflight: the checks that run before the build, so a problem that would stop the deploy later
+ * (after minutes of building) is reported up front, all problems at once. Collecting the facts
+ * (`runPreflight`) is kept apart from judging them (`evaluatePreflight`, a pure function).
+ * It also decides which platform each server needs an image for.
+ */
 import type { CometOptions, Platform } from '../config/types.js';
 import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
@@ -9,9 +15,12 @@ import { probeForwarding } from '../transfer/tunnel.js';
 
 export type { Platform };
 
+/** The oldest Docker major version accepted on a server, the same minimum as MUP. */
 const MIN_DOCKER_MAJOR = 18;
+/** Free space for Docker below which a warning (not an error) is printed. */
 const LOW_DISK_BYTES = 5 * 1024 ** 3;
 
+/** Docker platform for a server's `uname -m`. Throws `CometError` for other architectures. */
 export function platformForArch(unameM: string): Platform {
   const a = unameM.trim();
   if (a === 'x86_64' || a === 'amd64') return 'linux/amd64';
@@ -21,19 +30,32 @@ export function platformForArch(unameM: string): Platform {
   });
 }
 
+/** Everything preflight found out, as plain data. */
 export interface PreflightInput {
+  /** Local Docker, the platforms the buildx builder can build for, and whether `meteor` runs. */
   local: { docker: { ok: boolean; version?: string; error?: string }; platforms: string[]; meteorOk: boolean; meteorExecutable?: string };
-  /** `forwardingError`: why the server refuses reverse port forwarding (null/absent = it works or was not checked). */
+  /**
+   * Per server: its facts, or `error` when they could not be read (e.g. no SSH connection);
+   * `lock`: the current lock holder (null = free or not checked); `forwardingError`: why the
+   * server refuses reverse port forwarding (null/absent = it works or was not checked).
+   */
   servers: Record<string, { facts?: ServerFacts; error?: string; lock?: LockInfo | null; forwardingError?: string | null }>;
+  /** `cometDeploy.platform`: `auto` (from `uname -m`) or a fixed platform for every server. */
   override: CometOptions['platform'];
+  /** Whether this command builds locally; the local checks only matter then. */
   needsBuild: boolean;
+  /** Whether a held lock is an error. */
   checkLocks: boolean;
 }
 
 export interface PreflightResult {
+  /** Problems that stop the command. */
   errors: string[];
+  /** Problems worth knowing about that do not stop it. */
   warnings: string[];
+  /** The platform each server needs an image for. */
   platformByServer: Record<string, Platform>;
+  /** The distinct platforms to build, one image each. */
   platforms: Platform[];
 }
 
@@ -41,6 +63,10 @@ function describeLock(l: LockInfo): string {
   return `${l.user}@${l.machine} (pid ${l.pid}, "${l.command}", since ${l.startedAt || 'unknown'})`;
 }
 
+/**
+ * Judges the collected facts and returns every error and warning at once instead of stopping at
+ * the first one. Pure: no I/O, so it is tested with plain data.
+ */
 export function evaluatePreflight(i: PreflightInput): PreflightResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -67,6 +93,8 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
           'comet-deploy sends the image through it: set "AllowTcpForwarding yes" in /etc/ssh/sshd_config and reload sshd.',
       );
     }
+    // sudo comes first: the Docker facts are read through sudo, so without working sudo Docker
+    // would look missing and the error would point at the wrong problem.
     if (f.sudo === 'password') {
       errors.push(
         `Server "${name}": sudo asks for a password. The SSH user needs passwordless sudo, like with MUP ` +
@@ -77,6 +105,7 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
     } else if (!f.dockerRunning) {
       errors.push(`Server "${name}": Docker is ${f.dockerVersion ? 'not running' : 'not installed'}. Run "comet-deploy setup".`);
     } else {
+      // A version that cannot be parsed is let through rather than blocking the deploy.
       const major = Number(/^(\d+)\./.exec(f.dockerVersion ?? '')?.[1]);
       if (Number.isFinite(major) && major < MIN_DOCKER_MAJOR) {
         errors.push(`Server "${name}": Docker ${f.dockerVersion} is too old (minimum ${MIN_DOCKER_MAJOR}). Run "comet-deploy docker update".`);
@@ -85,6 +114,8 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
         warnings.push(`Server "${name}": only ${(f.dockerRootFreeBytes / 1024 ** 3).toFixed(1)} GiB free for Docker.`);
       }
     }
+    // This only makes a held lock fail before the build instead of after it. The lock itself is
+    // taken atomically after the build, and that is what keeps two deploys apart.
     if (i.checkLocks && s.lock) {
       errors.push(`Server "${name}": a deploy lock is held by ${describeLock(s.lock)}. If no deploy is running, release it with "comet-deploy unlock".`);
     }
@@ -96,6 +127,8 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
   }
 
   const platforms = [...new Set(Object.values(platformByServer))];
+  // Only when Docker works: otherwise buildx reports no platforms and every platform would
+  // repeat the Docker error in a less helpful form.
   if (i.needsBuild && i.local.docker.ok) {
     for (const p of platforms) {
       if (!i.local.platforms.includes(p)) {
@@ -109,12 +142,18 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
   return { errors, warnings, platformByServer, platforms };
 }
 
-/** Collects local and per-server facts in parallel and fails with all problems at once. */
+/**
+ * Collects the local and per-server facts in parallel (read-only on the servers), prints the
+ * warnings and throws one `CometError` that lists every error. Returns the platform plan.
+ */
 export async function runPreflight(ctx: CommandContext, servers: string[], o: { needsBuild: boolean; checkLocks: boolean }): Promise<PreflightResult> {
   const appName = ctx.config.app.name;
+  // Started first and awaited last, so the local checks overlap with the SSH round trips.
   const localP = o.needsBuild
     ? Promise.all([dockerAvailable(), buildxPlatforms(), run(meteorExecutable(ctx.config.app), ['--version']).then((r) => r.code === 0)])
     : Promise.resolve([{ ok: true }, [], true] as const);
+  // allSettled: a server that cannot be reached becomes one error in the list instead of
+  // hiding the results of the others.
   const serverResults = await Promise.allSettled(
     servers.map(async (name) => {
       const conn = await ctx.ssh.get(name);

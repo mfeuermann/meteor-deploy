@@ -1,3 +1,8 @@
+/**
+ * `setup`, `meteor setup` and the Docker setup step, plus the server selection helpers that
+ * the `docker …` commands share: which servers need Docker, and which of them are the same
+ * machine.
+ */
 import type { NormalizedConfig } from '../../config/types.js';
 import type { CommandContext } from '../../core/context.js';
 import { verboseOutput } from '../../output/lines.js';
@@ -21,7 +26,11 @@ export function uniqueHosts(c: NormalizedConfig, servers: string[]): string[] {
   });
 }
 
-/** App + mongo + proxy servers (MUP `docker setup`, ref. §3.4), filtered by `--servers`, without duplicates. */
+/**
+ * App + mongo + proxy servers (the servers MUP's `docker setup` uses), filtered by
+ * `--servers`, without duplicates. Without `proxy.servers` the proxy runs on the app servers,
+ * as in MUP.
+ */
 export function dockerServers(ctx: CommandContext): string[] {
   const c = ctx.config;
   const app = Object.keys(c.app.servers ?? {});
@@ -58,6 +67,8 @@ export async function meteorSetup(ctx: CommandContext): Promise<void> {
 /** `setup` (MUP `default.setup` → `docker.setup` → `meteor.setup`). */
 export async function setupAll(ctx: CommandContext): Promise<void> {
   await ctx.runner.run('default.setup', async () => {
+    // MUP would also set up these sections. Only warn, so a MUP config with them still gets
+    // Docker and the app directories.
     for (const part of ['mongo', 'proxy'] as const) {
       if (ctx.config[part]) ctx.reporter.warn(`The "${part}" section is not set up yet: it is planned for phase 2 of comet-deploy.`);
     }
@@ -67,12 +78,14 @@ export async function setupAll(ctx: CommandContext): Promise<void> {
   });
 }
 
+/** `setup`: Docker on every machine, then the app directories on the app servers. */
 export const setupCommand: ConfigCommand = {
   command: 'setup',
   describe: 'Install Docker and prepare the servers',
   run: (ctx) => setupAll(ctx),
 };
 
+/** Hidden `meteor setup`: only the app directories, no Docker. */
 export const meteorSetupCommand: ConfigCommand = {
   command: 'setup',
   describe: false,

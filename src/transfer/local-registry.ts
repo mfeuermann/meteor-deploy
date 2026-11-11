@@ -1,10 +1,18 @@
+/**
+ * The local Docker Distribution registry that feeds the servers. Built images are pushed into it,
+ * and servers pull from it through SSH reverse tunnels. Its volume persists between deploys, so a
+ * push uploads only layers the registry does not have yet; the container itself runs only while
+ * a deploy needs it.
+ */
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { CometError } from '../core/errors.js';
 import { run, type RunResult } from '../local/exec.js';
 
+/** Pinned, so every machine runs the same registry version. */
 const REGISTRY_IMAGE = 'registry:2.8.3';
+/** One container and one volume per machine, shared by all apps and deploys. */
 const CONTAINER = 'comet-deploy-registry';
 const VOLUME = 'comet-deploy-registry-data';
 const READY_TIMEOUT_MS = 30_000;
@@ -22,14 +30,20 @@ export interface RegistryEnv {
   leaseDir?: string;
   /** This process (owner of the lease). */
   pid?: number;
+  /** Whether the process that wrote a lease still runs. */
   isAlive?: (pid: number) => boolean;
 }
 
+/** `<cache root>/comet-deploy/registry-leases`, next to the build caches. */
 function defaultLeaseDir(): string {
   return join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'comet-deploy', 'registry-leases');
 }
 
-/** `kill(pid, 0)` only checks: EPERM means the process exists but belongs to someone else. */
+/**
+ * `kill(pid, 0)` only checks: EPERM means the process exists but belongs to someone else. A pid
+ * reused by an unrelated process counts as alive; the registry then keeps running, which is
+ * harmless.
+ */
 function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -49,12 +63,18 @@ function resolveEnv(e: RegistryEnv): Required<RegistryEnv> {
   };
 }
 
+/** Runs `docker` and returns its trimmed stdout; a failure throws a CometError naming `what`. */
 async function docker(e: Required<RegistryEnv>, args: string[], what: string): Promise<string> {
   const r = await e.docker(args);
   if (r.code !== 0) throw new CometError(`${what} failed: ${r.stderr.trim() || `exit ${r.code}`}`);
   return r.stdout.trim();
 }
 
+/**
+ * The host port Docker published the registry on. It is read on every deploy, not stored: Docker
+ * picks it (`-p 127.0.0.1::5000`) and may pick a different one each time the container starts.
+ * `docker port` prints one `127.0.0.1:<port>` line per binding.
+ */
 async function registryPort(e: Required<RegistryEnv>): Promise<number> {
   const out = await docker(e, ['port', CONTAINER, '5000/tcp'], 'Reading the local registry port');
   const port = Number(out.split('\n')[0].split(':').pop());
@@ -62,6 +82,12 @@ async function registryPort(e: Required<RegistryEnv>): Promise<number> {
   return port;
 }
 
+/**
+ * Polls `GET /v2/` (the registry API check, 200 without authentication) until the registry
+ * answers: a container that was just started needs a moment before it accepts connections.
+ *
+ * @throws CometError after `READY_TIMEOUT_MS`, with the last error or HTTP status.
+ */
 async function waitReady(port: number): Promise<void> {
   const deadline = Date.now() + READY_TIMEOUT_MS;
   let last = '';
@@ -92,6 +118,10 @@ async function containerRunning(e: Required<RegistryEnv>): Promise<boolean | nul
  * One registry container serves every deploy on this machine. Each deploy
  * holds a lease (a file named by its pid) until `stopLocalRegistry`, so
  * concurrent deploys of different apps do not stop it under each other.
+ *
+ * Returns the registry's port on 127.0.0.1, once it answers.
+ *
+ * @throws CometError when the container cannot be created or started, or does not become ready.
  */
 export async function ensureLocalRegistry(env: RegistryEnv = {}): Promise<{ port: number }> {
   const e = resolveEnv(env);
@@ -101,6 +131,9 @@ export async function ensureLocalRegistry(env: RegistryEnv = {}): Promise<{ port
 
   let running = await containerRunning(e);
   if (running === null) {
+    // `127.0.0.1::5000`: loopback only, so the registry is never reachable from the network, and
+    // a port that Docker picks, so it cannot clash with anything else on this machine.
+    // `--restart no`: it is only needed during a deploy and must not come back with the daemon.
     const r = await e.docker(['run', '-d', '--name', CONTAINER, '--restart', 'no', '-p', '127.0.0.1::5000', '-v', `${VOLUME}:/var/lib/registry`, REGISTRY_IMAGE]);
     if (r.code !== 0 && !/already in use/i.test(r.stderr)) throw new CometError(`Starting the local registry failed: ${r.stderr.trim() || `exit ${r.code}`}`);
     // On a name conflict another deploy created it a moment ago: use that one.
@@ -112,7 +145,15 @@ export async function ensureLocalRegistry(env: RegistryEnv = {}): Promise<{ port
   return { port };
 }
 
-/** Pushes a local image to the registry; returns the reference without host. */
+/**
+ * Pushes a local image to the registry and returns the reference without host, which each
+ * server prefixes with its own tunnel port. The image is tagged `127.0.0.1:<port>/<localTag>`
+ * for the push (Docker uploads only the layers the registry lacks, over plain HTTP since the
+ * registry is on loopback), and that extra tag is removed again afterwards (`docker rmi` of a tag
+ * leaves the image itself alone).
+ *
+ * @throws CometError when tagging or pushing fails.
+ */
 export async function pushToLocalRegistry(localTag: string, port: number, onLine?: (l: string) => void): Promise<string> {
   const remote = `127.0.0.1:${port}/${localTag}`;
   const tag = await run('docker', ['tag', localTag, remote]);
@@ -129,7 +170,8 @@ export async function pushToLocalRegistry(localTag: string, port: number, onLine
 /**
  * Releases this deploy's lease and stops the registry when no other running
  * deploy holds one (leases of processes that no longer exist are removed).
- * Returns whether the container was stopped.
+ * Returns whether the container was stopped. Stopping keeps the container and
+ * its volume, so the next deploy starts it again with all layers in place.
  */
 export async function stopLocalRegistry(env: RegistryEnv = {}): Promise<boolean> {
   const e = resolveEnv(env);

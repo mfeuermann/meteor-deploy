@@ -1,10 +1,21 @@
+/**
+ * The input hash of the build cache: a deterministic hash of everything that can change the built
+ * image. File contents count and modification times do not, so a fresh checkout or a `touch`
+ * does not force a rebuild. A needless build is better than a wrong skip, so the inputs are
+ * chosen conservatively: any file in the app directory counts, not only source files.
+ */
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readdir, readFile, readlink, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
+/**
+ * Paths relative to the app root that never count: Meteor's local build cache, node_modules
+ * (covered by `nodeModulesManifest` instead) and the git metadata.
+ */
 const ALWAYS_EXCLUDED = ['.meteor/local', 'node_modules', '.git'];
 
+/** JSON with object keys sorted at every level, so key order in the config does not matter. */
 function stableStringify(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
   if (v && typeof v === 'object') {
@@ -17,19 +28,24 @@ function stableStringify(v: unknown): string {
 const toPosix = (p: string) => p.split(sep).join('/');
 
 interface Entry {
+  /** Path relative to the walked root, with `/` separators. */
   rel: string;
   /** Absolute path to read (symlinks resolved by readFile); null for a broken link. */
   abs: string | null;
+  /** Target text of a broken link. */
   link?: string;
 }
 
 /**
- * Every file below `root` (sorted by relative path). Symlinks are followed —
- * a workspace package or a linked directory is part of the build — with a
- * guard against cycles; a broken link is recorded by its target text.
+ * Every file below `root` (sorted by relative path). Symlinks are followed — a workspace package
+ * or a linked directory is part of the build — with a guard against cycles; a broken link is
+ * recorded by its target text. `excluded` holds paths relative to `root`; `skipNames` are names
+ * skipped at any depth.
  */
 async function listFiles(root: string, excluded: Set<string>, skipNames: Set<string> = new Set()): Promise<Entry[]> {
   const out: Entry[] = [];
+  // Directories already walked, by real path: a symlink cycle (or a second link to the same
+  // directory) is walked only once.
   const visited = new Set<string>();
   async function walk(dir: string, relDir: string): Promise<void> {
     const real = await realpath(dir).catch(() => dir);
@@ -53,6 +69,7 @@ async function listFiles(root: string, excluded: Set<string>, skipNames: Set<str
   return out.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
 }
 
+/** sha256 of a file's content; a broken link hashes as its target text. */
 async function contentHash(e: Entry): Promise<string> {
   return e.abs ? createHash('sha256').update(await readFile(e.abs)).digest('hex') : `broken-link:${e.link}`;
 }
@@ -65,9 +82,10 @@ async function treeHash(dir: string): Promise<string> {
 }
 
 /**
- * `name@version` of every top-level and scoped package in node_modules. A
- * symlinked package (npm/yarn workspaces, `file:` deps) changes without a
- * version bump, so it is hashed by content instead.
+ * `name@version` of every top-level and scoped package in node_modules. A symlinked package
+ * (npm/yarn workspaces, `file:` deps) changes without a version bump, so it is hashed by content
+ * instead. This is the quick variant: nested packages are not listed, but a change to them
+ * normally shows up in `package-lock.json`, which is hashed as an app file.
  */
 async function nodeModulesManifest(appPath: string): Promise<string[]> {
   const nm = join(appPath, 'node_modules');
@@ -98,6 +116,7 @@ async function nodeModulesManifest(appPath: string): Promise<string[]> {
         await readPkg(join(nm, d.name, s.name), s.isSymbolicLink(), `${d.name}/${s.name}`);
       }
     } else if (!d.name.startsWith('.')) {
+      // Dot directories (`.bin`, npm's `.cache`) are not packages.
       await readPkg(join(nm, d.name), d.isSymbolicLink(), d.name);
     }
   }
@@ -105,9 +124,13 @@ async function nodeModulesManifest(appPath: string): Promise<string[]> {
 }
 
 /**
- * Content hash of the build inputs (spec §8.1): app files by relative path +
- * content (mtime is ignored), node_modules as a name@version list, plus `extra`
- * (build options, architecture, tool version, Dockerfile …).
+ * Content hash of the build inputs: app files by relative path + content (mtime is ignored),
+ * node_modules as a name@version list, plus `extra` (build options, architecture, tool version,
+ * Dockerfile …) as key-order-independent JSON. Each part is tagged (`file`, `npm`, `extra`) and
+ * NUL-separated, so the parts cannot run into each other.
+ *
+ * `o.exclude` lists more paths to leave out (the build location), absolute or relative to
+ * `appPath`; paths outside the app directory are ignored.
  */
 export async function computeInputHash(appPath: string, extra: Record<string, unknown>, o: { exclude?: string[] } = {}): Promise<string> {
   const excluded = new Set(ALWAYS_EXCLUDED);

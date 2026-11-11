@@ -3,6 +3,8 @@
 # sshd, sudo and a passwordless-sudo `deployer` user in the docker group.
 FROM debian:bookworm
 
+# Docker is pinned so that a new get.docker.com release does not change test results.
+# /run/sshd is the privilege separation directory sshd needs to start.
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
      openssh-server sudo curl ca-certificates bash iproute2 iptables procps \

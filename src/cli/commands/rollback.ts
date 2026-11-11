@@ -1,3 +1,8 @@
+/**
+ * `rollback [--to <version>]`: switches the app servers back to an older image that is still
+ * on them, by strategy and with a health check. Nothing is built or transferred, and only the
+ * image changes: the current start.sh and env.list stay.
+ */
 import type { Strategy } from '../../config/types.js';
 import { CometError } from '../../core/errors.js';
 import { rollbackPipeline } from '../../deploy/pipeline.js';
@@ -6,6 +11,11 @@ import { withAbortOnSignals } from '../signals.js';
 
 const STRATEGIES: Strategy[] = ['canary', 'rolling', 'parallel'];
 
+/**
+ * `rollback`, a comet-deploy command (MUP has none). The pipeline runs it under the runner
+ * key `default.rollback` and picks the target version per server. Throws a `CometError`
+ * naming every server that did not end healthy; Ctrl+C aborts gracefully.
+ */
 export const rollbackCommand: ConfigCommand = {
   command: 'rollback',
   describe: 'Switch back to the previous (or a given) version kept on the servers; the config stays',

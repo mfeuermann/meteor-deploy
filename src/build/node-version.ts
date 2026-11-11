@@ -1,8 +1,17 @@
+/**
+ * Reads the Node.js version a Meteor bundle was built for. It is passed to the image build as the
+ * `NODE_VERSION` build arg, from which the base image installs that Node version (as in MUP).
+ */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CometError } from '../core/errors.js';
 
-/** Node version the bundle was built for: star.json `nodeVersion`, else `.node_version.txt` (ref. §4.4). */
+/**
+ * Node version the bundle was built for, without a leading `v`: `star.json` `nodeVersion`
+ * (Meteor 1.5.2 and later), else `.node_version.txt`, the same lookup as MUP.
+ *
+ * @throws CometError when neither file names a version.
+ */
 export function readNodeVersion(bundleDir: string): string {
   const star = join(bundleDir, 'star.json');
   if (existsSync(star)) {
