@@ -4,7 +4,9 @@
  * check, plus a status limit and crash detection). Its last output line is the machine-readable
  * result parsed here.
  */
+import type { NormalizedConfig } from '../config/types.js';
 import { CometError } from '../core/errors.js';
+import { containerName } from '../core/naming.js';
 import { shq } from '../remote/ops.js';
 import { renderTemplate } from '../remote/render.js';
 import type { ExecOptions, SshConnection } from '../ssh/connection.js';
@@ -54,6 +56,24 @@ export interface HealthCheckOptions {
   maxStatus: number;
   /** How long to wait for a healthy answer. */
   timeoutSec: number;
+}
+
+/** MUP's deploy check wait time when the config has none. */
+const DEFAULT_WAIT_SEC = 60;
+
+/**
+ * The health check of the app container, with the settings of MUP's deploy check
+ * (`deployCheckPort`, `deployCheckWaitTime`) and comet-deploy's `healthCheck` options.
+ */
+export function appHealthOptions(config: NormalizedConfig): HealthCheckOptions {
+  const app = config.app;
+  return {
+    container: containerName(config),
+    port: Number(app.deployCheckPort ?? app.docker.imagePort),
+    path: config.cometDeploy.healthCheck.path,
+    maxStatus: config.cometDeploy.healthCheck.maxStatus,
+    timeoutSec: Number(app.deployCheckWaitTime ?? DEFAULT_WAIT_SEC),
+  };
 }
 
 const isInt = (n: number, min: number, max: number) => Number.isInteger(n) && n >= min && n <= max;

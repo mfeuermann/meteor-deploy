@@ -11,7 +11,8 @@ import type { Reporter } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStart, renderStartSh } from '../remote/app-files.js';
 import { restoreConfigSnapshot, retagActivate, retagRestore, retagSwap, shArg, snapshotConfig, type ImageTags } from '../remote/ops.js';
 import type { ExecOptions, SshConnection } from '../ssh/connection.js';
-import { healthCheck, type HealthResult } from './health-check.js';
+import { appHealthOptions, healthCheck, type HealthResult } from './health-check.js';
+import { containerRunning, switchContainer, type SwitchMode, type SwitchResult } from './zero-downtime.js';
 
 /** What happened on one server. */
 export interface ActivationResult {
@@ -46,8 +47,6 @@ export interface ActivateDeps {
   reporter: Reporter;
 }
 
-/** MUP's default `deployCheckWaitTime`. */
-const DEFAULT_WAIT_SEC = 60;
 /** Log lines shown for a server that failed. */
 const LOG_TAIL_LINES = 100;
 
@@ -61,28 +60,13 @@ function describeHealth(h: HealthResult): string {
 }
 
 /**
- * Health check parameters from the config. As in MUP's deploy check, the port is
- * `deployCheckPort`, else the container port, and the timeout is `deployCheckWaitTime`.
- */
-function healthOptions(config: NormalizedConfig) {
-  const app = config.app;
-  return {
-    container: containerName(config),
-    port: Number(app.deployCheckPort ?? app.docker.imagePort),
-    path: config.cometDeploy.healthCheck.path,
-    maxStatus: config.cometDeploy.healthCheck.maxStatus,
-    timeoutSec: Number(app.deployCheckWaitTime ?? DEFAULT_WAIT_SEC),
-  };
-}
-
-/**
  * MUP's `meteor-start.sh` (which recreates the container with config/start.sh as it is on the
  * server, from `:latest`) + health check. Throws when the start script fails; a failed health
  * check is returned, not thrown.
  */
 async function startAndCheck(d: Pick<ActivateDeps, 'conn' | 'config'>, out: ExecOptions): Promise<HealthResult> {
   await d.conn.runScriptOrThrow(await renderMeteorStart(d.config), 'Starting the app', out);
-  return healthCheck(d.conn, healthOptions(d.config), out);
+  return healthCheck(d.conn, appHealthOptions(d.config), out);
 }
 
 /**
@@ -94,39 +78,61 @@ async function containerLogsTail(d: Pick<ActivateDeps, 'conn' | 'config'>): Prom
   return logs?.stdout;
 }
 
+/** The failure of a zero-downtime switch, in the words of a failed health check where it was one. */
+function switchFailure(sw: SwitchResult): { error: string; health: HealthResult } {
+  return { error: sw.error || `Health check failed: ${describeHealth(sw.health)}`, health: sw.health };
+}
+
 /**
  * Starts the app from the files already on the server and checks its health
  * (`start`, `restart`). No revert: nothing was changed. Never throws; every
  * failure becomes a `failed` result, with the container's last log lines when
  * they can be read. `o.step` labels the progress line (default `start`).
+ * With `o.switch` zero-downtime the running container is replaced by `switchContainer`
+ * instead (the caller does not stop it first); on failure the old one keeps running.
  */
-export async function startServer(d: Omit<ActivateDeps, 'settings' | 'cwd' | 'basePath'>, o: { step?: string } = {}): Promise<ActivationResult> {
+export async function startServer(
+  d: Omit<ActivateDeps, 'settings' | 'cwd' | 'basePath'>,
+  o: { step?: string; switch?: SwitchMode; pickupTimeoutMs?: number } = {},
+): Promise<ActivationResult> {
   const started = Date.now();
   const { serverName: server, reporter: r } = d;
   const done = (x: Omit<ActivationResult, 'server' | 'durationMs'>): ActivationResult => ({ server, durationMs: Date.now() - started, ...x });
   let failure: { error: string; health?: HealthResult };
+  let logsTail: string | undefined;
   try {
     r.server(server, o.step ?? 'start', 'running');
-    const health = await startAndCheck(d, verboseOutput(r, server));
-    if (health.ok) {
-      r.server(server, 'health', 'ok', describeHealth(health));
-      return done({ status: 'healthy', health });
+    if (o.switch?.kind === 'zero-downtime') {
+      const sw = await switchContainer(d, verboseOutput(r, server), { pickupTimeoutMs: o.pickupTimeoutMs });
+      if (sw.switched) {
+        r.server(server, 'health', 'ok', describeHealth(sw.health));
+        return done({ status: 'healthy', health: sw.health });
+      }
+      failure = switchFailure(sw);
+      logsTail = sw.logsTail;
+    } else {
+      const health = await startAndCheck(d, verboseOutput(r, server));
+      if (health.ok) {
+        r.server(server, 'health', 'ok', describeHealth(health));
+        return done({ status: 'healthy', health });
+      }
+      failure = { error: `Health check failed: ${describeHealth(health)}`, health };
     }
-    failure = { error: `Health check failed: ${describeHealth(health)}`, health };
   } catch (err) {
     failure = { error: (err as Error)?.message ?? String(err) };
   }
   r.server(server, 'health', 'failed', failure.error);
-  return done({ status: 'failed', ...failure, logsTail: await containerLogsTail(d) });
+  return done({ status: 'failed', ...failure, logsTail: o.switch?.kind === 'zero-downtime' ? logsTail : await containerLogsTail(d) });
 }
 
 /**
  * Undoes an activation: restores the config snapshot taken by it (when
  * `restoreConfig`) and re-tags :latest / :previous to the images they named
- * before it (`tags`), then restarts the app. False when there is nothing to undo.
+ * before it (`tags`), then restarts the app (unless `restart` is false: after a failed
+ * zero-downtime switch the old container still runs). False when there is nothing to undo.
  * Throws when a remote step fails; it does not check the health of the result.
  */
-export async function revertServer(d: ActivateDeps, o: { tags: ImageTags | null; restoreConfig: boolean }): Promise<boolean> {
+export async function revertServer(d: ActivateDeps, o: { tags: ImageTags | null; restoreConfig: boolean; restart?: boolean }): Promise<boolean> {
   const restoredConfig = o.restoreConfig ? await restoreConfigSnapshot(d.conn, d.config.app.name) : false;
   let restoredImage = false;
   // An empty `latestId` means the server had no :latest before (first deploy), so there is no
@@ -136,6 +142,7 @@ export async function revertServer(d: ActivateDeps, o: { tags: ImageTags | null;
     restoredImage = true;
   }
   if (!restoredConfig && !restoredImage) return false;
+  if (o.restart === false) return true;
   // start.sh directly, like MUP's own deploy-check revert: tags and files are already back in
   // place, so none of meteor-start.sh's image/bundle housekeeping is wanted here.
   const r = await d.conn.exec(`sudo bash ${shArg(`${appDir(d.config)}/config/start.sh`)}`, verboseOutput(d.reporter, d.serverName));
@@ -146,7 +153,9 @@ export async function revertServer(d: ActivateDeps, o: { tags: ImageTags | null;
 /**
  * Activation on one server: snapshot the config, retag, write start.sh/env.list,
  * start, health check; on failure collect the logs and revert. The app restarts
- * in place (a short downtime per server, as with MUP; no zero-downtime switch).
+ * in place (a short downtime per server, as with MUP), or with `o.switch` zero-downtime it is
+ * replaced by `switchContainer` (behind the proxy): then a failure leaves the old container
+ * running, and the revert only restores files and tags without restarting it.
  *
  * The mode decides what changes:
  * - `deploy`: image (`version`) and config.
@@ -158,7 +167,10 @@ export async function revertServer(d: ActivateDeps, o: { tags: ImageTags | null;
  * A revert counts as `reverted` only when the restored app passes a health check
  * too. Never throws: every outcome is an `ActivationResult`.
  */
-export async function activateServer(d: ActivateDeps, o: { version: string | null; mode: 'deploy' | 'reconfig' | 'rollback' }): Promise<ActivationResult> {
+export async function activateServer(
+  d: ActivateDeps,
+  o: { version: string | null; mode: 'deploy' | 'reconfig' | 'rollback'; switch?: SwitchMode; pickupTimeoutMs?: number },
+): Promise<ActivationResult> {
   const started = Date.now();
   const { conn, config, serverName: server, reporter: r } = d;
   const app = config.app;
@@ -166,6 +178,8 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
   const done = (x: Omit<ActivationResult, 'server' | 'durationMs'>): ActivationResult => ({ server, durationMs: Date.now() - started, ...x });
 
   let failure: { error: string; health?: HealthResult };
+  const zeroDowntime = o.switch?.kind === 'zero-downtime';
+  let switchLogs: string | undefined;
   // What this activation changed, so a failure undoes exactly that (and no more).
   let snapshotTaken = false;
   let tagsBefore: ImageTags | null = null;
@@ -200,12 +214,22 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
     }
     // Starting recreates the container, so from here on any failure needs a revert.
     touched = true;
-    const health = await startAndCheck(d, out);
-    if (health.ok) {
-      r.server(server, 'health', 'ok', describeHealth(health));
-      return done({ status: 'healthy', health });
+    if (zeroDowntime) {
+      const sw = await switchContainer(d, out, { pickupTimeoutMs: o.pickupTimeoutMs });
+      if (sw.switched) {
+        r.server(server, 'health', 'ok', describeHealth(sw.health));
+        return done({ status: 'healthy', health: sw.health });
+      }
+      failure = switchFailure(sw);
+      switchLogs = sw.logsTail;
+    } else {
+      const health = await startAndCheck(d, out);
+      if (health.ok) {
+        r.server(server, 'health', 'ok', describeHealth(health));
+        return done({ status: 'healthy', health });
+      }
+      failure = { error: `Health check failed: ${describeHealth(health)}`, health };
     }
-    failure = { error: `Health check failed: ${describeHealth(health)}`, health };
   } catch (err) {
     failure = { error: (err as Error)?.message ?? String(err) };
   }
@@ -216,16 +240,20 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
     return done({ status: 'failed', error: `${failure.error} (the server was not changed)`, health: failure.health });
   }
   r.server(server, 'health', 'failed', failure.error);
-  // The logs of the failed container, read before the revert replaces it.
-  const logsTail = await containerLogsTail(d);
+  // The logs of the failed container, read before the revert replaces it (a failed switch read
+  // them from <app>-next before removing it; the old container is not the one that failed).
+  const logsTail = zeroDowntime ? switchLogs : await containerLogsTail(d);
   try {
+    // After a failed switch the old container normally still runs: then the revert only puts
+    // files and tags back. If it is gone (the switch failed while replacing it), it restarts.
+    const restart = zeroDowntime ? !(await containerRunning(conn, containerName(config))) : true;
     // A rollback never took a snapshot, so only its image is restored.
-    const reverted = await revertServer(d, { tags: tagsBefore, restoreConfig: snapshotTaken });
+    const reverted = await revertServer(d, { tags: tagsBefore, restoreConfig: snapshotTaken, restart });
     if (!reverted) return done({ status: 'failed', error: `${failure.error} (nothing to revert to)`, logsTail, health: failure.health });
     const what = o.mode === 'reconfig' ? 'previous config' : 'previous version';
     // The promise is that the old version keeps running, so the revert only counts as
     // `reverted` when the restored app answers the health check again.
-    const restored = await healthCheck(conn, healthOptions(config), out);
+    const restored = await healthCheck(conn, appHealthOptions(config), out);
     if (!restored.ok) {
       const error = `${failure.error}; the restored version is not healthy either: ${describeHealth(restored)}`;
       r.server(server, 'revert', 'failed', `${what} restored, but ${describeHealth(restored)}`);
