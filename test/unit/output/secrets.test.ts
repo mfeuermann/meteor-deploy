@@ -136,3 +136,20 @@ describe('secrets that were never masked (M7)', () => {
     expect(() => missing.getSettings()).toThrow();
   });
 });
+
+describe('proxy shared env (proxy plan, Task 2)', () => {
+  it('collects the values of proxy.shared.env and proxy.shared.envLetsEncrypt', () => {
+    const config = {
+      servers: { one: { host: 'h', username: 'root' } },
+      app: { name: 'app', env: {}, servers: { one: {} } },
+      proxy: {
+        domains: 'a.com',
+        shared: { env: { DEFAULT_HOST: 'a.com', SECRET_TOKEN: 'shared-secret-1' }, envLetsEncrypt: { KEY: 'le-secret-123', DEBUG: true } },
+      },
+    } as unknown as NormalizedConfig;
+    const s = collectSecrets(config);
+    expect(s).toContain('shared-secret-1');
+    expect(s).toContain('le-secret-123');
+    expect(s).not.toContain('true');
+  });
+});

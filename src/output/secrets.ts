@@ -70,8 +70,8 @@ function pushSettingsLeaves(list: string[], v: unknown, isRoot = true) {
 }
 
 /**
- * Values that must never be printed: app env and per-server env (except public
- * keys and plain numbers/booleans), SSH passwords and key passphrases, the
+ * Values that must never be printed: app env, per-server env and the proxy's shared env
+ * (except public keys and plain numbers/booleans), SSH passwords and key passphrases, the
  * registry password, and for the Meteor settings and every per-server settings
  * file: the serialized JSON and its non-public string values. The serialized JSON is
  * included because it appears whole as the `METEOR_SETTINGS` line of env.list.
@@ -85,6 +85,9 @@ export function collectSecrets(config: NormalizedConfig, settings?: unknown, per
     push(out, (s?.opts as { passphrase?: unknown } | undefined)?.passphrase);
   }
   if (config.privateDockerRegistry?.password) push(out, config.privateDockerRegistry.password);
+  // The shared proxy's env files (`proxy reconfig-shared`) can carry tokens just like app.env.
+  pushEnv(out, config.proxy?.shared?.env);
+  pushEnv(out, config.proxy?.shared?.envLetsEncrypt);
   for (const v of [settings, ...perServerSettings]) {
     if (v === undefined) continue;
     push(out, JSON.stringify(v));
