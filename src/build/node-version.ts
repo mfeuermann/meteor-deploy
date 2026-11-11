@@ -15,7 +15,12 @@ import { CometError } from '../core/errors.js';
 export function readNodeVersion(bundleDir: string): string {
   const star = join(bundleDir, 'star.json');
   if (existsSync(star)) {
-    const v = JSON.parse(readFileSync(star, 'utf8')).nodeVersion;
+    let v: unknown;
+    try {
+      v = JSON.parse(readFileSync(star, 'utf8')).nodeVersion;
+    } catch (err) {
+      throw new CometError(`Cannot read the Node version from ${star}: ${(err as Error).message}`, { cause: err });
+    }
     if (typeof v === 'string' && v) return v.replace(/^v/, '');
   }
   const txt = join(bundleDir, '.node_version.txt');

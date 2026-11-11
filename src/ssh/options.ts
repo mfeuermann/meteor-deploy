@@ -13,9 +13,9 @@ import { CometError } from '../core/errors.js';
  * `servers.*.opts` object merged in; auth `pem` > `password` > ssh agent.
  *
  * `pem` is a path to a private key, resolved against the current directory as MUP does (with
- * `~` expanded and the config directory as a fallback), and read as the key content. Encrypted
- * keys need the agent (MUP has no passphrase option either). `o.readFile` replaces the file read
- * in tests.
+ * `~` expanded and the config directory as a fallback), and read as the key content. An
+ * encrypted key needs `opts.passphrase` (passed on to ssh2 with the rest of `opts`) or the ssh
+ * agent. `o.readFile` replaces the file read in tests.
  *
  * @throws CometError for a `.pub` key, an unreadable key file, or when no authentication method
  *   is available.

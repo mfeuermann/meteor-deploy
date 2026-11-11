@@ -1,29 +1,25 @@
 /**
- * `deploy` and its hidden MUP variants: `meteor deploy` (the same), `meteor push` (stops after
+ * `deploy` and its MUP variants under `meteor`: `meteor deploy` (the same), `meteor push` (stops after
  * the image is on the servers, without activating it) and `meteor build` (stops after the
  * local build). All of them run the deploy pipeline with Ctrl+C turned into a graceful abort.
  */
 import type { Argv } from 'yargs';
-import type { Strategy } from '../../config/types.js';
 import type { CommandContext } from '../../core/context.js';
-import { CometError } from '../../core/errors.js';
 import { deployPipeline } from '../../deploy/pipeline.js';
 import type { ConfigCommand } from '../registry.js';
+import { assertAllHealthy, rolloutArgs, rolloutOptions } from '../rollout.js';
 import { withAbortOnSignals } from '../signals.js';
-
-const STRATEGIES: Strategy[] = ['canary', 'rolling', 'parallel'];
 
 /**
  * Options of all four deploy commands. In MUP they all accept `--cached-build`; the other
  * options are comet-deploy's own.
  */
 const deployOptions = (y: Argv) =>
-  y
-    .option('cached-build', { type: 'boolean', describe: 'Use the previous build even if the app changed' })
-    .option('force-build', { type: 'boolean', describe: 'Build even when nothing changed' })
-    .option('strategy', { type: 'string', choices: STRATEGIES, describe: 'Rollout strategy (default: cometDeploy.strategy)' })
-    .option('force-unlock', { type: 'boolean', describe: 'Release an existing deploy lock first' })
-    .conflicts('cached-build', 'force-build');
+  rolloutOptions(
+    y
+      .option('cached-build', { type: 'boolean', describe: 'Use the previous build even if the app changed' })
+      .option('force-build', { type: 'boolean', describe: 'Build even when nothing changed' }),
+  ).conflicts('cached-build', 'force-build');
 
 /**
  * Runs the deploy pipeline with the parsed options; `stopAfter` ends it after the build or
@@ -37,17 +33,13 @@ async function runDeploy(ctx: CommandContext, argv: Record<string, unknown>, sto
       {
         cachedBuild: !!argv['cached-build'],
         forceBuild: !!argv['force-build'],
-        strategy: argv.strategy as Strategy | undefined,
+        ...rolloutArgs(argv),
         stopAfter,
-        forceUnlock: !!argv['force-unlock'],
       },
       { signal },
     ),
   );
-  if (!outcome.ok) {
-    const bad = [...outcome.results.filter((r) => r.status !== 'healthy').map((r) => r.server), ...outcome.skipped];
-    throw new CometError(`Deploy of ${outcome.version} did not complete on: ${bad.join(', ')}`);
-  }
+  assertAllHealthy(`Deploy of ${outcome.version}`, outcome);
   if (!stopAfter) ctx.reporter.info(`\nDeployed ${outcome.version} to ${outcome.results.map((r) => r.server).join(', ')}.`);
 }
 
@@ -63,34 +55,34 @@ export const deployCommand: ConfigCommand = {
   run: (ctx, argv) => ctx.runner.run('default.deploy', () => runDeploy(ctx, argv)),
 };
 
-/** Hidden `meteor deploy`: the same as `deploy`, without the `default.deploy` key. */
+/** `meteor deploy`: the same as `deploy`, without the `default.deploy` key. */
 export const meteorDeployCommand: ConfigCommand = {
   command: 'deploy',
-  describe: false,
+  describe: 'Same as "deploy"',
   group: 'meteor',
   builder: deployOptions,
   run: (ctx, argv) => runDeploy(ctx, argv),
 };
 
 /**
- * Hidden `meteor push`: preflight, build, lock and distribute. The new version is on the
+ * `meteor push`: preflight, build, lock and distribute. The new version is on the
  * servers, but `:latest` and the running app do not change.
  */
 export const meteorPushCommand: ConfigCommand = {
   command: 'push',
-  describe: false,
+  describe: 'Build and upload the image to the servers, without activating it',
   group: 'meteor',
   builder: deployOptions,
   run: (ctx, argv) => runDeploy(ctx, argv, 'push'),
 };
 
 /**
- * Hidden `meteor build`: preflight and the local build only. It still connects to the servers,
+ * `meteor build`: preflight and the local build only. It still connects to the servers,
  * because the preflight detects which platforms to build for.
  */
 export const meteorBuildCommand: ConfigCommand = {
   command: 'build',
-  describe: false,
+  describe: 'Build the app image locally only',
   group: 'meteor',
   builder: deployOptions,
   run: (ctx, argv) => runDeploy(ctx, argv, 'build'),

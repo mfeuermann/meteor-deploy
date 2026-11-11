@@ -1,25 +1,17 @@
 /**
- * App lifecycle commands: `reconfig`, `restart`, `start`, `stop`, `logs`, their hidden
+ * App lifecycle commands: `reconfig`, `restart`, `start`, `stop`, `logs`, their
  * `meteor …` variants and `meteor envconfig`. `reconfig` and `restart` lock the servers, roll
  * out by strategy with a health check and can be aborted with Ctrl+C; `start`, `stop` and
  * `logs` work on all app servers in parallel, without a lock.
  */
-import type { Argv } from 'yargs';
-import type { Strategy } from '../../config/types.js';
 import type { CommandContext } from '../../core/context.js';
 import { CometError } from '../../core/errors.js';
-import { envconfigAll, reconfigPipeline, restartPipeline, startAll, stopAll, type LifecycleOutcome } from '../../deploy/pipeline.js';
+import { lineSplitter } from '../../output/lines.js';
+import { envconfigAll, reconfigPipeline, restartPipeline, startAll, stopAll } from '../../deploy/pipeline.js';
 import { shArg } from '../../remote/ops.js';
 import type { ConfigCommand } from '../registry.js';
+import { assertAllHealthy, rolloutArgs, rolloutOptions } from '../rollout.js';
 import { withAbortOnSignals } from '../signals.js';
-
-const STRATEGIES: Strategy[] = ['canary', 'rolling', 'parallel'];
-
-/** `--strategy` and `--force-unlock`, shared by `reconfig` and `restart`. */
-const strategyOption = (y: Argv) =>
-  y
-    .option('strategy', { type: 'string', choices: STRATEGIES, describe: 'Rollout strategy (default: cometDeploy.strategy)' })
-    .option('force-unlock', { type: 'boolean', describe: 'Release an existing deploy lock first' });
 
 /**
  * Options that belong to comet-deploy itself and are never passed to `docker logs`
@@ -62,28 +54,6 @@ export function buildLogsCommand(appName: string, passthrough: Array<string | nu
 }
 
 /**
- * Splits a stream of chunks into lines and emits each complete line with `prefix`.
- * `flush()` emits a last line that has no trailing newline.
- */
-function prefixLines(prefix: string, emit: (line: string) => void): { push: (chunk: string) => void; flush: () => void } {
-  let buf = '';
-  return {
-    push(chunk) {
-      buf += chunk;
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        emit(prefix + buf.slice(0, nl));
-        buf = buf.slice(nl + 1);
-      }
-    },
-    flush() {
-      if (buf) emit(prefix + buf);
-      buf = '';
-    },
-  };
-}
-
-/**
  * Streams `docker logs` from all app servers at once; every line is prefixed with `[<host>]`
  * like MUP. The exit code of `docker logs` is not checked (its error message is in the output); only a
  * server that cannot be reached fails, and all such servers are reported together in one
@@ -97,10 +67,11 @@ export async function streamLogs(ctx: CommandContext, passthrough: Array<string 
       const prefix = `[${ctx.config.servers[s]?.host ?? s}]`;
       const emit = (line: string) => ctx.reporter.info(line);
       // One line buffer per stream, so that partial lines of stdout and stderr never mix.
-      const out = prefixLines(prefix, emit);
-      const err = prefixLines(prefix, emit);
+      const out = lineSplitter((l) => emit(prefix + l));
+      const err = lineSplitter((l) => emit(prefix + l));
       try {
-        await (await ctx.ssh.get(s)).exec(cmd, { onStdout: out.push, onStderr: err.push });
+        // `logs -f` never ends: print the lines, do not collect them.
+        await (await ctx.ssh.get(s)).exec(cmd, { onStdout: out.push, onStderr: err.push, collect: false });
       } finally {
         out.flush();
         err.flush();
@@ -109,12 +80,6 @@ export async function streamLogs(ctx: CommandContext, passthrough: Array<string 
   );
   const failed = res.flatMap((x, i) => (x.status === 'rejected' ? [`${servers[i]}: ${(x.reason as Error)?.message ?? x.reason}`] : []));
   if (failed.length) throw new CometError(`Could not read the logs:\n${failed.map((f) => `  - ${f}`).join('\n')}`);
-}
-
-/** Throws a `CometError` naming every server that did not end healthy or was skipped. */
-function assertOk(what: string, o: Pick<LifecycleOutcome, 'results' | 'skipped'>): void {
-  const bad = [...o.results.filter((r) => r.status !== 'healthy').map((r) => r.server), ...o.skipped];
-  if (bad.length) throw new CometError(`${what} did not complete on: ${bad.join(', ')}`);
 }
 
 /**
@@ -130,20 +95,18 @@ const asDefault = (name: string, fn: (ctx: CommandContext, argv: Record<string, 
  * (`default.reconfig` → `meteor.envconfig` → `meteor.start`).
  */
 async function reconfig(ctx: CommandContext, argv: Record<string, unknown>): Promise<void> {
-  const o = { strategy: argv.strategy as Strategy | undefined, forceUnlock: !!argv['force-unlock'] };
-  assertOk('Reconfig', await withAbortOnSignals(ctx.reporter, (signal) => reconfigPipeline(ctx, o, { signal })));
+  assertAllHealthy('Reconfig', await withAbortOnSignals(ctx.reporter, (signal) => reconfigPipeline(ctx, rolloutArgs(argv), { signal })));
 }
 
 /** Stop, start and health check per server by strategy; the pipeline runs `meteor.restart`. */
 async function restart(ctx: CommandContext, argv: Record<string, unknown>): Promise<void> {
-  const o = { strategy: argv.strategy as Strategy | undefined, forceUnlock: !!argv['force-unlock'] };
-  assertOk('Restart', await withAbortOnSignals(ctx.reporter, (signal) => restartPipeline(ctx, o, { signal })));
+  assertAllHealthy('Restart', await withAbortOnSignals(ctx.reporter, (signal) => restartPipeline(ctx, rolloutArgs(argv), { signal })));
 }
 
 /** `meteor.start` with a health check on all app servers; throws if one did not come up healthy. */
 async function start(ctx: CommandContext): Promise<void> {
   const results = await ctx.runner.run('meteor.start', () => startAll(ctx));
-  assertOk('Start', { results, skipped: [] });
+  assertAllHealthy('Start', { results, skipped: [] });
 }
 
 /** `meteor.stop` on all app servers. As in MUP this removes the container; `start` recreates it. */
@@ -161,25 +124,25 @@ const logsDescribe = 'Show the app logs from all servers (docker logs options pa
 export const reconfigCommand: ConfigCommand = {
   command: 'reconfig',
   describe: 'Write the env and settings to the servers and restart the app',
-  builder: strategyOption,
+  builder: rolloutOptions,
   run: reconfig,
 };
 
 // Top-level `restart`, `start`, `stop` and `logs`. `logs` is not strict, so that unknown
 // options reach `docker logs`.
-export const restartCommand: ConfigCommand = { command: 'restart', describe: 'Restart the app (with a health check)', builder: strategyOption, run: asDefault('restart', restart) };
+export const restartCommand: ConfigCommand = { command: 'restart', describe: 'Restart the app (with a health check)', builder: rolloutOptions, run: asDefault('restart', restart) };
 export const startCommand: ConfigCommand = { command: 'start', describe: 'Start the app on all servers', run: asDefault('start', start) };
 export const stopCommand: ConfigCommand = { command: 'stop', describe: 'Stop the app on all servers', run: asDefault('stop', stop) };
 export const logsCommand: ConfigCommand = { command: 'logs', describe: logsDescribe, strict: false, run: asDefault('logs', logs(['logs'])) };
 
-// The hidden `meteor …` variants: the same commands without the `default.<name>` key. There is
+// The `meteor …` variants: the same commands without the `default.<name>` key. There is
 // no `meteor reconfig`, as in MUP.
-export const meteorRestartCommand: ConfigCommand = { command: 'restart', describe: false, group: 'meteor', builder: strategyOption, run: restart };
-export const meteorStartCommand: ConfigCommand = { command: 'start', describe: false, group: 'meteor', run: start };
-export const meteorStopCommand: ConfigCommand = { command: 'stop', describe: false, group: 'meteor', run: stop };
-export const meteorLogsCommand: ConfigCommand = { command: 'logs', describe: false, group: 'meteor', strict: false, run: logs(['meteor', 'logs']) };
-/** Hidden `meteor envconfig`: writes start.sh and env.list, no restart, lock or history. */
-export const meteorEnvconfigCommand: ConfigCommand = { command: 'envconfig', describe: false, group: 'meteor', run: (ctx) => envconfigAll(ctx) };
+export const meteorRestartCommand: ConfigCommand = { command: 'restart', describe: 'Restart the app (by strategy)', group: 'meteor', builder: rolloutOptions, run: restart };
+export const meteorStartCommand: ConfigCommand = { command: 'start', describe: 'Start the app', group: 'meteor', run: start };
+export const meteorStopCommand: ConfigCommand = { command: 'stop', describe: 'Stop the app', group: 'meteor', run: stop };
+export const meteorLogsCommand: ConfigCommand = { command: 'logs', describe: 'Show the app logs (docker logs options pass through)', group: 'meteor', strict: false, run: logs(['meteor', 'logs']) };
+/** `meteor envconfig`: writes start.sh and env.list, no restart, lock or history. */
+export const meteorEnvconfigCommand: ConfigCommand = { command: 'envconfig', describe: 'Upload start.sh and env.list without restarting', group: 'meteor', run: (ctx) => envconfigAll(ctx) };
 
 /** All commands of this module, registered by `main.ts`. */
 export const LIFECYCLE_COMMANDS: ConfigCommand[] = [

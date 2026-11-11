@@ -49,11 +49,21 @@ describe('validateConfig', () => {
       ['name with space', (c) => (c.app.name = 'my app'), 'app.name', /space/],
       ['missing servers', (c) => delete c.servers, 'servers'],
       ['invalid ROOT_URL', (c) => (c.app.env.ROOT_URL = 'app.example.com'), 'app.env.ROOT_URL'],
+      ['missing env', (c) => delete c.app.env, 'app.env.ROOT_URL'],
       ['unknown app server', (c) => (c.app.servers.three = {}), 'app.servers.three'],
       ['swarm', (c) => (c.swarm = { enabled: true }), 'swarm.enabled', /not supported/],
       ['legacy app.ssl', (c) => (c.app.ssl = { crt: 'a', key: 'b' }), 'app.ssl', /proxy/],
       ['legacy app.nginx', (c) => (c.app.nginx = { clientUploadLimit: '1M' }), 'app.nginx', /proxy/],
       ['legacy imageFrontendServer', (c) => (c.app.docker.imageFrontendServer = 'x'), 'app.docker.imageFrontendServer', /proxy/],
+      ['legacy dockerImageFrontendServer', (c) => (c.app.dockerImageFrontendServer = 'x'), 'app.dockerImageFrontendServer', /proxy/],
+      [
+        'missing name with a mongo section',
+        (c) => {
+          delete c.app.name;
+          c.mongo = {};
+        },
+        'app.name',
+      ],
       ['newline in env', (c) => (c.app.env.MULTI = 'a\nb'), 'app.env.MULTI', /newline/],
       ['newline in per-server env', (c) => (c.app.servers.one = { env: { X: 'a\nb' } }), 'app.servers.one.env.X', /newline/],
       ['bad strategy', (c) => (c.cometDeploy = { strategy: 'fast' }), 'cometDeploy.strategy'],
@@ -70,10 +80,22 @@ describe('validateConfig', () => {
     });
   });
 
+  it('reports a null app.servers entry with proxy load balancing instead of crashing', () => {
+    const issues = check((c) => {
+      c.servers.one.privateIp = '10.0.0.1';
+      c.app.servers.one = null;
+      c.proxy = { domains: 'app.example.com', loadBalancing: true };
+    });
+    expect(find(issues, 'app.servers.one'), JSON.stringify(issues)).toBeDefined();
+  });
+
+  it('accepts ssh2 options in servers.*.opts, such as passphrase', () => {
+    expect(check((c) => (c.servers.one.opts = { port: 2222, passphrase: 'secret phrase' }))).toEqual([]);
+  });
+
   describe('warnings', () => {
     it.each<[string, (c: RawConfig) => void, string, RegExp?]>([
       ['unknown app key', (c) => (c.app.foo = 1), 'app.foo'],
-      ['extra ssh opts', (c) => (c.servers.one.opts = { port: 22, readyTimeout: 5 }), 'servers.one.opts.readyTimeout'],
       ['singular allowIncompatibleUpdate', (c) => (c.app.buildOptions = { allowIncompatibleUpdate: true }), 'app.buildOptions.allowIncompatibleUpdate'],
       ['plugins', (c) => (c.plugins = ['mup-redis']), 'plugins', /not supported/],
       ['prepareBundleLocally', (c) => (c.app.docker.prepareBundleLocally = true), 'app.docker.prepareBundleLocally', /ignored: comet-deploy always builds locally/],

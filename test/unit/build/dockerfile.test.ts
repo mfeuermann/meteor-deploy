@@ -1,4 +1,4 @@
-import { cpSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { cpSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -73,6 +73,14 @@ describe('renderDockerfile', () => {
     expect(rest).toEqual(plan.appCopy.map((c) => `COPY --chown=app:app ${c.from} ${c.to}`));
   });
 
+  it('copies a nested deps file to its own path, not flattened into programs/server', () => {
+    const nested = { ...plan, depsCopy: ['bundle/programs/server/boot.js', 'bundle/programs/server/lib/x.js', 'bundle/programs/server/npm'] };
+    const df = renderDockerfile({ baseImage: 'zodern/meteor:latest', buildInstructions: [], argKeys: [], plan: nested, chownApp: false });
+    expect(df).toContain('COPY bundle/programs/server/boot.js /built_app/programs/server/\n');
+    expect(df).toContain('COPY bundle/programs/server/lib/x.js /built_app/programs/server/lib/x.js\n');
+    expect(df.indexOf('lib/x.js')).toBeLessThan(df.indexOf('npm install'));
+  });
+
   it('omits --chown when not requested and never contains env values', () => {
     const df = renderDockerfile({ baseImage: 'abernix/meteord:node-12-base', buildInstructions: [], argKeys: [], plan, chownApp: false });
     expect(df).not.toContain('--chown');
@@ -85,6 +93,25 @@ describe('argKeysForInstructions', () => {
     expect(argKeysForInstructions(['RUN echo $FOO ${BAR}'], ['FOO', 'BAR', 'BAZ'])).toEqual(['BAR', 'FOO']);
     expect(argKeysForInstructions(['RUN echo $FOOD'], ['FOO'])).toEqual([]);
     expect(argKeysForInstructions([], ['FOO'])).toEqual([]);
+  });
+
+  it('treats env keys literally, not as regular expressions', () => {
+    expect(argKeysForInstructions(['RUN echo $AB'], ['A.'])).toEqual([]);
+    expect(() => argKeysForInstructions(['RUN echo x'], ['A('])).not.toThrow();
+  });
+});
+
+describe('computeDepsHash with symlinks in npm/', () => {
+  it('hashes a dangling link and a link cycle by their target text instead of failing', async () => {
+    const a = copyBundle();
+    const npm = join(a, 'programs/server/npm/node_modules');
+    symlinkSync('does-not-exist', join(npm, 'dangling'));
+    symlinkSync('.', join(npm, 'cycle'));
+    const h = await computeDepsHash(a, planBuildContext(a));
+    expect(h).toMatch(/^[0-9a-f]{64}$/);
+    rmSync(join(npm, 'dangling'));
+    symlinkSync('elsewhere', join(npm, 'dangling'));
+    expect(await computeDepsHash(a, planBuildContext(a))).not.toBe(h);
   });
 });
 

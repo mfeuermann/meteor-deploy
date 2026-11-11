@@ -3,6 +3,7 @@
  * the platforms of the buildx builder, image ids, the base image pull and the image build. Every
  * call runs `docker` without a shell.
  */
+import { CometError } from '../core/errors.js';
 import { run } from './exec.js';
 
 /**
@@ -49,6 +50,14 @@ export async function imageId(ref: string): Promise<string | null> {
   return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : null;
 }
 
+/**
+ * Removes a local image tag (`docker rmi`, no force). Best effort: an image that is gone
+ * already or still used by a container stays as it is, without an error.
+ */
+export async function removeImage(ref: string): Promise<void> {
+  await run('docker', ['rmi', ref]);
+}
+
 /** `docker pull --platform`; failures are ignored (like MUP), the build reports real problems. */
 export async function pullImage(image: string, platform: string, onLine?: (l: string) => void): Promise<boolean> {
   const r = await run('docker', ['pull', '--platform', platform, image], { onLine });
@@ -75,7 +84,6 @@ export async function buildImage(o: {
   labels?: Record<string, string>;
   onLine?: (l: string) => void;
 }): Promise<{ imageId: string; log: string }> {
-  const { CometError } = await import('../core/errors.js');
   const args = ['buildx', 'build', '--load', '--progress', 'plain', '--platform', o.platform, '-t', o.tag, '-f', '-'];
   for (const [k, v] of Object.entries(o.buildArgs)) args.push('--build-arg', `${k}=${v}`);
   for (const [k, v] of Object.entries(o.labels ?? {})) args.push('--label', `${k}=${v}`);

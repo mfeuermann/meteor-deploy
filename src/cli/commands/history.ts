@@ -4,8 +4,10 @@
  * MUP keeps no history, so servers deployed only by MUP contribute nothing.
  */
 import type { CommandContext } from '../../core/context.js';
+import { CometError } from '../../core/errors.js';
 import { mergeHistory, type MergedHistoryEntry } from '../../deploy/history.js';
 import { formatDuration } from '../../output/reporter.js';
+import { formatTable } from '../../output/table.js';
 import { readHistory, type HistoryEntry } from '../../remote/ops.js';
 import type { ConfigCommand } from '../registry.js';
 
@@ -53,13 +55,7 @@ export function formatHistoryTable(rows: MergedHistoryEntry[], o: { timeZone?: s
     formatCommit(e),
     e.reportedBy.join(', '),
   ]);
-  const widths = HEADER.map((h, i) => Math.max(h.length, ...data.map((d) => d[i].length)));
-  const fmt = (cols: string[]) =>
-    cols
-      .map((c, i) => c.padEnd(widths[i]))
-      .join('  ')
-      .trimEnd();
-  return [fmt(HEADER), ...data.map(fmt)].join('\n');
+  return formatTable(HEADER, data);
 }
 
 /**
@@ -69,7 +65,8 @@ export function formatHistoryTable(rows: MergedHistoryEntry[], o: { timeZone?: s
  */
 async function history(ctx: CommandContext, argv: Record<string, unknown>): Promise<void> {
   // The newest `limit` entries of each server are enough for the newest `limit` merged rows.
-  const limit = Math.max(1, Math.floor(Number(argv.limit ?? 20)) || 20);
+  const limit = Number(argv.limit ?? 20);
+  if (!Number.isInteger(limit) || limit < 1) throw new CometError('--limit must be a whole number of 1 or more');
   const servers = ctx.appServers();
   const perServer: Record<string, HistoryEntry[]> = {};
   await Promise.all(

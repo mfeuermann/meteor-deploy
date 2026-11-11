@@ -29,3 +29,7 @@ echo "docker=$ver"
 echo "docker_running=$running"
 echo "docker_free=$free"
 if command -v bash >/dev/null 2>&1; then echo "bash=1"; else echo "bash=0"; fi
+<% if (configDir) { %>
+# Only asked for by commands that need the app directories that `setup` creates.
+if [ -d <%- q(configDir) %> ]; then echo "app_setup=1"; else echo "app_setup=0"; fi
+<% } %>

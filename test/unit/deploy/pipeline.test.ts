@@ -175,6 +175,17 @@ describe('deployPipeline', () => {
     expect(s.calls).not.toContain('registry');
   });
 
+  it('gives the "wait for the other deploy" hint only for a held lock', async () => {
+    const s = await setup();
+    s.deps.acquireLock = async (conn) => {
+      if (conn.name === 'two') throw new CometError('[two] /opt/myapp/config does not exist. Run "comet-deploy setup" first.');
+      return { ok: true };
+    };
+    const err = await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps).catch((e: CometError) => e);
+    expect((err as CometError).message).toMatch(/setup/);
+    expect((err as CometError).hint).toBeUndefined();
+  });
+
   it('canary revert: not ok, others skipped, history says reverted', async () => {
     const s = await setup({ activate: { one: 'reverted' } });
     const out = await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps);
@@ -245,6 +256,19 @@ describe('deployPipeline', () => {
     await expect(deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps)).rejects.toThrow(/64 KiB/);
     expect(s.calls).not.toContain('build');
     expect(s.calls.some((c) => c.startsWith('lock:'))).toBe(false);
+  });
+
+  it('refuses a hook on any step of the deploy before doing anything', async () => {
+    const s = await setup({ extra: "hooks: { 'pre.meteor.start': { localCommand: 'echo' } }," });
+    await expect(deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps)).rejects.toThrow(/pre\.meteor\.start/);
+    expect(s.calls).toEqual([]);
+  });
+
+  it('meteor build only runs under meteor.build, like MUP', async () => {
+    const s = await setup({ extra: "hooks: { 'pre.meteor.deploy': {}, 'post.meteor.push': {} }," });
+    await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false, stopAfter: 'build' }, s.deps);
+    expect(s.calls).toEqual(['preflight', 'settings', 'build']);
+    expect(s.ctx.runner.history).toEqual(['meteor.build']);
   });
 
   it('meteor build / push stop early', async () => {

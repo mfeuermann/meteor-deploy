@@ -6,7 +6,7 @@
  * first use.
  */
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -73,7 +73,7 @@ async function keyPair(): Promise<{ pemPath: string; publicKey: string }> {
   if (keys) return keys;
   const dir = mkdtempSync(join(tmpdir(), 'comet-fake-keys-'));
   const pemPath = join(dir, 'id_rsa');
-  if (!existsSync(pemPath)) await run('ssh-keygen', ['-q', '-t', 'rsa', '-b', '2048', '-m', 'PEM', '-N', '', '-f', pemPath]);
+  await run('ssh-keygen', ['-q', '-t', 'rsa', '-b', '2048', '-m', 'PEM', '-N', '', '-f', pemPath]);
   keys = { pemPath, publicKey: readFileSync(`${pemPath}.pub`, 'utf8').trim() };
   return keys;
 }

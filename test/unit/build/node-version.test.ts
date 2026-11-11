@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -18,5 +19,11 @@ describe('readNodeVersion', () => {
 
   it('fails clearly when neither exists', () => {
     expect(() => readNodeVersion(tempDir())).toThrow(CometError);
+  });
+
+  it('reports an unreadable star.json as a CometError', () => {
+    const d = tempDir();
+    writeFileSync(join(d, 'star.json'), '{not json');
+    expect(() => readNodeVersion(d)).toThrow(CometError);
   });
 });

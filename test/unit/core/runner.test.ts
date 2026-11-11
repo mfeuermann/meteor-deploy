@@ -16,6 +16,13 @@ describe('CommandRunner and MUP hooks (I5: never skip a hook silently)', () => {
     await expect(r.run('default.reconfig', async () => 1)).rejects.toThrow(/pre\.default\.reconfig/);
   });
 
+  it('refuses a list of keys up front, before any of them runs', () => {
+    const r = new CommandRunner({ 'post.meteor.start': {} });
+    expect(() => r.refuseHooks(['meteor.push', 'meteor.start'])).toThrow(/post\.meteor\.start/);
+    expect(() => r.refuseHooks(['meteor.push'])).not.toThrow();
+    expect(r.history).toEqual([]);
+  });
+
   it('runs without hooks', async () => {
     expect(await new CommandRunner().run('default.deploy', async () => 3)).toBe(3);
     expect(await new CommandRunner({}).run('default.deploy', async () => 4)).toBe(4);

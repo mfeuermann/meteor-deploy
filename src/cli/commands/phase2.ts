@@ -21,7 +21,9 @@ function planned(command: string, describe: string | false, group?: NoConfigComm
     needsConfig: false,
     strict: false,
     async run(_ctx, argv) {
-      const words = ((argv._ as Array<string | number>) ?? []).map(String).join(' ');
+      // yargs puts the positionals of `[server] [command..]` into their own keys, not into `_`.
+      const positionals = [argv.server, ...((argv.command as unknown[] | undefined) ?? [])].filter((x) => x !== undefined);
+      const words = [...((argv._ as unknown[]) ?? []), ...positionals].map(String).join(' ');
       throw new CometError(`"${words}" is not supported yet: it is planned for phase 2 of comet-deploy.`, {
         hint: 'Meanwhile you can run this command with MUP on the same config and servers.',
       });
@@ -29,10 +31,10 @@ function planned(command: string, describe: string | false, group?: NoConfigComm
   };
 }
 
-/** Listed in `--help`, except `meteor debug`, which is hidden like every `meteor …` command. */
+/** Listed in `--help`; `meteor debug` under `meteor --help`. */
 export const PHASE2_COMMANDS: NoConfigCommand[] = [
   planned('proxy [command..]', 'Reverse proxy commands (planned for phase 2)'),
   planned('mongo [command..]', 'MongoDB commands (planned for phase 2)'),
   planned('ssh [server] [command..]', 'Open a shell on a server (planned for phase 2)'),
-  planned('debug', false, 'meteor'),
+  planned('debug', 'Debug the app (planned for phase 2)', 'meteor'),
 ];

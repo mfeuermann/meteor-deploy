@@ -70,6 +70,12 @@ describe('parseFacts', () => {
     });
   });
 
+  it('reports whether the app directory exists, when it was asked for', () => {
+    expect(parseFacts('arch=x86_64\napp_setup=1').appSetup).toBe(true);
+    expect(parseFacts('arch=x86_64\napp_setup=0').appSetup).toBe(false);
+    expect(parseFacts('arch=x86_64').appSetup).toBeUndefined();
+  });
+
   it('reports whether sudo works without a password (M13)', () => {
     expect(parseFacts('arch=x86_64\nsudo=ok').sudo).toBe('ok');
     expect(parseFacts('arch=x86_64\nsudo=password').sudo).toBe('password');

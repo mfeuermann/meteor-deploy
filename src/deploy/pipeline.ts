@@ -170,12 +170,14 @@ const historyResult = (s: ActivationResult['status']): HistoryEntry['result'] =>
 const HISTORY_WINDOW = 1000;
 
 /**
- * The version outcomes of one server from its deploy history, or null when
- * the history is empty or cannot be read (then nothing is filtered by it).
+ * The version outcomes of one server from its deploy history, or null when the history says
+ * nothing about versions (empty, unreadable, or only reconfig/restart entries): then nothing
+ * is filtered by it.
  */
 async function serverVersionOutcomes(d: Pick<PipelineDeps, 'readHistory'>, conn: SshConnection, appName: string) {
   const entries = await d.readHistory(conn, appName, HISTORY_WINDOW).catch(() => []);
-  return entries.length ? versionOutcomes(entries) : null;
+  const o = versionOutcomes(entries);
+  return o.succeeded.size || o.failedOnly.size ? o : null;
 }
 
 /** The lock holder for messages (also used by `status` and `unlock`). */
@@ -226,8 +228,11 @@ export async function lockServers(
   });
   if (problems.length) {
     await releaseServers(ctx, locked, d);
+    // The "wait for the other deploy" hint only fits a lock that someone holds; other problems
+    // (no connection, setup never run) explain themselves.
+    const held = results.some((x) => x.status === 'fulfilled' && !x.value.r.ok);
     throw new CometError(`Cannot lock the servers:\n${problems.map((p) => `  - ${p}`).join('\n')}`, {
-      hint: 'Wait for the other deploy to finish. If none is running, release the lock with "comet-deploy unlock" (or add --force-unlock).',
+      hint: held ? 'Wait for the other deploy to finish. If none is running, release the lock with "comet-deploy unlock" (or add --force-unlock).' : undefined,
     });
   }
   return locked;
@@ -336,10 +341,24 @@ export async function deployPipeline(
   const version = makeVersion(startedAt, git ? { sha: git.sha, dirty: git.dirty } : undefined);
   const strategy = o.strategy ?? c.cometDeploy.strategy;
 
-  return run.run('meteor.deploy', async () => {
+  // The MUP command keys this run enters: `meteor build` is only `meteor.build` and
+  // `meteor push` stops after `meteor.prepareBundle`, as in MUP. All of them are checked for
+  // hooks now, so a hook on a late step never fails the deploy after the build and the upload.
+  const keys =
+    o.stopAfter === 'build'
+      ? ['meteor.build']
+      : ['meteor.push', 'meteor.build', 'meteor.prepareBundle', ...(o.stopAfter === 'push' ? [] : ['meteor.deploy', 'default.reconfig', 'meteor.envconfig', 'meteor.start'])];
+  run.refuseHooks(keys);
+  const step = <T>(key: string, fn: () => Promise<T>): Promise<T> => (keys.includes(key) ? run.run(key, fn) : fn());
+
+  return step('meteor.deploy', async () => {
     // A held lock only matters when this run will take one: `meteor build` never locks, and
     // `--force-unlock` releases the lock anyway.
-    const pre = await r.phase('Preflight', () => d.preflight(ctx, servers, { needsBuild: true, checkLocks: c.cometDeploy.lock && o.stopAfter !== 'build' && !o.forceUnlock }));
+    const pre = await r.phase('Preflight', () => d.preflight(ctx, servers, {
+        needsBuild: true,
+        checkLocks: c.cometDeploy.lock && o.stopAfter !== 'build' && !o.forceUnlock,
+        distributes: o.stopAfter !== 'build',
+      }));
     // Loaded before the build, as MUP's deploy does first: a missing or invalid settings file
     // fails now, and its values are registered as secrets before any later output is printed.
     const settings = ctx.getSettings();
@@ -351,8 +370,8 @@ export async function deployPipeline(
     // In MUP `meteor.push` is build + upload + `meteor.prepareBundle`. Here the lock sits between
     // the build and the distribution, so `meteor.push` wraps only the build and
     // `meteor.prepareBundle` is entered after the lock; the keys still run in MUP's order.
-    await run.run('meteor.push', async () => {
-      built = await run.run('meteor.build', () =>
+    await step('meteor.push', async () => {
+      built = await step('meteor.build', () =>
         r.phase('Build', () => d.buildApp(ctx, { platforms: pre.platforms, version, cachedBuild: o.cachedBuild, forceBuild: o.forceBuild })),
       );
     });
@@ -383,7 +402,7 @@ export async function deployPipeline(
     try {
       // Inside the `try`, so an abort that arrived while locking still releases the locks.
       aborted(d.signal);
-      await run.run('meteor.prepareBundle', () =>
+      await step('meteor.prepareBundle', () =>
         r.phase('Distribute', async () => {
           const { port } = await d.ensureLocalRegistry();
           registryStarted = true;
@@ -422,9 +441,9 @@ export async function deployPipeline(
       // MUP's deploy continues with `default.reconfig` → `meteor.envconfig` → `meteor.start`.
       // One activation per server does all three, but the keys are entered in the same nesting
       // so that hooks on them are refused.
-      ({ results, skipped } = await run.run('default.reconfig', () =>
-        run.run('meteor.envconfig', () =>
-          run.run('meteor.start', () =>
+      ({ results, skipped } = await step('default.reconfig', () =>
+        step('meteor.envconfig', () =>
+          step('meteor.start', () =>
             r.phase('Activate', async () =>
               runStrategy(
                 servers,
@@ -442,19 +461,8 @@ export async function deployPipeline(
       ));
 
       // History before pruning: pruning reads it to find the versions that never ran healthy.
-      // Every server the strategy reached gets an entry, failed and reverted ones included;
-      // skipped servers were not touched and get none. A failed write only warns.
-      const durationMs = Date.now() - startedAt.getTime();
-      await Promise.all(
-        results.map(async (res) => {
-          try {
-            const entry = makeHistoryEntry({ action: 'deploy', version: imageFor(res.server).version, result: historyResult(res.status), startedAt, durationMs, git, servers });
-            await d.appendHistory(await ctx.ssh.get(res.server), c.app.name, entry);
-          } catch (err) {
-            r.warn(`Could not write the deploy history on "${res.server}": ${(err as Error).message}`);
-          }
-        }),
-      );
+      // Skipped servers were not touched and get no entry.
+      await writeHistory(ctx, d, { action: 'deploy', results, startedAt, servers, git, versionOf: (s) => imageFor(s).version });
       // Pruning runs only where the new version is healthy; a server that failed or was reverted
       // keeps all its images for a manual rollback. Versions that never ran healthy on a server
       // do not use up one of its `keepVersions` slots. Removing version tags can leave untagged
@@ -498,15 +506,23 @@ export interface LifecycleOutcome {
 }
 
 /**
- * Appends one history entry to every server the strategy reached. Nothing here fails the
- * command: git info is optional and a failed write only warns.
+ * Appends one history entry to every server the strategy reached, failed and reverted ones
+ * included. Nothing here fails the command: git info is optional (`o.git` when the caller
+ * read it already, null for no git) and a failed write only warns.
  */
 async function writeHistory(
   ctx: CommandContext,
   d: Pick<PipelineDeps, 'appendHistory' | 'readGitInfo'>,
-  o: { action: HistoryEntry['action']; results: ActivationResult[]; startedAt: Date; servers: string[]; versionOf?: (s: string) => string | null },
+  o: {
+    action: HistoryEntry['action'];
+    results: ActivationResult[];
+    startedAt: Date;
+    servers: string[];
+    versionOf?: (s: string) => string | null;
+    git?: Awaited<ReturnType<PipelineDeps['readGitInfo']>>;
+  },
 ): Promise<void> {
-  const git = await d.readGitInfo(resolveAppPath(ctx.config, ctx.basePath)).catch(() => null);
+  const git = o.git !== undefined ? o.git : await d.readGitInfo(resolveAppPath(ctx.config, ctx.basePath)).catch(() => null);
   const durationMs = Date.now() - o.startedAt.getTime();
   await Promise.all(
     o.results.map(async (res) => {
@@ -732,8 +748,9 @@ export async function rollbackPipeline(
         `Fix the problem and run "comet-deploy rollback --servers ${others.join(',')}"${o.to ? ` --to ${o.to}` : ''}.`,
     });
     aborted(d.signal, 'Rollback');
-    // One version is reported when every server rolled back to the same target.
+    // One version is reported when every server rolled back to the same target; servers that
+    // went back to different versions are listed per server in the summary.
     const labels = [...new Set(outcome.results.map((r) => label(r.server)).filter((x): x is string => !!x))];
-    return { version: o.to ?? (labels.length === 1 ? labels[0] : 'previous'), ...outcome };
+    return { version: o.to ?? (labels.length === 1 ? labels[0] : 'the versions listed above'), ...outcome };
   });
 }

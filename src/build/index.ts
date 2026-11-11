@@ -11,7 +11,7 @@ import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
 import { localImageRepo } from '../core/naming.js';
 import { TOOL_ID } from '../core/version.js';
-import { buildImage, imageId, pullImage } from '../local/docker.js';
+import { buildImage, imageId, pullImage, removeImage } from '../local/docker.js';
 import { BuildCache } from './cache.js';
 import { argKeysForInstructions, computeDepsHash, DOCKERFILE_VERSION, planBuildContext, renderDockerfile, writeContextIgnore } from './dockerfile.js';
 import { computeInputHash } from './input-hash.js';
@@ -94,11 +94,14 @@ export async function buildApp(
     }
 
     // `extra` holds the inputs outside the app directory that change the image. The build
-    // location may lie inside the app; hashing it would change the hash on every build.
+    // location may lie inside the app; hashing it would change the hash on every build. The
+    // config directory too (MUP's usual `<app>/.deploy`, with `path: '../'`): Meteor never
+    // bundles a dot directory, and editing mup.js or settings.json must not force a rebuild.
+    // A config in the app root itself is not excluded (Meteor would load a mup.js there).
     const inputHash = await computeInputHash(
       appPath,
       { buildOptions: app.buildOptions, platform, tool: TOOL_ID, image: app.docker.image, buildInstructions: instructions, dockerfile: DOCKERFILE_VERSION },
-      { exclude: [buildLocation] },
+      { exclude: [buildLocation, ctx.basePath] },
     );
     if (!o.forceBuild) {
       const e = cache.lookup(inputHash, platform);
@@ -156,7 +159,8 @@ export async function buildApp(
       depsHash,
       createdAt: new Date().toISOString(),
     };
-    cache.save(entry);
+    // Images of builds the cache forgets would otherwise fill the local disk build by build.
+    for (const gone of cache.save(entry)) await removeImage(gone.localTag);
     results.push({ ...pick(entry), fromCache: false });
   }
   return results;

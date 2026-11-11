@@ -2,6 +2,7 @@
  * Version tags. Every deploy gets a version that names its image locally and on the servers
  * (`mup-<app>:<version>`) and appears in the deploy history. Versions sort by build time.
  */
+import { run } from '../local/exec.js';
 
 /**
  * Version tags: `YYYYMMDD-HHMMSS[-sha7][-dirty]` (UTC). Also used to validate a version before it
@@ -26,7 +27,6 @@ export function makeVersion(d: Date, git?: { sha: string; dirty: boolean }): str
  * `appPath`; untracked files count as dirty (`git status --porcelain` lists them).
  */
 export async function readGitInfo(appPath: string): Promise<{ sha: string; branch: string; dirty: boolean } | null> {
-  const { run } = await import('../local/exec.js');
   const sha = await run('git', ['rev-parse', 'HEAD'], { cwd: appPath });
   if (sha.code !== 0) return null;
   const branch = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: appPath });

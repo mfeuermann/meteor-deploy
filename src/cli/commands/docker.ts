@@ -5,6 +5,7 @@
  * reports and checks every entry of `servers`.
  */
 import type { CommandContext } from '../../core/context.js';
+import { CometError } from '../../core/errors.js';
 import { verboseOutput } from '../../output/lines.js';
 import { runOnServers } from '../../remote/on-servers.js';
 import { shArg } from '../../remote/ops.js';
@@ -46,32 +47,39 @@ export async function dockerPs(ctx: CommandContext, passthrough: Array<string | 
 
 /**
  * `docker status`: the Docker server version on all selected servers (MUP: red below 18,
- * warns on mixed versions). It only reports: a server that is unreachable or has no usable Docker is marked as failed,
- * but the command itself does not throw.
+ * warns on mixed versions). Every server is checked and reported; afterwards a `CometError`
+ * names the servers that are unreachable or have no usable Docker, so scripts see exit 1.
  */
 export async function dockerStatus(ctx: CommandContext): Promise<void> {
   // All entries of `servers`, not only the app servers, as in MUP.
   const all = Object.keys(ctx.config.servers);
   const servers = ctx.serverFilter ? all.filter((s) => ctx.serverFilter!.includes(s)) : all;
   const versions = new Map<string, string>();
+  const failed: string[] = [];
+  const fail = (s: string, detail: string) => {
+    failed.push(s);
+    ctx.reporter.server(s, 'docker', 'failed', detail);
+  };
   await Promise.all(
     servers.map(async (s) => {
       try {
-        const r = await (await ctx.ssh.get(s)).exec('sudo docker version --format "{{.Server.Version}}"');
+        // MUP checks for exit code 127 ("command not found") only, but `sudo` answers 1 for a
+        // missing command, so the binary is looked up first.
+        const r = await (await ctx.ssh.get(s)).exec('command -v docker >/dev/null 2>&1 || exit 127; sudo docker version --format "{{.Server.Version}}"');
         const v = r.stdout.trim();
-        // MUP's check: 127 is the shell's "command not found".
-        if (r.code === 127) return ctx.reporter.server(s, 'docker', 'failed', 'not installed (run "comet-deploy setup")');
-        if (r.code !== 0 || !v) return ctx.reporter.server(s, 'docker', 'failed', 'not running (run "comet-deploy docker restart")');
+        if (r.code === 127) return fail(s, 'not installed (run "comet-deploy setup")');
+        if (r.code !== 0 || !v) return fail(s, 'not running (run "comet-deploy docker restart")');
         versions.set(s, v);
         const major = Number(v.split('.')[0]);
-        if (major < MIN_DOCKER_MAJOR) ctx.reporter.server(s, 'docker', 'failed', `${v} (comet-deploy needs ${MIN_DOCKER_MAJOR} or newer; run "comet-deploy docker update")`);
+        if (major < MIN_DOCKER_MAJOR) fail(s, `${v} (comet-deploy needs ${MIN_DOCKER_MAJOR} or newer; run "comet-deploy docker update")`);
         else ctx.reporter.server(s, 'docker', 'ok', v);
       } catch (err) {
-        ctx.reporter.server(s, 'docker', 'failed', (err as Error).message);
+        fail(s, (err as Error).message);
       }
     }),
   );
   if (new Set(versions.values()).size > 1) ctx.reporter.warn(`The servers run different Docker versions: ${[...versions].map(([s, v]) => `${s} ${v}`).join(', ')}`);
+  if (failed.length) throw new CometError(`Docker is not usable on: ${servers.filter((s) => failed.includes(s)).join(', ')}`);
 }
 
 const group = 'docker' as const;

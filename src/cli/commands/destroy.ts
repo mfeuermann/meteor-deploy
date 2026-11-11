@@ -52,10 +52,10 @@ export async function destroyApp(ctx: CommandContext, o: { force: boolean; sleep
   });
 }
 
-/** Hidden `meteor destroy [--force]`, as in MUP there is no top-level `destroy`. */
+/** `meteor destroy [--force]`, as in MUP there is no top-level `destroy`. */
 export const meteorDestroyCommand: ConfigCommand = {
   command: 'destroy',
-  describe: false,
+  describe: 'Stop the app and remove it from the servers',
   group: 'meteor',
   builder: (y) => y.option('force', { type: 'boolean', describe: 'Confirm that the app should be removed' }),
   run: (ctx, argv) => destroyApp(ctx, { force: !!argv.force }),

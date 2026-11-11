@@ -1,12 +1,18 @@
 /**
- * Joi schemas ported from MUP 1.5.11 (lib/validate/servers.js and
- * lib/plugins/{meteor,mongo,proxy,docker}/validate.js), plus `cometDeploy`.
- * Unknown keys are reported (MUP does the same); validate.ts decides severity.
+ * Joi schemas for the config. Everything except `cometSchema` is ported from MUP 1.5.11
+ * (lib/validate/servers.js and lib/plugins/{meteor,mongo,proxy,docker}/validate.js) so the
+ * same config produces the same problems with the same paths. Unknown keys are reported, as
+ * in MUP; validate.ts decides which problems are errors and which are warnings.
  */
 import Joi from 'joi';
 
+/** The types MUP allows for an env value. */
 const envValue = [Joi.string(), Joi.number(), Joi.bool()];
 
+/**
+ * The top-level `servers` section. `opts` only knows `port`, like MUP: the other ssh2 options
+ * people put there still work (the whole object goes to ssh2) but are reported as unknown.
+ */
 export const serversSchema = Joi.object().pattern(
   /.*/,
   Joi.object({
@@ -14,11 +20,18 @@ export const serversSchema = Joi.object().pattern(
     username: Joi.string().required(),
     pem: Joi.string().trim(),
     password: Joi.string(),
-    opts: Joi.object({ port: Joi.number() }),
+    // MUP's schema knows only `port`, but every ssh2 option in `opts` is passed on to the
+    // connection (also by MUP's nodemiral), e.g. `passphrase`: allowed, not an "unknown key".
+    opts: Joi.object({ port: Joi.number() }).unknown(true),
     privateIp: Joi.string(),
   }),
 );
 
+/**
+ * The `app` (or `meteor`) section, applied to the normalized app with `type` removed. It
+ * still lists options comet-deploy ignores or rejects (`ssl`, `nginx`, `imageFrontendServer`,
+ * `prepareBundleLocally`, ...), because they are valid MUP options; validate.ts reports them.
+ */
 export const appSchema = Joi.object({
   name: Joi.string().min(1).required(),
   path: Joi.string().min(1).required(),
@@ -38,6 +51,7 @@ export const appSchema = Joi.object({
   deployCheckWaitTime: Joi.number(),
   deployCheckPort: Joi.number(),
   enableUploadProgressBar: Joi.bool(),
+  // Legacy alias of docker.image. Normalization moves it, so it is never seen here in practice.
   dockerImage: Joi.string(),
   docker: Joi.object({
     image: Joi.string().trim(),
@@ -73,8 +87,11 @@ export const appSchema = Joi.object({
   volumes: Joi.object(),
   nginx: Joi.object({ clientUploadLimit: Joi.string().trim() }),
   ssl: Joi.object(),
+  // Old name of docker.imageFrontendServer: known, so it gets the error below, not "unknown key".
+  dockerImageFrontendServer: Joi.string(),
 });
 
+/** MUP's built-in MongoDB section. Normalized like MUP but not run yet (phase 2). */
 export const mongoSchema = Joi.object({
   oplog: Joi.bool(),
   port: Joi.number(),
@@ -84,6 +101,11 @@ export const mongoSchema = Joi.object({
   servers: Joi.object().required(),
 });
 
+/**
+ * MUP's reverse proxy section. Normalized like MUP but not run yet (phase 2). The `ssl` rules
+ * are MUP's: `crt` and `key` go together, Let's Encrypt excludes custom certificates, and at
+ * least one of `letsEncryptEmail`, `crt` or `forceSSL` must be set.
+ */
 export const proxySchema = Joi.object({
   ssl: Joi.object({
     letsEncryptEmail: Joi.string().trim(),
@@ -118,6 +140,7 @@ export const proxySchema = Joi.object({
   }),
 });
 
+/** `privateDockerRegistry` (MUP's docker plugin). `host` is required by MUP's schema. */
 export const registrySchema = Joi.object({
   host: Joi.string().required(),
   imagePrefix: Joi.string(),
@@ -125,6 +148,10 @@ export const registrySchema = Joi.object({
   password: Joi.string(),
 });
 
+/**
+ * The `cometDeploy` section (comet-deploy addition). Validated against the user's raw value,
+ * not the normalized one, so messages refer to what the user wrote.
+ */
 export const cometSchema = Joi.object({
   strategy: Joi.string().valid('canary', 'rolling', 'parallel'),
   transfer: Joi.string().valid('auto', 'tunnel', 'registry', 'stream'),
@@ -138,6 +165,10 @@ export const cometSchema = Joi.object({
   lock: Joi.bool(),
 });
 
+/**
+ * Top-level keys that are not reported as unknown: MUP's own keys plus `cometDeploy`. MUP
+ * itself reports `cometDeploy` as unknown but does not stop on it.
+ */
 export const KNOWN_TOP_LEVEL_KEYS = new Set([
   'servers',
   'app',

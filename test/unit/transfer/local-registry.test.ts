@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { RunResult } from '../../../src/local/exec.js';
 import { ensureLocalRegistry, stopLocalRegistry, type RegistryEnv } from '../../../src/transfer/local-registry.js';
@@ -82,5 +82,26 @@ describe('local registry shared by concurrent deploys (M5)', () => {
     const running = fakeDocker({ running: true });
     await ensureLocalRegistry(env(running, tempDir(), 100, new Set([100])));
     expect(running.calls).toEqual(['inspect', 'port']);
+  });
+
+  it('waits while another process holds the lease lock, and takes over the lock of a dead one', async () => {
+    const d = fakeDocker();
+    const dir = tempDir();
+    const lock = `${dir}.lock`;
+    writeFileSync(lock, '300');
+    const alive = new Set([100, 300]);
+    let done = false;
+    const p = ensureLocalRegistry(env(d, dir, 100, alive)).then(() => (done = true));
+    await new Promise((r) => setTimeout(r, 250));
+    expect(done).toBe(false);
+    expect(d.calls).toEqual([]);
+    rmSync(lock);
+    await p;
+    expect(d.calls[0]).toBe('inspect');
+    expect(existsSync(lock)).toBe(false);
+
+    writeFileSync(lock, '400'); // pid 400 died while holding it
+    expect(await stopLocalRegistry(env(d, dir, 100, alive))).toBe(true);
+    expect(existsSync(lock)).toBe(false);
   });
 });

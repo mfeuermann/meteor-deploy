@@ -6,6 +6,7 @@
 import type { CommandContext } from '../../core/context.js';
 import { appDir, containerName, localImageRepo } from '../../core/naming.js';
 import { describeHolder } from '../../deploy/pipeline.js';
+import { formatTable } from '../../output/table.js';
 import { cometScript, parseVersions, type LockInfo } from '../../remote/ops.js';
 import type { ConfigCommand } from '../registry.js';
 
@@ -74,13 +75,7 @@ export function parseStatus(stdout: string): Omit<StatusRow, 'server'> {
 export function formatStatusTable(rows: StatusRow[]): string {
   const header = ['SERVER', 'DOCKER', 'APP', 'VERSION', 'HTTP', 'LOCK'];
   const data = rows.map((r) => [r.server, r.docker, r.container, r.version ?? '-', r.http === null ? '-' : String(r.http), r.lock ?? '']);
-  const widths = header.map((h, i) => Math.max(h.length, ...data.map((d) => d[i].length)));
-  const fmt = (cols: string[]) =>
-    cols
-      .map((c, i) => c.padEnd(widths[i]))
-      .join('  ')
-      .trimEnd();
-  return [fmt(header), ...data.map(fmt)].join('\n');
+  return formatTable(header, data);
 }
 
 /**
@@ -131,5 +126,5 @@ export const statusCommand: ConfigCommand = {
   run: (ctx) => ctx.runner.run('default.status', () => status(ctx)),
 };
 
-/** Hidden `meteor status`: the same table, without the `default.status` key. */
-export const meteorStatusCommand: ConfigCommand = { command: 'status', describe: false, group: 'meteor', builder: overview, run: status };
+/** `meteor status`: the same table, without the `default.status` key. */
+export const meteorStatusCommand: ConfigCommand = { command: 'status', describe: 'Show the app status on the servers', group: 'meteor', builder: overview, run: status };

@@ -74,6 +74,18 @@ describe('computeInputHash', () => {
     expect(await computeInputHash(a, {}, { exclude: [join(a, 'build-out')] })).toBe(h);
   });
 
+  it('excludes a config directory inside the app, but never the app root itself', async () => {
+    const a = app();
+    const h = await computeInputHash(a, {}, { exclude: [join(a, '.deploy')] });
+    mkdirSync(join(a, '.deploy'));
+    writeFileSync(join(a, '.deploy/mup.js'), 'module.exports = {}');
+    expect(await computeInputHash(a, {}, { exclude: [join(a, '.deploy')] })).toBe(h);
+    // mup.js in the app root (basePath = appPath) is loaded by Meteor, so it counts
+    const root = await computeInputHash(a, {}, { exclude: [a] });
+    writeFileSync(join(a, 'mup.js'), 'module.exports = {}');
+    expect(await computeInputHash(a, {}, { exclude: [a] })).not.toBe(root);
+  });
+
   it('follows symlinked workspace packages in node_modules (I4: monorepo shared code)', async () => {
     const root = tempDir({ 'packages/shared/package.json': '{"name":"@me/shared","version":"1.0.0"}', 'packages/shared/index.js': 'v1', 'app/.meteor/release': 'METEOR@3.5.4', 'app/server/main.js': 'x' });
     const app = join(root, 'app');

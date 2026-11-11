@@ -66,18 +66,17 @@ function addCommand(y: Argv, m: CommandModule, makeCtx: MakeContext): Argv {
   const handler = async (argv: Record<string, unknown>) => {
     const needsConfig = m.needsConfig !== false;
     const ctx = await makeCtx(argv as GlobalArgs & Record<string, unknown>, needsConfig);
-    // MUP prints the hook names while it runs the command. Without hook support there are no
-    // names to print, so comet-deploy says so and does not run the command at all.
-    if (argv['show-hook-names']) {
-      ctx.reporter.info('Hooks are not supported yet: they are planned for phase 2 of comet-deploy.');
-      // Only a CommandContext has an SSH pool.
-      if ('ssh' in ctx) await ctx.ssh.closeAll();
-      return;
-    }
     try {
+      // MUP prints the hook names while it runs the command. Without hook support there are no
+      // names to print, so comet-deploy says so and does not run the command at all.
+      if (argv['show-hook-names']) {
+        ctx.reporter.info('Hooks are not supported yet: they are planned for phase 2 of comet-deploy.');
+        return;
+      }
       await m.run(ctx as CommandContext, argv);
     } finally {
-      if ('ssh' in ctx) await ctx.ssh.closeAll();
+      // Only a CommandContext has an SSH pool. A failing close must not hide the command's error.
+      if ('ssh' in ctx) await ctx.ssh.closeAll().catch(() => {});
     }
   };
   // The yargs typings have one overload for a string description and another for `false`

@@ -34,7 +34,7 @@ export interface CacheEntry {
   createdAt: string;
 }
 
-/** Entries kept per app; older ones are forgotten (their images stay in the local Docker). */
+/** Entries kept per app; the caller removes the local images of the ones that drop out. */
 const MAX_ENTRIES = 20;
 
 /**
@@ -79,10 +79,15 @@ export class BuildCache {
 
   /**
    * Stores `e` as the newest entry, replacing an older entry with the same input hash and
-   * platform, and keeps at most `MAX_ENTRIES`. Writes the local cache directory.
+   * platform, and keeps at most `MAX_ENTRIES`. Writes the local cache directory. Returns the
+   * entries that are forgotten now and whose image tag no kept entry uses, so the caller can
+   * remove those local images instead of letting them pile up.
    */
-  save(e: CacheEntry): void {
-    const entries = [e, ...this.read().filter((x) => !(x.inputHash === e.inputHash && x.platform === e.platform))].slice(0, MAX_ENTRIES);
+  save(e: CacheEntry): CacheEntry[] {
+    const old = this.read();
+    const entries = [e, ...old.filter((x) => !(x.inputHash === e.inputHash && x.platform === e.platform))].slice(0, MAX_ENTRIES);
+    const keptTags = new Set(entries.map((x) => x.localTag));
+    const forgotten = old.filter((x) => !entries.includes(x) && !keptTags.has(x.localTag));
     mkdirSync(dirname(this.statePath), { recursive: true });
     // Write a temp file and rename it over the state file (atomic on one filesystem), so a reader
     // or a crash never sees a half-written file. Two deploys of the same app saving at once can
@@ -90,5 +95,6 @@ export class BuildCache {
     const tmp = `${this.statePath}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify({ entries }, null, 2));
     renameSync(tmp, this.statePath);
+    return forgotten;
   }
 }

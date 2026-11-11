@@ -34,6 +34,8 @@ describe('phase-2 commands (M12)', () => {
       const code = await main(args, c.io);
       expect(code, args.join(' ')).toBe(1);
       expect(c.err.join(''), args.join(' ')).toMatch(/planned for phase 2/);
+      // the command is quoted as typed
+      expect(c.err.join(''), args.join(' ')).toContain(`"${args.join(' ')}"`);
     }
   });
 });

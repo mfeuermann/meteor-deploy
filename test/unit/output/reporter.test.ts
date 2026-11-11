@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createReporter } from '../../../src/output/reporter.js';
+import { createReporter, formatDuration } from '../../../src/output/reporter.js';
 
 function setup(verbose = false) {
   const lines: string[] = [];
@@ -56,5 +56,14 @@ describe('reporter (plain mode)', () => {
     const { r, lines } = setup(false);
     r.verboseLine(null, 'hidden');
     expect(lines).toEqual([]);
+  });
+});
+
+describe('formatDuration', () => {
+  it('never prints 60 seconds inside a minute', () => {
+    expect(formatDuration(1500)).toBe('1.5s');
+    expect(formatDuration(59_960)).toBe('1m00s');
+    expect(formatDuration(61_000)).toBe('1m01s');
+    expect(formatDuration(119_600)).toBe('2m00s');
   });
 });

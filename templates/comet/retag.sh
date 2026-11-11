@@ -1,3 +1,6 @@
+# Moves the :latest / :previous tags of REPO (modes: activate, swap, restore). Prints
+# one result word last; activate and swap first print the image IDs the two tags named
+# before (before-latest=..., before-previous=...), so the caller can undo the change.
 set -e
 REPO=<%- q(repo) %>
 image_id() { sudo docker image inspect --format '{{.Id}}' "$1" 2>/dev/null || true; }
@@ -14,11 +17,22 @@ if [ -z "$NEW_ID" ]; then
   exit 3
 fi
 LATEST_ID=$(image_id "$REPO:latest")
+PREVIOUS_ID=$(image_id "$REPO:previous")
 # Keep the real previous version when the same image is activated again.
 if [ -n "$LATEST_ID" ] && [ "$LATEST_ID" != "$NEW_ID" ]; then
   sudo docker tag "$REPO:latest" "$REPO:previous"
 fi
-sudo docker tag "$REPO:$VERSION" "$REPO:latest"
+# :latest moves last: when anything above fails, the running image still has it.
+if ! sudo docker tag "$REPO:$VERSION" "$REPO:latest"; then
+  # Put :previous back too, so a failed activation leaves both tags as they were (the caller
+  # reports such a server as not changed).
+  if [ -n "$PREVIOUS_ID" ]; then
+    sudo docker tag "$PREVIOUS_ID" "$REPO:previous" || true
+  else
+    sudo docker rmi "$REPO:previous" >/dev/null 2>&1 || true
+  fi
+  exit 1
+fi
 echo "activated"
 <% } else if (mode === 'swap') { %>
 # Rollback to :previous: latest <-> previous, so the current image keeps a tag.
@@ -26,6 +40,7 @@ if [ -z "$(image_id "$REPO:previous")" ]; then
   echo "no-previous"
   exit 0
 fi
+# Two tags cannot be swapped in one step, so a temporary tag holds the current image.
 if [ -n "$(image_id "$REPO:latest")" ]; then
   sudo docker tag "$REPO:latest" "$REPO:comet-swap"
   sudo docker tag "$REPO:previous" "$REPO:latest"
@@ -43,14 +58,9 @@ sudo docker tag "$LATEST_ID" "$REPO:latest"
 if [ -n "$PREVIOUS_ID" ]; then
   sudo docker tag "$PREVIOUS_ID" "$REPO:previous"
 else
+  # There was no :previous before; the image it names now is :latest again, so only the tag
+  # goes away.
   sudo docker rmi "$REPO:previous" >/dev/null 2>&1 || true
 fi
 echo "restored"
-<% } else { %>
-if [ -n "$(image_id "$REPO:previous")" ]; then
-  sudo docker tag "$REPO:previous" "$REPO:latest"
-  echo "reverted"
-else
-  echo "no-previous"
-fi
 <% } %>

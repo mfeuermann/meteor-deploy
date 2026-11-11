@@ -4,7 +4,7 @@
  * push uploads only layers the registry does not have yet; the container itself runs only while
  * a deploy needs it.
  */
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { CometError } from '../core/errors.js';
@@ -16,6 +16,8 @@ const REGISTRY_IMAGE = 'registry:2.8.3';
 const CONTAINER = 'comet-deploy-registry';
 const VOLUME = 'comet-deploy-registry-data';
 const READY_TIMEOUT_MS = 30_000;
+/** How long a deploy waits for another one to finish starting or stopping the registry. */
+const LEASE_LOCK_TIMEOUT_MS = 120_000;
 
 /**
  * What the registry functions touch on this machine. Everything has a real
@@ -37,6 +39,49 @@ export interface RegistryEnv {
 /** `<cache root>/comet-deploy/registry-leases`, next to the build caches. */
 function defaultLeaseDir(): string {
   return join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'comet-deploy', 'registry-leases');
+}
+
+/**
+ * Runs `fn` while holding `<leaseDir>.lock`, a file created exclusively and named by the pid
+ * that holds it. It makes "write my lease, start the container" and "no other lease is left,
+ * stop the container" atomic towards each other: without it a deploy could write its lease
+ * just after another one counted the leases, then lose the registry in the middle of its
+ * push. A lock left by a process that no longer runs is taken over.
+ */
+async function withLeaseLock<T>(e: Required<RegistryEnv>, fn: () => Promise<T>): Promise<T> {
+  const lock = `${e.leaseDir}.lock`;
+  mkdirSync(e.leaseDir, { recursive: true });
+  const deadline = Date.now() + LEASE_LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      writeFileSync(lock, String(e.pid), { flag: 'wx' });
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    let holder = NaN;
+    try {
+      holder = Number(readFileSync(lock, 'utf8'));
+    } catch {
+      continue; // released meanwhile
+    }
+    // An empty file is a lock that is being written right now: wait for it like for a live one.
+    if (Number.isInteger(holder) && holder > 0 && !e.isAlive(holder)) {
+      rmSync(lock, { force: true });
+      continue;
+    }
+    if (Date.now() > deadline) {
+      throw new CometError(`Timed out waiting for ${lock} (held by process ${holder || 'unknown'})`, {
+        hint: 'Another comet-deploy is starting or stopping the local registry. If none is running, delete the file.',
+      });
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  try {
+    return await fn();
+  } finally {
+    rmSync(lock, { force: true });
+  }
 }
 
 /**
@@ -125,10 +170,18 @@ async function containerRunning(e: Required<RegistryEnv>): Promise<boolean | nul
  */
 export async function ensureLocalRegistry(env: RegistryEnv = {}): Promise<{ port: number }> {
   const e = resolveEnv(env);
-  // The lease comes first: a deploy that finishes meanwhile then sees it and leaves the registry running.
-  mkdirSync(e.leaseDir, { recursive: true });
-  writeFileSync(join(e.leaseDir, String(e.pid)), new Date().toISOString());
+  await withLeaseLock(e, async () => {
+    // The lease comes first: a deploy that finishes later sees it and leaves the registry running.
+    writeFileSync(join(e.leaseDir, String(e.pid)), new Date().toISOString());
+    await startContainer(e);
+  });
+  const port = await registryPort(e);
+  await e.ready(port);
+  return { port };
+}
 
+/** Creates the registry container, or starts it when it exists but is stopped. */
+async function startContainer(e: Required<RegistryEnv>): Promise<void> {
   let running = await containerRunning(e);
   if (running === null) {
     // `127.0.0.1::5000`: loopback only, so the registry is never reachable from the network, and
@@ -140,9 +193,6 @@ export async function ensureLocalRegistry(env: RegistryEnv = {}): Promise<{ port
     running = r.code === 0 ? true : await containerRunning(e);
   }
   if (!running) await docker(e, ['start', CONTAINER], 'Starting the local registry');
-  const port = await registryPort(e);
-  await e.ready(port);
-  return { port };
 }
 
 /**
@@ -175,20 +225,16 @@ export async function pushToLocalRegistry(localTag: string, port: number, onLine
  */
 export async function stopLocalRegistry(env: RegistryEnv = {}): Promise<boolean> {
   const e = resolveEnv(env);
-  rmSync(join(e.leaseDir, String(e.pid)), { force: true });
-  let others = 0;
-  let leases: string[] = [];
-  try {
-    leases = readdirSync(e.leaseDir);
-  } catch {
-    // no lease directory: nobody else holds the registry
-  }
-  for (const name of leases) {
-    const pid = Number(name);
-    if (Number.isInteger(pid) && pid > 0 && e.isAlive(pid)) others++;
-    else rmSync(join(e.leaseDir, name), { force: true });
-  }
-  if (others > 0) return false;
-  await e.docker(['stop', CONTAINER]);
-  return true;
+  return withLeaseLock(e, async () => {
+    rmSync(join(e.leaseDir, String(e.pid)), { force: true });
+    let others = 0;
+    for (const name of readdirSync(e.leaseDir)) {
+      const pid = Number(name);
+      if (Number.isInteger(pid) && pid > 0 && e.isAlive(pid)) others++;
+      else rmSync(join(e.leaseDir, name), { force: true });
+    }
+    if (others > 0) return false;
+    await e.docker(['stop', CONTAINER]);
+    return true;
+  });
 }

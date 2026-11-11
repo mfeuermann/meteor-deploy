@@ -17,12 +17,15 @@ import { startFakeServers, type FakeServer } from '../harness/fake-servers.js';
 import { sampleProject } from '../integration/helpers.js';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
-const OUT = process.env.BENCH_OUT!;
+const NAMES = ['one', 'two', 'three', 'four', 'five', 'six'];
+const OUT = process.env.BENCH_OUT ?? '';
 const N = Number(process.env.BENCH_SERVERS ?? 2);
 const TOOLS = (process.env.BENCH_TOOLS ?? 'comet,mup').split(',') as Array<'comet' | 'mup'>;
+if (!OUT) throw new Error('Set BENCH_OUT to the directory for the logs and the results.');
+if (!Number.isInteger(N) || N < 1 || N > NAMES.length) throw new Error(`BENCH_SERVERS must be 1 to ${NAMES.length}.`);
+if (TOOLS.some((t) => t !== 'comet' && t !== 'mup')) throw new Error('BENCH_TOOLS is a comma-separated list of "comet" and "mup".');
 const req = createRequire(join(REPO, 'package.json'));
 const BIN = { mup: join(dirname(req.resolve('mup/package.json')), 'index.js'), comet: join(REPO, 'dist/cli/main.js') };
-const NAMES = ['one', 'two', 'three', 'four', 'five', 'six'];
 mkdirSync(OUT, { recursive: true });
 
 /** One output line, with its time in ms since the tool was started. */

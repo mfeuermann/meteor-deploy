@@ -1,19 +1,37 @@
+/**
+ * Validates the normalized config with MUP's schemas plus the comet-deploy specific checks,
+ * and sorts each problem into an error or a warning. MUP prints problems and continues;
+ * comet-deploy stops a command on errors (createContext in core/context.ts) and only prints
+ * warnings, so configs that work with MUP keep working.
+ */
 import type Joi from 'joi';
 import { appSchema, cometSchema, KNOWN_TOP_LEVEL_KEYS, mongoSchema, proxySchema, registrySchema, serversSchema } from './schema.js';
 import type { NormalizedConfig, RawConfig } from './types.js';
 
+/** One validation problem, printed as `<path> <message>`. */
 export interface Issue {
+  /** Dotted config path such as `app.env.ROOT_URL` (`meteor.…` for a `meteor` section). */
   path: string;
+  /** Message without the path, e.g. `is required`. */
   message: string;
+  /** `error` stops every command that needs the config; `warning` is only printed. */
   severity: 'error' | 'warning';
 }
 
+/** Whether any issue is an error. */
 export function hasFatal(issues: Issue[]): boolean {
   return issues.some((i) => i.severity === 'error');
 }
 
+// As in MUP: report every problem, no type coercion ('3000' is not a number), and report
+// unknown keys.
 const JOI_OPTIONS: Joi.ValidationOptions = { abortEarly: false, convert: false, allowUnknown: false };
 
+/**
+ * Runs a schema and maps Joi's details to issues under `prefix`. Joi's leading `"label" ` is
+ * stripped from the message because the full path is printed in front of it, and unknown
+ * keys use MUP's wording. `isFatal` decides the severity per problem.
+ */
 function joiIssues(schema: Joi.Schema, value: unknown, prefix: string, isFatal: (path: string, type: string) => boolean): Issue[] {
   const { error } = schema.validate(value, JOI_OPTIONS);
   if (!error) return [];
@@ -25,17 +43,31 @@ function joiIssues(schema: Joi.Schema, value: unknown, prefix: string, isFatal: 
   });
 }
 
+/** env.list holds one unquoted `KEY=value` per line, so a value cannot contain a newline. */
 function hasNewline(v: unknown): boolean {
   return typeof v === 'string' && /[\r\n]/.test(v);
 }
 
 /**
- * Validates the normalized config with MUP's schemas. Only problems that make a
- * deploy impossible (or are unsupported) are errors; everything MUP tolerates in
- * practice is a warning (spec §7.1).
+ * Error text for MUP's pre-1.4 TLS/nginx options. Their replacement, the `proxy` section, does
+ * not run in comet-deploy yet either, so the text says how to deploy such an app today.
+ */
+const LEGACY_PROXY_OPTION =
+  'is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section, ' +
+  'which comet-deploy plans for phase 2; until then, keep deploying this app with MUP.';
+
+/**
+ * Validates the normalized config with MUP's schemas. Only problems that make a deploy
+ * impossible, or options comet-deploy does not support, are errors. Everything MUP tolerates
+ * in practice (unknown keys such as extra ssh2 `opts`, type differences) is a warning, so a
+ * config that deploys with MUP is not refused over details.
+ *
+ * `raw` is the config as the user wrote it. Some checks need it because normalization
+ * overwrites or adds the value they look at.
  */
 export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[] {
   const issues: Issue[] = [];
+  // The section normalization used for `app`, so paths match what the user wrote.
   const appKey = raw.meteor && typeof raw.app !== 'object' ? 'meteor' : 'app';
   const err = (path: string, message: string) => issues.push({ path, message, severity: 'error' });
   const warn = (path: string, message: string) => issues.push({ path, message, severity: 'warning' });
@@ -49,6 +81,7 @@ export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[
     err('servers', 'is required');
   } else {
     issues.push(
+      // Fatal: a missing key or a bad host/username, which make the SSH connection impossible.
       ...joiIssues(serversSchema, config.servers, 'servers', (path, type) => {
         return type === 'any.required' || /\.(host|username)$/.test(path);
       }),
@@ -65,22 +98,27 @@ export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[
   if (!app || typeof app !== 'object') {
     err(appKey, 'is required (a "meteor" or "app" section)');
   } else {
+    // `type` is not checked: normalization sets it, and only `meteor` apps are deployed.
     const { type: _type, ...appForSchema } = app;
     const fatalAppPaths = new Set([`${appKey}.name`, `${appKey}.path`, `${appKey}.servers`, `${appKey}.env`, `${appKey}.env.ROOT_URL`]);
     issues.push(...joiIssues(appSchema, appForSchema, appKey, (path) => fatalAppPaths.has(path)));
     if (typeof app.name === 'string' && app.name.includes(' ')) err(`${appKey}.name`, 'has a space');
+    // The schema only requires ROOT_URL inside `env`; without any `env` the app could not start
+    // (and start.sh / env.list could not be rendered).
+    if (app.env === undefined) err(`${appKey}.env.ROOT_URL`, 'is required');
     for (const name of Object.keys(app.servers ?? {})) {
       if (!config.servers?.[name]) err(`${appKey}.servers.${name}`, `server "${name}" is not defined in "servers"`);
     }
+    // Deprecated since MUP 1.4 in favor of the `proxy` section. They change how the app is
+    // served, so ignoring them would deploy something different from what MUP deploys.
     if (app.ssl !== undefined) {
-      err(`${appKey}.ssl`, 'is a deprecated MUP option that comet-deploy does not support. Use the "proxy" section instead.');
+      err(`${appKey}.ssl`, LEGACY_PROXY_OPTION);
     }
     if (app.nginx !== undefined) {
-      err(`${appKey}.nginx`, 'is a deprecated MUP option that comet-deploy does not support. Use the "proxy" section instead.');
+      err(`${appKey}.nginx`, LEGACY_PROXY_OPTION);
     }
-    if (app.docker?.imageFrontendServer !== undefined || (app as any).dockerImageFrontendServer !== undefined) {
-      err(`${appKey}.docker.imageFrontendServer`, 'is a deprecated MUP option that comet-deploy does not support. Use the "proxy" section instead.');
-    }
+    if (app.docker?.imageFrontendServer !== undefined) err(`${appKey}.docker.imageFrontendServer`, LEGACY_PROXY_OPTION);
+    if ((app as any).dockerImageFrontendServer !== undefined) err(`${appKey}.dockerImageFrontendServer`, LEGACY_PROXY_OPTION);
     for (const [k, v] of Object.entries(app.env ?? {})) {
       if (hasNewline(v)) err(`${appKey}.env.${k}`, 'contains a newline, which env.list cannot represent');
     }
@@ -103,6 +141,8 @@ export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[
     for (const name of Object.keys(config.mongo.servers ?? {})) {
       if (!config.servers?.[name]) err(`mongo.servers.${name}`, `server "${name}" is not defined in "servers"`);
     }
+    // MUP's check, on the raw value: prepareMongo always replaces MONGO_URL with the
+    // built-in database, which would silently ignore the user's external one.
     const rawMongoUrl = raw[appKey]?.env?.MONGO_URL;
     if (typeof rawMongoUrl === 'string' && (rawMongoUrl.includes('.') || rawMongoUrl.includes('@'))) {
       warn('mongo', 'It looks like app.env.MONGO_URL is for an external database. Remove the `mongo` object to use external databases.');
@@ -112,6 +152,7 @@ export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[
   // proxy
   if (config.proxy) {
     issues.push(...joiIssues(proxySchema, config.proxy, 'proxy', (path) => path === 'proxy.domains'));
+    // MUP's check: without load balancing, the proxy does not use the published port.
     const port = raw[appKey]?.env?.PORT;
     if (port && port !== 80 && !config.proxy.loadBalancing) warn('proxy', 'app.env.PORT is ignored when using the reverse proxy');
   }
@@ -126,6 +167,8 @@ export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[
     warn('plugins', 'MUP plugins are not supported by comet-deploy and will be ignored');
   }
 
+  // Checked on the raw value so messages refer to what the user wrote, not the merged defaults.
+  // Unknown keys are warnings, as everywhere else; invalid values are errors.
   if (raw.cometDeploy !== undefined) {
     issues.push(...joiIssues(cometSchema, raw.cometDeploy, 'cometDeploy', (_p, type) => type !== 'object.unknown'));
   }

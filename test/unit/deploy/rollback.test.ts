@@ -148,10 +148,20 @@ describe('rollbackPipeline', () => {
       version, action: 'deploy', result, startedAt: 'x', durationMs: 1, user: 'u', machine: 'm', servers: ['one', 'two'], tool: 't',
     });
     s.deps.readHistory = async (c) => (c.name === 'one' ? [h(V1, 'success'), h(V2, 'reverted'), h(V3, 'success')] : []);
-    await rollbackPipeline(s.ctx, { strategy: 'parallel' }, s.deps);
+    const out = await rollbackPipeline(s.ctx, { strategy: 'parallel' }, s.deps);
+    // different targets: no single version to name
+    expect(out.version).toBe('the versions listed above');
     expect(s.calls).toContain(`activate:one:rollback:${V1}`);
     // no history on "two" (e.g. it was lost): the kept versions are used as they are
     expect(s.calls).toContain(`activate:two:rollback:${V2}`);
+  });
+
+  it('does not filter by a history that names no deployed version (only reconfig/restart)', async () => {
+    const s = await setup({ one: three, two: three });
+    const reconfig: HistoryEntry = { version: null, action: 'reconfig', result: 'success', startedAt: 'x', durationMs: 1, user: 'u', machine: 'm', servers: ['one'], tool: 't' };
+    s.deps.readHistory = async () => [reconfig];
+    await rollbackPipeline(s.ctx, { strategy: 'parallel' }, s.deps);
+    expect(s.calls).toContain(`activate:one:rollback:${V2}`);
   });
 
   it('--to rolls back to the given version', async () => {

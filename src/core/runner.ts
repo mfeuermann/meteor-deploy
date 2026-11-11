@@ -38,13 +38,26 @@ export class CommandRunner {
    *   the hook.
    */
   async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const hook = hookNamesFor(key).find((n) => Object.prototype.hasOwnProperty.call(this.hooks ?? {}, n));
-    if (hook) {
-      throw new CometError(`Hook "${hook}" is not supported yet (hooks are planned for phase 2 of comet-deploy).`, {
-        hint: 'Remove the hook from the config to use comet-deploy for this command, or keep using MUP for it.',
-      });
-    }
+    this.refuseHooks([key]);
     this.history.push(key);
     return fn();
+  }
+
+  /**
+   * Throws for the first of `keys` that has a hook. A command calls this with every key it
+   * will enter, so a hook on a late step (e.g. `pre.meteor.start` of a deploy) is refused
+   * before the build and the upload, not after them.
+   *
+   * @throws CometError naming the hook.
+   */
+  refuseHooks(keys: string[]): void {
+    for (const key of keys) {
+      const hook = hookNamesFor(key).find((n) => Object.prototype.hasOwnProperty.call(this.hooks ?? {}, n));
+      if (hook) {
+        throw new CometError(`Hook "${hook}" is not supported yet (hooks are planned for phase 2 of comet-deploy).`, {
+          hint: 'Remove the hook from the config to use comet-deploy for this command, or keep using MUP for it.',
+        });
+      }
+    }
   }
 }

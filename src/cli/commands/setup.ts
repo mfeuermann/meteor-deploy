@@ -66,6 +66,8 @@ export async function meteorSetup(ctx: CommandContext): Promise<void> {
 
 /** `setup` (MUP `default.setup` → `docker.setup` → `meteor.setup`). */
 export async function setupAll(ctx: CommandContext): Promise<void> {
+  // All three keys now, so a hook on `meteor.setup` does not stop setup after Docker was set up.
+  ctx.runner.refuseHooks(['default.setup', 'docker.setup', 'meteor.setup']);
   await ctx.runner.run('default.setup', async () => {
     // MUP would also set up these sections. Only warn, so a MUP config with them still gets
     // Docker and the app directories.
@@ -85,10 +87,10 @@ export const setupCommand: ConfigCommand = {
   run: (ctx) => setupAll(ctx),
 };
 
-/** Hidden `meteor setup`: only the app directories, no Docker. */
+/** `meteor setup`: only the app directories, no Docker. */
 export const meteorSetupCommand: ConfigCommand = {
   command: 'setup',
-  describe: false,
+  describe: 'Create the app directories on the servers (no Docker)',
   group: 'meteor',
   run: (ctx) => meteorSetup(ctx),
 };

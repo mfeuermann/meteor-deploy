@@ -12,7 +12,6 @@ import {
   restoreConfigSnapshot,
   retagActivate,
   retagRestore,
-  retagRevert,
   retagSwap,
   serverFacts,
   snapshotConfig,
@@ -88,9 +87,6 @@ describe('remote ops on a fake server', () => {
     v = await listVersions(conn, REPO);
     expect(v.versions.map((x) => x.tag)).toEqual([tags[3], tags[2]]);
 
-    expect(await retagRevert(conn, REPO)).toBe(true);
-    v = await listVersions(conn, REPO);
-    expect(v.latestId).toBe(v.previousId);
   });
 
   it('rollback to :previous swaps latest and previous (MUP-only server)', async () => {
@@ -138,6 +134,15 @@ describe('remote ops on a fake server', () => {
     await conn.writeFile(`/opt/${APP}/config/env.list`, 'A=2\n');
     expect(await restoreConfigSnapshot(conn, APP)).toBe(true);
     expect((await server.exec(`cat /opt/${APP}/config/start.sh /opt/${APP}/config/env.list`)).stdout).toBe('echo one\nA=1\n');
+  });
+
+  it('tightens the mode of a file that already exists', async () => {
+    const path = `/opt/${APP}/config/mode-test`;
+    await conn.writeFile(path, 'A=1\n');
+    await server.exec(`chmod 644 ${path}`);
+    await conn.writeFile(path, 'A=2\n', 0o600);
+    expect((await server.exec(`stat -c %a ${path}`)).stdout.trim()).toBe('600');
+    await server.exec(`rm -f ${path}`);
   });
 
   it("keeps history values with ' and $ intact", async () => {

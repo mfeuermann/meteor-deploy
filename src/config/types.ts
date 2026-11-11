@@ -27,7 +27,7 @@ export interface ServerConfig {
   password?: string;
   /**
    * Passed to the ssh2 client as is (on top of the connection defaults). MUP's schema only
-   * knows `port`; other ssh2 keys such as `passphrase` work but produce a validation warning.
+   * knows `port`; comet-deploy also accepts the other ssh2 keys, such as `passphrase`.
    */
   opts?: { port?: number; [k: string]: unknown };
   /** Only used by MUP's proxy load balancing, which comet-deploy does not run yet. */

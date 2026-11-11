@@ -48,4 +48,13 @@ describe('BuildCache', () => {
     writeFileSync(c.statePath, '{broken');
     expect(new BuildCache('/apps/a', root).lookup('h1', 'linux/amd64')).toBeNull();
   });
+
+  it('returns the entries it forgets, so their local images can be removed', () => {
+    const c = new BuildCache('/apps/a', tempDir());
+    for (let i = 0; i < 20; i++) expect(c.save(entry({ inputHash: `h${i}`, localTag: `mup-app:v${i}` }))).toEqual([]);
+    expect(c.save(entry({ inputHash: 'h20', localTag: 'mup-app:v20' })).map((e) => e.localTag)).toEqual(['mup-app:v0']);
+    // a rebuild of the same inputs (--force-build) replaces the entry and its image
+    expect(c.save(entry({ inputHash: 'h20', localTag: 'mup-app:v21' })).map((e) => e.localTag)).toEqual(['mup-app:v20']);
+    expect(c.save(entry({ inputHash: 'h20', localTag: 'mup-app:v21' }))).toEqual([]);
+  });
 });

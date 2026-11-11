@@ -46,6 +46,11 @@ export interface PreflightInput {
   needsBuild: boolean;
   /** Whether a held lock is an error. */
   checkLocks: boolean;
+  /**
+   * Whether the image goes to the servers (deploy, `meteor push`; not `meteor build`): only then
+   * do reverse port forwarding and the app directories from `setup` matter.
+   */
+  distributes: boolean;
 }
 
 export interface PreflightResult {
@@ -87,7 +92,8 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
     }
     const f = s.facts;
     if (!f.hasBash) errors.push(`Server "${name}": bash is required on the server.`);
-    if (s.forwardingError) {
+    if (i.distributes && f.appSetup === false) errors.push(`Server "${name}": the app is not set up on this server yet. Run "comet-deploy setup" first.`);
+    if (i.distributes && s.forwardingError) {
       errors.push(
         `Server "${name}": SSH reverse port forwarding does not work (${s.forwardingError}). ` +
           'comet-deploy sends the image through it: set "AllowTcpForwarding yes" in /etc/ssh/sshd_config and reload sshd.',
@@ -129,7 +135,10 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
   const platforms = [...new Set(Object.values(platformByServer))];
   // Only when Docker works: otherwise buildx reports no platforms and every platform would
   // repeat the Docker error in a less helpful form.
-  if (i.needsBuild && i.local.docker.ok) {
+  if (i.needsBuild && i.local.docker.ok && i.local.platforms.length === 0) {
+    // `docker buildx ls` failed or listed nothing: the plugin is missing, not the emulation.
+    errors.push('Docker buildx is not available locally ("docker buildx ls" failed). Install the buildx plugin; Docker Desktop and OrbStack include it.');
+  } else if (i.needsBuild && i.local.docker.ok) {
     for (const p of platforms) {
       if (!i.local.platforms.includes(p)) {
         errors.push(
@@ -146,7 +155,7 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
  * Collects the local and per-server facts in parallel (read-only on the servers), prints the
  * warnings and throws one `CometError` that lists every error. Returns the platform plan.
  */
-export async function runPreflight(ctx: CommandContext, servers: string[], o: { needsBuild: boolean; checkLocks: boolean }): Promise<PreflightResult> {
+export async function runPreflight(ctx: CommandContext, servers: string[], o: { needsBuild: boolean; checkLocks: boolean; distributes: boolean }): Promise<PreflightResult> {
   const appName = ctx.config.app.name;
   // Started first and awaited last, so the local checks overlap with the SSH round trips.
   const localP = o.needsBuild
@@ -157,10 +166,10 @@ export async function runPreflight(ctx: CommandContext, servers: string[], o: { 
   const serverResults = await Promise.allSettled(
     servers.map(async (name) => {
       const conn = await ctx.ssh.get(name);
-      const facts = await serverFacts(conn);
+      const facts = await serverFacts(conn, o.distributes ? appName : undefined);
       const lock = o.checkLocks ? await readLock(conn, appName) : null;
-      // Only a deploy (needsBuild) distributes the image through a reverse tunnel.
-      const forwardingError = o.needsBuild ? await probeForwarding(conn) : null;
+      // The image reaches the servers through a reverse tunnel; `meteor build` sends nothing.
+      const forwardingError = o.distributes ? await probeForwarding(conn) : null;
       return { facts, lock, forwardingError };
     }),
   );
@@ -176,6 +185,7 @@ export async function runPreflight(ctx: CommandContext, servers: string[], o: { 
     override: ctx.config.cometDeploy.platform,
     needsBuild: o.needsBuild,
     checkLocks: o.checkLocks,
+    distributes: o.distributes,
   };
   const result = evaluatePreflight(input);
   for (const w of result.warnings) ctx.reporter.warn(w);
