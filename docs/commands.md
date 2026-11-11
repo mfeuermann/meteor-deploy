@@ -13,7 +13,7 @@ The command names are the same as in Meteor Up (MUP) 1.5.11. Run commands from t
 - [Output](#output)
 - [Overview](#overview)
 - Commands: [`init`](#init) · [`validate`](#validate) · [`setup`](#setup) · [`deploy`](#deploy) · [`reconfig`](#reconfig) · [`restart`](#restart) · [`start`](#start) · [`stop`](#stop) · [`logs`](#logs) · [`rollback`](#rollback) · [`history`](#history) · [`unlock`](#unlock) · [`status`](#status)
-- Groups: [`meteor …`](#meteor-commands) · [`docker …`](#docker-commands)
+- Groups: [`meteor …`](#meteor-commands) · [`docker …`](#docker-commands) · [`proxy …`](#proxy-commands)
 - [Planned for phase 2](#planned-for-phase-2)
 
 ## Global options
@@ -24,7 +24,7 @@ These work with every command.
 |---|---|
 | `--config <path>` | Path to `mup.js` or `mup.json`, relative to the current directory. Default: `./mup.js`, then `./mup.json`. The directory of this file becomes the base path for relative paths in the config. |
 | `--settings <path>` | Path to the Meteor settings file, relative to the current directory. Default: `settings.json` in the base path. |
-| `--servers <names>` | Only these servers, by their names in `servers`. Space or comma separated: `--servers one,two` or `--servers "one two"`. An unknown name is an error (`Unknown server in --servers: <name>`). It filters the app servers for all app commands; `docker` commands filter their own server lists. |
+| `--servers <names>` | Only these servers, by their names in `servers`. Space or comma separated: `--servers one,two` or `--servers "one two"`. An unknown name is an error (`Unknown server in --servers: <name>`). It filters the app servers for all app commands; `docker` and `proxy` commands filter their own server lists. |
 | `--verbose` | Stream the output of remote commands and of the local `meteor build` and `docker buildx build`, line by line. |
 | `--show-hook-names` | Print `Hooks are not supported yet: they are planned for phase 2 of comet-deploy.` and exit without running the command. |
 | `-v`, `--version` | Print the version (`0.1.0`). |
@@ -67,7 +67,7 @@ Other commands (`logs -f`, `status`, `setup`, …) stop immediately on Ctrl+C.
 |---|---|---|---|---|---|
 | [`init`](#init) | Create `mup.js` and `settings.json` | - | - | - | - |
 | [`validate`](#validate) | Check the config | - | - | - | - |
-| [`setup`](#setup) | Install Docker, create app directories | app (Docker: also `mongo`/`proxy` servers) | - | - | - |
+| [`setup`](#setup) | Install Docker, create app directories, set up the proxy | app (Docker: also `mongo`/`proxy` servers) | with `proxy` | - | - |
 | [`deploy`](#deploy) | Build once, distribute, activate | app | yes | yes | yes |
 | [`reconfig`](#reconfig) | Write env and settings, restart | app | yes | yes | yes |
 | [`restart`](#restart) | Stop and start the app | app | yes | yes | yes |
@@ -80,6 +80,7 @@ Other commands (`logs -f`, `status`, `setup`, …) stop immediately on Ctrl+C.
 | [`status`](#status) | Docker, container, version, HTTP, lock | app | - | - | - |
 | [`meteor destroy`](#meteor-destroy) | Remove the app from the servers | app, one by one | - | - | deletes it |
 | [`docker …`](#docker-commands) | Docker on the servers | see below | - | - | - |
+| [`proxy …`](#proxy-commands) | MUP's reverse proxy | `proxy` servers | some | - | - |
 
 ---
 
@@ -139,7 +140,9 @@ Prepares the servers, like `mup setup`:
 1. **Docker setup** on every machine of the app servers (and of the `mongo` and `proxy` servers, if those sections exist), in parallel. It runs MUP's `docker-setup.sh`: if Docker is missing or older than 18, it installs it with `get.docker.com` (apt-based systems, Debian or Ubuntu) and adds the SSH user to the `docker` group; otherwise it starts Docker. A machine that appears twice (same host and SSH port) is set up once.
 2. **App setup** on the app servers, in parallel: creates `/opt/<name>/`, `/opt/<name>/config` and `/opt/<name>/tmp` and gives them to the SSH user.
 
-If the config has a `mongo` or `proxy` section, `setup` warns that it is not set up yet (phase 2) and continues with the rest.
+3. **Proxy setup**, if the config has a `proxy` section: the same as [`proxy setup`](#proxy-commands), on the proxy servers. It takes the deploy lock on the app servers while it runs.
+
+If the config has a `mongo` section, `setup` warns that it is not set up yet (phase 2) and continues with the rest.
 
 Servers that MUP has already set up do not need `setup` again.
 
@@ -164,6 +167,16 @@ Builds the app once on your machine and deploys it to the app servers:
 6. Write the deploy history, remove old versions on the healthy servers, release the locks.
 
 The full description is in [How it works](how-it-works.md).
+
+**Behind the proxy** (a `proxy` section):
+
+- Preflight also checks that the proxy runs on every proxy server, before the build.
+- The app's proxy files (`vhost.d`, your own certificates, the load balancing upstream) are brought up to date: only what differs is written, and the proxy containers are not restarted. MUP does this only in `setup`.
+- Without `loadBalancing`, each server switches without a gap: the new container starts beside the old one, and the old one stops only after the new one is healthy and nginx routes to it.
+- With `loadBalancing`, each server is taken out of the upstream on every proxy before its restart (`[<server>] drain ✓ out of load balancing`), gets 5 s for the requests in flight, and goes back in after its health check. A server that does not end healthy stays out, and the deploy says so. Load balancing also makes the lock cover every app server, even with `--servers`.
+- `cometDeploy.zeroDowntime: false` turns the last two off.
+
+Details: [How it works → Behind the proxy](how-it-works.md#behind-the-proxy).
 
 | Option | Description |
 |---|---|
@@ -228,6 +241,8 @@ Writes `start.sh` and `env.list` from the current config and settings to the app
 
 On a server that fails the health check, the previous `start.sh` and `env.list` are restored and the app is restarted with them. A history entry `reconfig` is written.
 
+Behind the proxy, `reconfig` also brings the app's proxy files up to date and switches like [`deploy`](#deploy) (no gap, or out of load balancing while the server restarts).
+
 ```bash
 comet-deploy reconfig
 comet-deploy reconfig --settings settings.production.json --strategy rolling
@@ -245,6 +260,8 @@ comet-deploy restart [--strategy canary|rolling|parallel] [--force-unlock]
 ```
 
 Stops and starts the app on each server by strategy (MUP's `meteor-stop.sh`, then `meteor-start.sh` with the files already on the server) and runs the health check. Nothing changes on the server, so there is nothing to revert; a server that does not come up is reported as failed, with its last log lines. A history entry `restart` is written.
+
+Behind the proxy it switches like [`deploy`](#deploy), without a gap, or with `loadBalancing` out of load balancing while the server restarts. It does not change the proxy files. A server that is still out of load balancing after an interrupted deploy goes back in when `restart --servers <server>` finds it healthy.
 
 | Option | Description |
 |---|---|
@@ -304,6 +321,8 @@ Which version each server rolls back to:
 | nothing at all | The server fails with `Nothing to roll back to: no older version and no :previous image on this server`. |
 
 If the health check fails, the server goes back to the image that ran before the rollback. Running `rollback` again goes one more version back. Version names are listed by [`history`](#history).
+
+Behind the proxy it switches like [`deploy`](#deploy), without a gap, or with `loadBalancing` out of load balancing while the server restarts. It does not change the proxy files.
 
 At the end it prints `Rolled back one, two to <version>.`, or `Rolled back one, two to the versions listed above.` when the servers went back to different versions (the summary table shows the version per server).
 
@@ -388,6 +407,8 @@ two     27.5.1  running  20261111-091502-3f2a1c9  200
 
 `--overview` is accepted for MUP compatibility; the output is always this overview.
 
+With a `proxy` section, the [`proxy status`](#proxy-commands) block follows the table, as in MUP.
+
 ---
 
 ## `meteor` commands
@@ -438,13 +459,36 @@ comet-deploy docker ps -a
 comet-deploy docker setup --servers three
 ```
 
+## `proxy` commands
+
+The `proxy` group has MUP 1.5.11's proxy commands. They need a `proxy` section in the config (see [Configuration → `proxy`](configuration.md#proxy)) and run on the proxy servers: `proxy.servers`, or the app servers without it. `--servers` filters that list. `proxy setup`, `reconfig-shared`, `start` and `stop` first take the deploy lock on the app's servers, so they never change the proxy in the middle of a deploy of this app; a server where the app is not set up yet has nothing to lock.
+
+| Command | What it does |
+|---|---|
+| `proxy setup` | What `mup proxy setup` does, with MUP's scripts: `proxy-setup.sh`, the proxy's `start.sh` and `nginx.tmpl`, the app's `vhost.d` files, your own certificates, and with `loadBalancing` the app's upstream and its config container (`mup-proxy-configure-<app>`). Then the proxy containers are recreated, **only when** one of the files they are created from changed or they do not both run. Otherwise it prints `[<server>] proxy up to date` and regenerates the nginx config, so new or removed files of the app still take effect. Servers that are out of load balancing stay out (see [`deploy`](#deploy)). |
+| `proxy reconfig-shared` | Uploads the `proxy.shared` settings one server after another (an empty `shared` resets them to MUP's defaults), then recreates the proxy containers where the files changed. The shared settings apply to every app on the server. |
+| `proxy start` | Recreates both proxy containers, always, as MUP does (`proxy-start.sh`). The way to force a restart of the proxy. |
+| `proxy stop` | Removes both proxy containers (MUP's `proxy-stop.sh`). Every app behind the proxy on that server is unreachable until `proxy start`. |
+| `proxy logs [options]` | `docker logs` of `mup-nginx-proxy`; options pass through (`-f`, `--tail 50`). |
+| `proxy logs-le [options]` | `docker logs` of `mup-nginx-proxy-letsencrypt`. As in MUP, it reads the app servers. |
+| `proxy nginx-config` | Prints the generated `/etc/nginx/conf.d/default.conf` of each proxy server. |
+| `proxy status` | MUP's `=> Reverse Proxy Status` block: both containers, the published ports and the expiry date of each certificate. comet-deploy adds the servers that are out of load balancing (`- Drained: <servers> (run "comet-deploy restart --servers <servers>" once they are healthy)`) and the app's proxy files that do not match the config (`- Out of sync: … (run "comet-deploy proxy setup" to sync)`). |
+| `proxy envconfig` | Fails, as it does in MUP: `"proxy envconfig" has no implementation in MUP 1.5.11 either: it is listed in its help, but running it fails.` |
+
+```bash
+comet-deploy proxy status
+comet-deploy proxy logs --tail 100 -f
+comet-deploy proxy reconfig-shared
+```
+
+A restart of the proxy containers (`proxy start`, and `proxy setup` or `reconfig-shared` when the proxy's own files changed) interrupts every app on the server for a moment. `deploy`, `reconfig`, `rollback` and `restart` never restart the proxy.
+
 ## Planned for phase 2
 
-These MUP commands exist so that you get a clear answer instead of "Unknown argument". `proxy`, `mongo` and `ssh` are listed in `--help` with "(planned for phase 2)", `meteor debug` in `meteor --help`. They do not read the config or touch the servers, and exit `1`. The message quotes the words you typed:
+These MUP commands exist so that you get a clear answer instead of "Unknown argument". `mongo` and `ssh` are listed in `--help` with "(planned for phase 2)", `meteor debug` in `meteor --help`. They do not read the config or touch the servers, and exit `1`. The message quotes the words you typed:
 
 | Command | Example message |
 |---|---|
-| `proxy [command…]` | `"proxy logs" is not supported yet: it is planned for phase 2 of comet-deploy.` |
 | `mongo [command…]` | `"mongo shell" is not supported yet: it is planned for phase 2 of comet-deploy.` |
 | `ssh [server] [command…]` | `"ssh one ls" is not supported yet: it is planned for phase 2 of comet-deploy.` |
 | `meteor debug` | `"meteor debug" is not supported yet: it is planned for phase 2 of comet-deploy.` |

@@ -17,6 +17,7 @@ This page describes what `comet-deploy deploy` does, step by step, and what it l
 - [Deploy history](#deploy-history)
 - [Rollback](#rollback)
 - [reconfig, restart, start, stop](#reconfig-restart-start-stop)
+- [Behind the proxy](#behind-the-proxy)
 - [What is on the servers](#what-is-on-the-servers)
 - [Working side by side with MUP](#working-side-by-side-with-mup)
 - [SSH connections](#ssh-connections)
@@ -82,6 +83,7 @@ On every server:
 | CPU architecture (`uname -m`) | picks the target platform (`x86_64` → `linux/amd64`, `aarch64` → `linux/arm64`) unless `cometDeploy.platform` is set |
 | App set up (`/opt/<name>/config` exists) | error `Server "<name>": the app is not set up on this server yet. Run "comet-deploy setup" first.` |
 | Deploy lock | error if another deploy holds it (skipped with `--force-unlock` or `cometDeploy.lock: false`) |
+| Reverse proxy (with a `proxy` section, on every proxy server) | error `Server "<name>": the reverse proxy is not set up (container mup-nginx-proxy is missing or stopped). Run "comet-deploy proxy setup" first.` |
 | SSH reverse port forwarding | error if `sshd` refuses it (`AllowTcpForwarding no`) |
 
 `meteor build` sends nothing to the servers, so it skips the last three checks. It still connects to every server to read its CPU architecture.
@@ -204,7 +206,7 @@ The servers are activated by the [rollout strategy](#rollout-strategies). On eac
 2. **Snapshot**: copy the current `start.sh` and `env.list` to `/opt/<name>/config/.prev/`.
 3. **Retag**: `mup-<name>:latest` → `:previous` (when it is a different image), then `mup-<name>:<version>` → `:latest`. `:latest` changes last. If moving `:latest` fails, `:previous` is put back too, so both tags stay as they were.
 4. **Write** the new `start.sh` and `env.list`. `env.list` gets mode `600` on every write, also when the file already existed with other permissions (for example `644` from an earlier MUP deploy).
-5. **Start**: MUP's `meteor-start.sh`, which runs `sudo bash /opt/<name>/config/start.sh`: it removes the old container and runs the new one (`docker run -d --restart=always --name=<name> …`). This is the only downtime on the server.
+5. **Start**: MUP's `meteor-start.sh`, which runs `sudo bash /opt/<name>/config/start.sh`: it removes the old container and runs the new one (`docker run -d --restart=always --name=<name> …`). This is the only downtime on the server; behind the proxy there is none (see [Behind the proxy](#behind-the-proxy)).
 6. **Health check**, see below.
 
 ```mermaid
@@ -287,6 +289,7 @@ There is no automatic rollback of the servers that succeeded. When the result is
 - Locks are released at the end, also on errors and on Ctrl+C.
 - Locks do not expire. A lock left behind (killed process, second Ctrl+C, lost connection) is released with `comet-deploy unlock`, or with `--force-unlock` on the next command. Both print who held it.
 - `cometDeploy.lock: false` turns locking off.
+- With proxy load balancing, every app server is locked, also with `--servers`; the `proxy` commands lock the app servers too. See [Locks with the proxy](#locks-with-the-proxy).
 
 MUP does not know these locks. Do not run `mup deploy` while a comet-deploy deploy is running.
 
@@ -333,6 +336,79 @@ Details and the exact rules: [Commands → rollback](commands.md#rollback).
 
 `stop` removes the container (as MUP does); `start` creates it again from `start.sh`.
 
+## Behind the proxy
+
+With a `proxy` section the app runs behind MUP's reverse proxy: `zodern/nginx-proxy:v1.1.0` in the container `mup-nginx-proxy` and the Let's Encrypt companion `jrcs/letsencrypt-nginx-proxy-companion:v1.13.1` in `mup-nginx-proxy-letsencrypt`, one pair per server, shared by every app on that server. Inside `mup-nginx-proxy`, docker-gen writes the nginx config from the running containers (their `VIRTUAL_HOST`) and from the files in `/opt/mup-nginx-proxy`. comet-deploy uses MUP 1.5.11's scripts, templates and images unchanged.
+
+### Setup and the proxy containers
+
+`setup` and `proxy setup` run MUP's proxy scripts and upload the same files as MUP. MUP then always recreates the proxy containers, which interrupts every app on the server. comet-deploy recreates them only when one of the files they are created from changed (`config/start.sh`, `shared-config.sh`, `env.list`, `env_letsencrypt.list`, `nginx-default.conf`, `nginx.tmpl`, `nginx-shared.tmpl`) or when they do not both run. It compares a checksum of these files from before and after the upload; nothing extra is stored on the server. When nothing changed, it prints `[<server>] proxy up to date` and regenerates the nginx config once (docker-gen inside `mup-nginx-proxy`, then `nginx -t` and a reload), so new or removed files of the app still take effect. `proxy start` always recreates the containers, as in MUP.
+
+### The app's proxy files on deploy
+
+MUP writes the app's proxy files only in `setup`: a `mup deploy` after a change of `clientUploadLimit` or of a certificate leaves the old files in place. comet-deploy brings them up to date on every `deploy` and `reconfig`, on every proxy server:
+
+- `vhost.d/<domain>` (`clientUploadLimit`, `nginxServerConfig`) and `vhost.d/<domain>_location` (`nginxLocationConfig`),
+- your own certificates (`ssl.crt`, `ssl.key`) in `certs/` and `mounted-certs/`,
+- with load balancing, `upstream/<app>`, the links `vhost.d/<domain>_upstream`, and the config container `mup-proxy-configure-<app>`.
+
+The content is what `mup proxy setup` writes with the same config; the integration tests compare the files byte for byte. Only files that differ are written, and the output names them. A changed file needs only `nginx -s reload`. A new or removed file needs the nginx config regenerated, because docker-gen decides which files exist when it generates; comet-deploy regenerates it without restarting the proxy containers.
+
+The order keeps nginx from pointing at something that does not run:
+
+- Domain files and certificates are written before activation.
+- Turning `loadBalancing` on writes the upstream after every server has been activated; until then nginx routes to the containers as it does without load balancing. If a server did not deploy, load balancing is not turned on yet: `loadBalancing was not enabled on the proxies because <servers> did not deploy; run the deploy again`.
+- Turning `loadBalancing` off removes the upstream before activation.
+- A changed `app.env.PORT`, `privateIp` or `host` changes that server's line in the upstream when the server is activated. A new server joins the upstream after it is healthy; a removed server leaves it at the start.
+
+`rollback` and `restart` do not change the proxy files.
+
+**Shared settings.** `proxy.shared` configures the proxy itself, so applying it restarts the proxy for every app on the server. `deploy` never applies it. When the app's config has a `shared` section whose effect differs from the files on a proxy server, `deploy` warns: `The shared proxy settings (proxy.shared) differ from the ones on <servers>. A deploy does not apply them, because that restarts the proxy for every app on the server. Run "comet-deploy proxy reconfig-shared" to apply them.` A config without `shared` never warns, so it never leads you to overwrite the settings another app has set.
+
+### Switching without a gap
+
+Without load balancing, the app publishes no port on the host (MUP uses `--expose`), so a second container can run beside it. `deploy`, `reconfig`, `restart` and `rollback` switch like this:
+
+1. Start `<app>-next` from the server's `config/start.sh`: the same container, under another name, without the step that removes the running one.
+2. Run the health check on `<app>-next`.
+3. Wait until nginx routes to it (docker-gen adds it to the config; up to 15 s).
+4. Stop the old container (`docker stop`, 10 s for the requests in flight), remove it, and rename `<app>-next` to `<app>`.
+
+The result looks exactly like a container that `start.sh` created. If the health check fails, `<app>-next` is removed, the tags and the config go back as in a normal [revert](#automatic-revert), and the old container, which never stopped, keeps serving: the server ends `reverted` without a gap.
+
+**Known compromise.** docker-gen adds `<app>-next` to nginx as soon as it starts, before its health check. Until the new Meteor listens, nginx passes those requests on to the old container. Once it listens, part of the requests reach the new version during its health check, so if it answers with errors, some users see them for a short time.
+
+The switch is not used when it cannot be safe, and the output says why in one line (`Zero-downtime switch not used: <reason>`): `cometDeploy.zeroDowntime: false`, active load balancing (see below), `docker.args` that publishes a host port (`-p`, `-P`, `--publish`), uses the host network or sets `--name`, or `docker.networks` with `host`. The server then restarts in place, as with MUP.
+
+### Load balancing: taking a server out of the upstream
+
+With `loadBalancing`, every app container publishes `app.env.PORT` on its server, so two containers cannot run side by side. MUP restarts the app while the server is still in the upstream, and the requests in flight on it fail. comet-deploy takes the server out first, on every proxy server:
+
+1. Rewrite `upstream/<app>` with the server marked `down` (an nginx directive that keeps the `ip_hash` distribution of the other servers) and reload nginx (`[<server>] drain ✓ out of load balancing`).
+2. Wait 5 s for the requests in flight.
+3. Restart the app on that server and run the health check.
+4. Once it is healthy, write `upstream/<app>` back to exactly what MUP's `upstream.sh` writes, and reload nginx.
+
+Rules:
+
+- **Never all servers at once.** A step that would leave no server up runs without draining: the `parallel` strategy, and an app on a single server. With `canary`, the other servers are drained only after the canary server is healthy, so it stays up.
+- **The `down` mark is the only record.** Nothing else is stored on the server. comet-deploy removes a server's mark only after that server passed a health check in `deploy`, `reconfig`, `rollback` or `restart`. Every other rewrite of the upstream keeps the marks: `setup`, `proxy setup`, and a deploy with `--servers` that does not restart that server.
+- **Failures.** A server that ends `reverted` goes back in after its restored version passed the check. A server that ends `revert-failed`, or that an interrupted deploy left drained (a lost connection, a killed process), stays out, and the command says so: `"<server>" stays out of load balancing because it did not end healthy. Once it is healthy, run "comet-deploy restart --servers <server>" to put it back.` `status` and `proxy status` list it as `Drained:`. See [Troubleshooting](troubleshooting.md#a-server-stays-out-of-load-balancing).
+- **Ctrl+C.** The servers that passed their health check go back in before the command exits, as the locks are released.
+- **`--servers`** updates every proxy whose upstream holds a restarted server, also when that proxy server is not in `--servers`.
+- **MUP.** `mup proxy setup` rewrites the upstream without the marks, so it puts drained servers back in. comet-deploy cannot prevent that.
+- `cometDeploy.zeroDowntime: false` turns draining off; the restart is then the same as with MUP.
+
+### Locks with the proxy
+
+- With load balancing, `deploy`, `reconfig`, `rollback` and `restart` lock **every** app server, also with `--servers`: all servers share one upstream, and two deploys of different servers at the same time could drain both.
+- `setup`, `proxy setup`, `proxy start`, `proxy stop` and `proxy reconfig-shared` take the app's lock on its servers, so they never rewrite the upstream in the middle of a deploy. For a proxy server where the app does not run, the app servers are locked.
+- Other apps on the same proxy are not locked out. If another app's `proxy start` or `reconfig-shared` recreates the proxy while this app switches, the new proxy generates its config from the running containers, so the switch still works. Requests during the proxy restart itself fail, as they do with MUP.
+
+### Docker versions
+
+MUP's proxy images are several years old. They were checked with Docker 27.5.1 and Docker 29.9.3 on the servers: nginx-proxy generates the config for the app's container and routes to it, and the Let's Encrypt companion sees the containers. The integration tests run `setup`, a certificate from a local ACME test server and a zero-downtime deploy under load on both versions. Docker 29 no longer fills the deprecated `.NetworkSettings.IPAddress` field, so comet-deploy reads container IPs from `.NetworkSettings.Networks`.
+
 ## What is on the servers
 
 comet-deploy keeps the server layout of MUP 1.5.11 and adds a few files that MUP ignores.
@@ -348,6 +424,9 @@ comet-deploy keeps the server layout of MUP 1.5.11 and adds a few files that MUP
 | `/opt/<name>/config/deploy-history.jsonl` | added | Deploy history. |
 | `/opt/<name>/config/deploy.lock/` | added | Only while a command runs. |
 | `/opt/<name>/config/.prev/` | added | Snapshot of the previous `start.sh` and `env.list`, for the automatic revert. |
+| `/opt/mup-nginx-proxy/` and the containers `mup-nginx-proxy`, `mup-nginx-proxy-letsencrypt` | yes | Written by MUP's proxy scripts, with the same content. |
+| `down` marks in `/opt/mup-nginx-proxy/upstream/<name>` | added | Only for a server that is out of load balancing. nginx and MUP read the file as usual. |
+| Container `<name>-next` | added | Only during a zero-downtime switch; renamed to `<name>` at its end. |
 
 On your machine: the local images `mup-<name>:<version>` of the last 20 builds (older ones are removed), the build directory (`buildLocation`), the cache state and registry leases in `~/.cache/comet-deploy/`, and the stopped `comet-deploy-registry` container with its volume `comet-deploy-registry-data`, which is never cleaned up.
 
@@ -361,11 +440,14 @@ Because the server layout is the same, both tools can manage the same app on the
 4. `comet-deploy rollback` returns to the version MUP deployed (`:previous`).
 5. `mup deploy` still works afterwards.
 
+With the proxy and load balancing, the tests also take turns between `mup setup`, `mup deploy`, `mup proxy setup` and `comet-deploy deploy`, and compare the app's proxy files (`vhost.d`, `upstream`, the config container's script) after each one: comet-deploy leaves them exactly as MUP wrote them.
+
 Things to know:
 
 - MUP ignores the version tags, the history, the lock and the snapshot. `mup deploy` moves `:latest` to `:previous` as usual, and comet-deploy's version tags stay.
 - After a `mup deploy`, `comet-deploy status` shows `-` as the version (`:latest` is not a comet-deploy version), and `comet-deploy rollback` picks the newest kept comet-deploy version.
 - MUP does not respect comet-deploy's lock. Do not run both at the same time.
+- `mup proxy setup` clears the `down` marks of servers that are out of load balancing.
 - MUP prints `cometDeploy is an unknown property` as a validation message and continues.
 - `mup meteor destroy` removes `/opt/<name>/` (including the history) but leaves comet-deploy's version tags; `comet-deploy meteor destroy --force` removes them too.
 

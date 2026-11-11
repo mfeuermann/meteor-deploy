@@ -48,13 +48,10 @@ function hasNewline(v: unknown): boolean {
   return typeof v === 'string' && /[\r\n]/.test(v);
 }
 
-/**
- * Error text for MUP's pre-1.4 TLS/nginx options. Their replacement, the `proxy` section, does
- * not run in comet-deploy yet either, so the text says how to deploy such an app today.
- */
+/** Error text for MUP's pre-1.4 TLS/nginx options, which the `proxy` section replaced. */
 const LEGACY_PROXY_OPTION =
-  'is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section, ' +
-  'which comet-deploy plans for phase 2; until then, keep deploying this app with MUP.';
+  'is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section: ' +
+  'move the domain and certificate settings there, or keep deploying this app with MUP.';
 
 /**
  * Validates the normalized config with MUP's schemas. Only problems that make a deploy

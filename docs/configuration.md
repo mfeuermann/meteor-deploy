@@ -15,6 +15,7 @@ comet-deploy reads the same config file as Meteor Up (MUP) 1.5.11: `mup.js` or `
   - [`app.docker`](#appdocker)
   - [`app.buildOptions`](#appbuildoptions)
   - [Other `app` options](#other-app-options)
+- [`proxy`](#proxy)
 - [Accepted but ignored](#accepted-but-ignored)
 - [Rejected options](#rejected-options)
 - [Planned for phase 2](#planned-for-phase-2)
@@ -124,7 +125,7 @@ servers: {
 | `pem` | string | - | Path to the **private** key (not `.pub`). |
 | `password` | string | - | SSH password. |
 | `opts` | object | `{}` | Options for the SSH client. `port` (default `22`) is the documented one. All keys are passed to the [ssh2](https://github.com/mscdex/ssh2) client as they are, without a validation warning (MUP 1.5.11 warns about keys other than `port`). For example, `passphrase` decrypts an encrypted `pem` key, and `readyTimeout` changes the connection timeout. |
-| `privateIp` | string | - | Used only by proxy load balancing ([phase 2](#planned-for-phase-2)). |
+| `privateIp` | string | - | The address the proxy's load balancing upstream uses for this server instead of `host` (see [`proxy`](#proxy)). |
 
 **Authentication** works like MUP: `pem` first, then `password`, then the ssh agent from `SSH_AUTH_SOCK`. If none is available, the command stops with `No SSH authentication for server "<name>" (<host>).`
 
@@ -250,6 +251,48 @@ comet-deploy also sets `--architecture` per target platform (`os.linux.x86_64` o
 | `port` | Ignored (MUP ignores it too). |
 | `ssl`, `nginx` | Rejected, see below. |
 
+## `proxy`
+
+MUP's reverse proxy: [nginx-proxy](https://github.com/nginx-proxy/nginx-proxy) in the container `mup-nginx-proxy` and the Let's Encrypt companion in `mup-nginx-proxy-letsencrypt`, one pair per server, shared by every app on that server. comet-deploy runs it with MUP 1.5.11's own scripts, templates and images, so the options, the files under `/opt/mup-nginx-proxy` and the containers are the same as with MUP. The section is validated and normalized exactly like MUP, including MUP's warning `app.env.PORT is ignored when using the reverse proxy`.
+
+```js
+proxy: {
+  domains: 'app.example.com,www.app.example.com',
+  ssl: {
+    letsEncryptEmail: 'admin@example.com',  // or crt + key for your own certificate
+    forceSSL: true,
+  },
+  clientUploadLimit: '20M',
+  // loadBalancing: true,     // every proxy sends requests to all app servers
+  // servers: { one: {} },    // where the proxy runs; default: the app servers
+  // shared: { ... },         // settings of the proxy itself, for every app on the server
+},
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `domains` | required | Comma-separated domains. They become the app's `VIRTUAL_HOST` (and `LETSENCRYPT_HOST` with Let's Encrypt). |
+| `ssl.letsEncryptEmail` | - | Get certificates for `domains` from Let's Encrypt. |
+| `ssl.crt`, `ssl.key` | - | Your own certificate and key, paths relative to the config's directory. They are uploaded to the proxy servers. |
+| `ssl.forceSSL` | `false` | Redirect `http://` to `https://` (`HTTPS_METHOD=redirect`). |
+| `clientUploadLimit` | `'10M'` | nginx `client_max_body_size` for the app's domains. |
+| `nginxServerConfig` | - | Path to a file with nginx directives for the `server` block of the app's domains (`vhost.d/<domain>`). |
+| `nginxLocationConfig` | - | Path to a file with nginx directives for the app's `location /` block (`vhost.d/<domain>_location`). |
+| `loadBalancing` | `false` | Every proxy server sends requests to all app servers through an nginx `upstream`. The app publishes `app.env.PORT` on each server; the upstream uses each server's `privateIp`, or `host` without one. |
+| `stickySessions` | `true` | With `loadBalancing`: `ip_hash`, so a client stays on one server. |
+| `servers` | the app servers | Where the proxy runs. |
+| `shared` | - | Settings of the proxy containers themselves: `httpPort`, `httpsPort`, `nginxConfig`, `nginxTemplate`, `templatePath`, `env`, `envLetsEncrypt`. They apply to every app on the server. `proxy reconfig-shared` applies them; `deploy` never does. |
+
+What comet-deploy does with it:
+
+- `setup` sets the proxy up after Docker and the app directories, like `mup setup`. `comet-deploy proxy …` has MUP's proxy commands; see [Commands → `proxy` commands](commands.md#proxy-commands).
+- `deploy` and `reconfig` also bring the app's proxy files up to date (MUP only does that in `setup`), without restarting the proxy containers.
+- `deploy`, `reconfig`, `restart` and `rollback` replace the app container without a gap, and with `loadBalancing` take each server out of the upstream while it restarts. `cometDeploy.zeroDowntime: false` turns both off.
+- Preflight stops before the build when the proxy is not running on a proxy server: `the reverse proxy is not set up (container mup-nginx-proxy is missing or stopped). Run "comet-deploy proxy setup" first.`
+- Nothing that comet-deploy writes changes what MUP does next on the same servers.
+
+How each of these works: [How it works → Behind the proxy](how-it-works.md#behind-the-proxy). The differences from MUP in one list: [Migrating from MUP](migrating-from-mup.md#the-reverse-proxy).
+
 ## Accepted but ignored
 
 These options are valid MUP options. comet-deploy accepts them, so the same config keeps working with both tools, but they have no effect.
@@ -263,7 +306,6 @@ These options are valid MUP options. comet-deploy accepts them, so the same conf
 | `app.enableUploadProgressBar` | none |
 | `app.buildOptions.cleanAfterBuild` | none |
 | `app.port` | none |
-| `cometDeploy.zeroDowntime` | none (it applies to deploys behind the proxy, which is phase 2) |
 
 With a top-level `meteor` section, the paths in the messages start with `meteor.`.
 
@@ -273,13 +315,13 @@ These stop every command that needs the config (and make `validate` exit 1):
 
 | Option | Message |
 |---|---|
-| `app.ssl` | `app.ssl is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section, which comet-deploy plans for phase 2; until then, keep deploying this app with MUP.` |
+| `app.ssl` | `app.ssl is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section: move the domain and certificate settings there, or keep deploying this app with MUP.` |
 | `app.nginx` | `app.nginx is a deprecated MUP option …` (same message) |
 | `app.docker.imageFrontendServer` | `app.docker.imageFrontendServer is a deprecated MUP option …` (same message) |
 | `app.dockerImageFrontendServer` | `app.dockerImageFrontendServer is a deprecated MUP option …` (same message) |
 | `swarm.enabled: true` | `swarm.enabled Docker Swarm is not supported by comet-deploy` |
 
-MUP deprecated `app.ssl`, `app.nginx` and `imageFrontendServer` in version 1.4 in favour of the `proxy` section. Note that the `proxy` section itself is [phase 2](#planned-for-phase-2) in comet-deploy.
+MUP deprecated `app.ssl`, `app.nginx` and `imageFrontendServer` in version 1.4 in favour of the [`proxy`](#proxy) section, which comet-deploy supports.
 
 ## Planned for phase 2
 
@@ -287,7 +329,6 @@ comet-deploy 0.1.0 is phase 1 of the project. These parts of a MUP config are va
 
 | Section | `setup` | `deploy`, `reconfig`, `rollback`, `meteor push`, `meteor build`, `meteor envconfig` |
 |---|---|---|
-| `proxy` | warns: `The "proxy" section is not set up yet: it is planned for phase 2 of comet-deploy.` | stop: `The "proxy" section is not supported yet (planned for phase 2 of comet-deploy).` |
 | `mongo` | warns: `The "mongo" section is not set up yet: it is planned for phase 2 of comet-deploy.` | stop: `The "mongo" section is not supported yet (planned for phase 2 of comet-deploy).` |
 | `privateDockerRegistry` | - | stop: `"privateDockerRegistry" is not supported yet (planned for phase 2 of comet-deploy).` |
 | `cometDeploy.transfer: 'registry'` or `'stream'` | - | stop: `cometDeploy.transfer "registry" is not supported yet (planned for phase 2 of comet-deploy).` |
@@ -310,14 +351,14 @@ comet-deploy runs its commands under the same keys as MUP, so the hook names are
 
 | Command | Keys, in order |
 |---|---|
-| `setup` | `default.setup`, `docker.setup`, `meteor.setup` |
+| `setup` | `default.setup`, `docker.setup`, `meteor.setup`, and with a `proxy` section `proxy.setup`, `proxy.start` |
 | `deploy` | `default.deploy`, `meteor.deploy`, `meteor.push`, `meteor.build`, `meteor.prepareBundle`, `default.reconfig`, `meteor.envconfig`, `meteor.start` |
 | `reconfig` | `default.reconfig`, `meteor.envconfig`, `meteor.start` |
 | `restart` | `default.restart`, `meteor.restart` |
 | `start` | `default.start`, `meteor.start` |
 | `stop` | `default.stop`, `meteor.stop` |
 | `logs` | `default.logs`, `meteor.logs` |
-| `status` | `default.status`, `meteor.status` |
+| `status` | `default.status`, `meteor.status`, and with a `proxy` section `proxy.status` |
 | `rollback` | `default.rollback` |
 | `meteor deploy` | `meteor.deploy`, `meteor.push`, `meteor.build`, `meteor.prepareBundle`, `default.reconfig`, `meteor.envconfig`, `meteor.start` |
 | `meteor push` | `meteor.push`, `meteor.build`, `meteor.prepareBundle` |
@@ -326,6 +367,9 @@ comet-deploy runs its commands under the same keys as MUP, so the hook names are
 | `meteor envconfig` | `meteor.envconfig` |
 | `meteor destroy` | `meteor.destroy` |
 | `docker setup`, `update`, `restart`, `ps`, `status` | `docker.setup`, `docker.update`, `docker.restart`, `docker.ps`, `docker.status` |
+| `proxy setup` | `proxy.setup`, `proxy.start` |
+| `proxy reconfig-shared` | `proxy.reconfig-shared`, `proxy.start` |
+| `proxy start`, `stop`, `logs`, `logs-le`, `nginx-config`, `status` | `proxy.start`, `proxy.stop`, `proxy.logs`, `proxy.logs-le`, `proxy.nginx-config`, `proxy.status` |
 
 The other `meteor …` variants (`restart`, `start`, `stop`, `logs`, `status`) run the same keys as the top-level command without the `default.` one. As in MUP, `meteor build` runs only under `meteor.build`, and `meteor push` under `meteor.push`, `meteor.build` and `meteor.prepareBundle`.
 
@@ -341,7 +385,7 @@ cometDeploy: {
   transfer: 'auto',            // 'auto' | 'tunnel' ('registry' and 'stream' are phase 2)
   platform: 'auto',            // 'auto' | 'linux/amd64' | 'linux/arm64'
   keepVersions: 5,             // version tags kept on each server for rollback
-  zeroDowntime: true,          // no effect in phase 1 (behind the proxy only)
+  zeroDowntime: true,          // behind the proxy: no gap on restart, drain with load balancing
   healthCheck: {
     path: '/',                 // must start with "/"
     maxStatus: 499,            // healthy = HTTP status <= maxStatus
@@ -356,7 +400,7 @@ cometDeploy: {
 | `transfer` | `'auto'` \| `'tunnel'` \| `'registry'` \| `'stream'` | `'auto'` | How the image reaches the servers. In phase 1, `auto` and `tunnel` both use the local registry and an SSH reverse tunnel. `registry` (through `privateDockerRegistry`) and `stream` (`docker save` over SSH, for servers without TCP forwarding) are phase 2 and stop the deploy. |
 | `platform` | `'auto'` \| `'linux/amd64'` \| `'linux/arm64'` | `'auto'` | Target platform of the image. `auto` reads `uname -m` on each server (`x86_64`/`amd64` → `linux/amd64`, `aarch64`/`arm64` → `linux/arm64`) and builds once per platform found. A fixed value is used for all servers. |
 | `keepVersions` | integer ≥ 1 | `5` | How many version tags stay on each server for `rollback`. Old tags are removed after a successful deploy. Versions that never ran healthy on that server are removed and do not count. The images behind `:latest` and `:previous` are never removed. |
-| `zeroDowntime` | boolean | `true` | Reserved for zero-downtime deploys behind the proxy (phase 2). No effect in phase 1. |
+| `zeroDowntime` | boolean | `true` | Behind the proxy (the `proxy` section), `deploy`, `reconfig`, `restart` and `rollback` replace the container without a gap; with `proxy.loadBalancing` they take each server out of the upstream while it restarts. `false` restarts the container in place, as MUP does. No effect without the proxy. See [How it works → Behind the proxy](how-it-works.md#behind-the-proxy). |
 | `healthCheck.path` | string starting with `/` | `'/'` | Path the health check requests. |
 | `healthCheck.maxStatus` | integer 100–599 | `499` | Highest HTTP status that counts as healthy. With the default, a 4xx counts as healthy (the app answers) and a 5xx does not. MUP accepts any HTTP answer, including 500. |
 | `lock` | boolean | `true` | Take a lock on every target server before changing anything, so two deploys cannot run at the same time. `false` turns locking (and the lock check in preflight) off. |
@@ -461,4 +505,4 @@ The same config as `mup.json`:
 }
 ```
 
-In phase 1 comet-deploy does not terminate TLS. With an `https://` `ROOT_URL`, put your own reverse proxy or load balancer in front of the servers (the MUP `proxy` section is [phase 2](#planned-for-phase-2)).
+For an `https://` `ROOT_URL`, add MUP's [`proxy`](#proxy) section with `ssl` (Let's Encrypt or your own certificate), or put your own reverse proxy or load balancer in front of the servers.

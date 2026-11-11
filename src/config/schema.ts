@@ -102,7 +102,7 @@ export const mongoSchema = Joi.object({
 });
 
 /**
- * MUP's reverse proxy section. Normalized like MUP but not run yet (phase 2). The `ssl` rules
+ * MUP's reverse proxy section (run by src/proxy/). The `ssl` rules
  * are MUP's: `crt` and `key` go together, Let's Encrypt excludes custom certificates, and at
  * least one of `letsEncryptEmail`, `crt` or `forceSSL` must be set.
  */

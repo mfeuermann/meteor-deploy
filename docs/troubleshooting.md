@@ -30,6 +30,7 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [validate exits with code 1](#validate-exits-with-code-1)
 - [The docker image cannot build an app image](#the-docker-image-cannot-build-an-app-image)
 - [Not supported yet (phase 2)](#not-supported-yet-phase-2)
+- [app.ssl is a deprecated MUP option](#appssl-is-a-deprecated-mup-option)
 - [env.list line over 64 KiB](#envlist-line-over-64-kib)
 
 **Build**
@@ -52,6 +53,16 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [Mixed versions after a partial failure](#mixed-versions-after-a-partial-failure)
 - [Nothing to roll back to](#nothing-to-roll-back-to)
 - [Leftover local images and the registry volume](#leftover-local-images-and-the-registry-volume)
+
+**The reverse proxy**
+
+- [The reverse proxy is not set up](#the-reverse-proxy-is-not-set-up)
+- [A server stays out of load balancing](#a-server-stays-out-of-load-balancing)
+- [Zero-downtime switch not used](#zero-downtime-switch-not-used)
+- [The shared proxy settings differ](#the-shared-proxy-settings-differ)
+- [Load balancing was not enabled](#load-balancing-was-not-enabled)
+- [Updating the reverse proxy failed](#updating-the-reverse-proxy-failed)
+- [No Let's Encrypt certificate](#no-lets-encrypt-certificate)
 
 ---
 
@@ -318,15 +329,21 @@ docker: {
 ### Not supported yet (phase 2)
 
 ```
-The "proxy" section is not supported yet (planned for phase 2 of comet-deploy).
 Hook "pre.deploy" is not supported yet (hooks are planned for phase 2 of comet-deploy).
 "mongo shell" is not supported yet: it is planned for phase 2 of comet-deploy.
-app.ssl is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section, which comet-deploy plans for phase 2; until then, keep deploying this app with MUP.
 ```
 
-The `proxy`, `mongo`, `privateDockerRegistry` and `hooks` parts of a MUP config (and the older `app.ssl`, `app.nginx` and `imageFrontendServer` options), and the `proxy`, `mongo`, `ssh` and `meteor debug` commands, are phase 2. Remove the part from the config if you do not need it, or keep using MUP for that app. See [Configuration → Planned for phase 2](configuration.md#planned-for-phase-2) and [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
+The `mongo`, `privateDockerRegistry` and `hooks` parts of a MUP config, and the `mongo`, `ssh` and `meteor debug` commands, are phase 2. Remove the part from the config if you do not need it, or keep using MUP for that app. See [Configuration → Planned for phase 2](configuration.md#planned-for-phase-2) and [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
 
 Hooks are checked before the command does anything: a hook on any step the command will run, for example `pre.meteor.start` for `deploy`, stops it before preflight and the build. Nothing changes on the servers.
+
+### app.ssl is a deprecated MUP option
+
+```
+app.ssl is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section: move the domain and certificate settings there, or keep deploying this app with MUP.
+```
+
+MUP 1.4 replaced `app.ssl`, `app.nginx` and `docker.imageFrontendServer` with the `proxy` section. Move the domains to `proxy.domains` and the certificate to `proxy.ssl` (`crt` and `key`, or `letsEncryptEmail`); see [Configuration → `proxy`](configuration.md#proxy). MUP 1.5.11 works with the new section too.
 
 ### env.list line over 64 KiB
 
@@ -556,3 +573,102 @@ docker volume rm comet-deploy-registry-data
 The next deploy creates both again and pushes the full image once. The servers are not affected: they keep their own copies of the layers.
 
 To clear the BuildKit cache (the next build runs `npm install` again): `docker builder prune`.
+
+## The reverse proxy
+
+### The reverse proxy is not set up
+
+```
+Preflight failed:
+  - Server "one": the reverse proxy is not set up (container mup-nginx-proxy is missing or stopped). Run "comet-deploy proxy setup" first.
+```
+
+The config has a `proxy` section, but the proxy container does not run on that proxy server. MUP would deploy the app anyway, and nobody could reach it; comet-deploy stops before the build. `reconfig`, `restart` and `rollback` stop the same way (`The reverse proxy is not ready:`), with `Nothing was changed.`
+
+- A new server, or the proxy was never set up: `comet-deploy proxy setup` (or `comet-deploy setup`, which includes it).
+- The proxy was set up but is stopped (for example after `proxy stop`): `comet-deploy proxy start`.
+- `comet-deploy proxy status` shows both proxy containers per server.
+
+### A server stays out of load balancing
+
+```
+Warning: "two" stays out of load balancing because it did not end healthy. Once it is healthy, run "comet-deploy restart --servers two" to put it back.
+```
+
+and in `status` or `proxy status`:
+
+```
+   - Drained: two (run "comet-deploy restart --servers two" once it is healthy)
+```
+
+With `proxy.loadBalancing`, a server is taken out of the upstream (`down` in `/opt/mup-nginx-proxy/upstream/<app>`) before its app restarts, and goes back in after its health check. It stays out when it did not end healthy: its restored version failed too (`revert-failed`), or the command did not finish on it (a lost connection, a killed process). The other servers keep serving. comet-deploy never takes the last server out.
+
+1. Find out why: `comet-deploy status`, `comet-deploy logs --tail 100 --servers two`.
+2. Fix the cause. If the app on that server is healthy already, go to step 3; otherwise deploy a working version: `comet-deploy deploy --servers two`.
+3. `comet-deploy restart --servers two`. After a healthy restart the server goes back into the upstream on every proxy, and `Drained:` disappears.
+
+`setup` and `proxy setup` keep the server out, so they do not send traffic to a broken server. MUP's own `mup proxy setup` clears the mark and puts the server back whether it is healthy or not.
+
+### Zero-downtime switch not used
+
+```
+Zero-downtime switch not used: docker.args publishes a host port, which two containers cannot share
+```
+
+This is information, not an error. Behind the proxy, comet-deploy normally starts the new container beside the old one. When the config makes that unsafe, the server restarts in place, as with MUP, and the line says why:
+
+| Reason | What you can do |
+|---|---|
+| `cometDeploy.zeroDowntime is false` | Remove the option, if you want the switch. |
+| `proxy.loadBalancing is on: …` | Nothing: load-balanced servers are taken out of the upstream instead. |
+| `docker.args publishes a host port …` | Remove `-p`/`--publish` from `docker.args`. The proxy reaches the app over the Docker network; a published port is only needed if something else connects to it directly. |
+| `docker.args uses the host network …`, `docker.networks includes the host network` | Use a bridge network. |
+| `docker.args sets --name …` | Remove `--name`: MUP names the container after the app. |
+
+### The shared proxy settings differ
+
+```
+Warning: The shared proxy settings (proxy.shared) differ from the ones on one. A deploy does not apply them, because that restarts the proxy for every app on the server. Run "comet-deploy proxy reconfig-shared" to apply them.
+```
+
+`proxy.shared` configures the proxy itself, for every app on the server, so a deploy only reports the difference. `comet-deploy proxy reconfig-shared` applies it and restarts the proxy, which interrupts every app on the server for a moment.
+
+If several apps share the proxy, keep the `shared` section in the config of only one of them: `reconfig-shared` from an app without `shared` resets the proxy to MUP's defaults. A config without `shared` never shows this warning.
+
+### Load balancing was not enabled
+
+```
+Warning: loadBalancing was not enabled on the proxies because two did not deploy; run the deploy again
+```
+
+When `proxy.loadBalancing` changes from `false` to `true`, the upstream is written only after every server runs the new container, which publishes `app.env.PORT`. Until then nginx keeps routing to the containers as before, so nothing is broken; fix the server that failed and run `comet-deploy deploy` again.
+
+On the next deploy, a server whose container already publishes the port is restarted in place (`[two] the running container already publishes the load balancing port: restarting it in place`), so expect a short gap on that server.
+
+Turning load balancing off removes the upstream before the servers are activated, and every server then switches without a gap.
+
+### Updating the reverse proxy failed
+
+```
+Updating the app's proxy files failed:
+  - Server "one": …
+Hint: The app was not restarted on any server.
+```
+
+The app's proxy files are written before any server is activated. If that fails, the command stops, and the app keeps running everywhere as before. Fix the cause shown for each server and run the command again.
+
+A file named in the config that cannot be read locally (`ssl.crt`, `ssl.key`, `nginxServerConfig`, `nginxLocationConfig`) stops the command even earlier, before the build: `Cannot read proxy.ssl.crt (<path>): …`. The paths are relative to the config's directory.
+
+```
+Warning: Could not update the reverse proxy on "one": … Run "comet-deploy proxy setup" once it is reachable.
+```
+
+This one comes at the end, after the servers were activated: the final upstream update (putting servers back, or turning load balancing on) did not reach that proxy server. When it is reachable again, `comet-deploy proxy setup` writes the upstream, keeping the `down` marks of drained servers.
+
+### No Let's Encrypt certificate
+
+The companion `mup-nginx-proxy-letsencrypt` gets the certificates, as with MUP. It needs every domain in `proxy.domains` to point at the proxy server, and port 80 to be reachable from the internet.
+
+- `comet-deploy proxy logs-le --tail 100` shows what it tried.
+- `comet-deploy proxy status` lists the certificates and their expiry dates.
+- After a change of `proxy.domains`, run `comet-deploy deploy`: the app's container gets the new `LETSENCRYPT_HOST`.

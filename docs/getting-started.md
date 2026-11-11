@@ -156,7 +156,19 @@ module.exports = {
 };
 ```
 
-The app is published on port 80 of the server (`app.env.PORT`, default 80). comet-deploy does not set up TLS in this release; for `https://`, put your own reverse proxy or load balancer in front of it.
+The app is published on port 80 of the server (`app.env.PORT`, default 80). For `https://`, uncomment the `proxy` section at the end of the sample: it runs MUP's reverse proxy, which gets a certificate from Let's Encrypt for the domains (they must point at the server). Set `ROOT_URL` to `https://…` then; nginx listens on ports 80 and 443 instead of the app. `setup` sets the proxy up:
+
+```js
+  proxy: {
+    domains: 'app.example.com',
+    ssl: {
+      letsEncryptEmail: 'admin@example.com',
+      forceSSL: true,
+    },
+  },
+```
+
+Behind the proxy, deploys replace the app without a gap. All proxy options: [Configuration → `proxy`](configuration.md#proxy).
 
 `settings.json` next to `mup.js` is your Meteor settings file. It reaches the app as `METEOR_SETTINGS`.
 
@@ -196,7 +208,7 @@ comet-deploy setup
 Next, deploy the app with: comet-deploy deploy
 ```
 
-`setup` installs Docker if it is missing or older than 18, starts it, and creates `/opt/myapp/{config,tmp}` owned by the SSH user. It runs on all servers in parallel. Add `--verbose` to see the output of the remote scripts.
+`setup` installs Docker if it is missing or older than 18, starts it, and creates `/opt/myapp/{config,tmp}` owned by the SSH user. It runs on all servers in parallel. With a `proxy` section, it then sets up MUP's reverse proxy (`Proxy setup`, `Proxy start`). Add `--verbose` to see the output of the remote scripts.
 
 ## 5. Deploy
 

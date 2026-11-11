@@ -30,7 +30,7 @@ export interface ServerConfig {
    * knows `port`; comet-deploy also accepts the other ssh2 keys, such as `passphrase`.
    */
   opts?: { port?: number; [k: string]: unknown };
-  /** Only used by MUP's proxy load balancing, which comet-deploy does not run yet. */
+  /** The address the proxy's load balancing upstream uses for this server (instead of `host`). */
   privateIp?: string;
 }
 
@@ -164,7 +164,10 @@ export interface CometOptions {
   platform: 'auto' | Platform;
   /** Version tags kept on each server for `rollback`. */
   keepVersions: number;
-  /** Reserved for zero-downtime deploys behind the proxy (phase 2); no effect yet. */
+  /**
+   * Behind the proxy: replace the container without a gap and drain load-balanced servers while
+   * they restart. `false` restarts in place, as MUP does.
+   */
   zeroDowntime: boolean;
   /** HTTP check after each start: healthy when `GET <path>` answers with status <= `maxStatus`. */
   healthCheck: { path: string; maxStatus: number };
@@ -184,8 +187,8 @@ export interface RegistryConfig {
 /**
  * The config after `normalizeConfig`: MUP's defaults filled in, `app` always present when the
  * user wrote `app` or `meteor`, and `cometDeploy` complete. `mongo`, `proxy`, `hooks` and
- * `swarm` are kept in MUP's shape so `validate --show` matches MUP, even where comet-deploy
- * does not act on them yet.
+ * `swarm` are kept in MUP's shape so `validate --show` matches MUP (and the proxy scripts get
+ * the values MUP gives them), even where comet-deploy does not act on them yet.
  */
 export interface NormalizedConfig {
   servers: Record<string, ServerConfig>;
