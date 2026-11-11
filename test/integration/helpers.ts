@@ -40,6 +40,10 @@ export function writeTestConfig(
     appPath?: string;
     /** Extra `app.docker` options (e.g. MUP's useBuildKit for the interop test). */
     docker?: Record<string, unknown>;
+    /** The `proxy` section, written as given. */
+    proxy?: Record<string, unknown>;
+    /** Extra `cometDeploy` options; `strategy` above is merged in. */
+    cometDeploy?: Record<string, unknown>;
   } = {},
 ): string {
   const config = {
@@ -52,7 +56,8 @@ export function writeTestConfig(
       docker: { image: 'zodern/meteor:latest', ...o.docker },
       deployCheckWaitTime: 120,
     },
-    ...(o.strategy ? { cometDeploy: { strategy: o.strategy } } : {}),
+    ...(o.proxy ? { proxy: o.proxy } : {}),
+    ...(o.strategy || o.cometDeploy ? { cometDeploy: { ...o.cometDeploy, ...(o.strategy ? { strategy: o.strategy } : {}) } } : {}),
   };
   const path = join(dir, 'mup.js');
   writeFileSync(path, `module.exports = ${JSON.stringify(config, null, 2)};\n`);

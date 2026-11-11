@@ -17,9 +17,14 @@ import { SshConnection } from '../../src/ssh/connection.js';
 
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
-// The image is only built when this tag is missing: bump it after changing fake-server/, or
-// an old image is reused.
-const IMAGE = 'comet-fake-server:1';
+// The image is only built when its tag is missing: bump IMAGE_REVISION after changing
+// fake-server/, or an old image is reused.
+const IMAGE_REVISION = 2;
+/** The Docker releases a fake server can run: the default one, and the newest major (29). */
+export type FakeDockerVersion = '27.5' | '29';
+/** The exact release of each major; 29.9 was the newest 29.x when the proxy gate was added. */
+const DOCKER_RELEASE: Record<FakeDockerVersion, string> = { '27.5': '27.5', '29': '29.9' };
+const imageTag = (v: FakeDockerVersion) => `comet-fake-server:${IMAGE_REVISION}-docker${DOCKER_RELEASE[v]}`;
 // Test-only credentials; the containers listen on 127.0.0.1 only.
 const ROOT_PASSWORD = 'comet-root-pw';
 const DEPLOYER_PASSWORD = 'comet-deployer-pw';
@@ -51,17 +56,26 @@ async function docker(args: string[]): Promise<string> {
   return stdout.trim();
 }
 
-let imageReady: Promise<void> | undefined;
-/** Builds the image if it is missing; the promise is shared, so parallel callers share one build. */
-function ensureImage(): Promise<void> {
-  imageReady ??= (async () => {
-    try {
-      await docker(['image', 'inspect', IMAGE]);
-    } catch {
-      await docker(['build', '-t', IMAGE, join(here, 'fake-server')]);
-    }
-  })();
-  return imageReady;
+const imageReady = new Map<FakeDockerVersion, Promise<string>>();
+/**
+ * Builds the image for Docker `v` if it is missing and resolves to its tag. The promise is
+ * shared per version, so parallel callers share one build.
+ */
+function ensureImage(v: FakeDockerVersion): Promise<string> {
+  let ready = imageReady.get(v);
+  if (!ready) {
+    const tag = imageTag(v);
+    ready = (async () => {
+      try {
+        await docker(['image', 'inspect', tag]);
+      } catch {
+        await docker(['build', '--build-arg', `DOCKER_VERSION=${DOCKER_RELEASE[v]}`, '-t', tag, join(here, 'fake-server')]);
+      }
+      return tag;
+    })();
+    imageReady.set(v, ready);
+  }
+  return ready;
 }
 
 let keys: { pemPath: string; publicKey: string } | undefined;
@@ -108,15 +122,16 @@ async function waitReady(server: FakeServer): Promise<void> {
 /**
  * Starts `n` fake servers in parallel and resolves when all of them accept SSH and run Docker.
  * `o.user` picks the SSH user (`deployer` is a non-root user with passwordless sudo);
- * `o.allowTcpForwarding: false` makes sshd refuse the reverse tunnel. If any server does not
+ * `o.allowTcpForwarding: false` makes sshd refuse the reverse tunnel; `o.docker` picks the Docker
+ * release inside (default 27.5). If any server does not
  * become ready, all of them are removed and the error is rethrown. Otherwise the caller must
  * `stop()` them.
  */
 export async function startFakeServers(
   n: number,
-  o: { allowTcpForwarding?: boolean; user?: 'root' | 'deployer' } = {},
+  o: { allowTcpForwarding?: boolean; user?: 'root' | 'deployer'; docker?: FakeDockerVersion } = {},
 ): Promise<FakeServer[]> {
-  await ensureImage();
+  const image = await ensureImage(o.docker ?? '27.5');
   const { pemPath, publicKey } = await keyPair();
   const user = o.user ?? 'root';
   const servers = await Promise.all(
@@ -131,7 +146,7 @@ export async function startFakeServers(
         '-e', `DEPLOYER_PASSWORD=${DEPLOYER_PASSWORD}`,
         '-e', `AUTHORIZED_KEY=${publicKey}`,
         '-e', `ALLOW_TCP_FORWARDING=${o.allowTcpForwarding === false ? 'no' : 'yes'}`,
-        IMAGE,
+        image,
       ]);
       const mapping = await docker(['port', containerId, '22/tcp']);
       const port = Number(mapping.split('\n')[0].split(':').pop());

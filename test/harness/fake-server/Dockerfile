@@ -3,13 +3,16 @@
 # sshd, sudo and a passwordless-sudo `deployer` user in the docker group.
 FROM debian:bookworm
 
-# Docker is pinned so that a new get.docker.com release does not change test results.
+# The Docker release installed in the fake server; fake-servers.ts builds one image per version.
+ARG DOCKER_VERSION=27.5
+
+# Docker is pinned (DOCKER_VERSION) so that a new get.docker.com release does not change test results.
 # /run/sshd is the privilege separation directory sshd needs to start.
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
      openssh-server sudo curl ca-certificates bash iproute2 iptables procps \
   && curl -fsSL https://get.docker.com -o /tmp/get-docker.sh \
-  && sh /tmp/get-docker.sh --version 27.5 \
+  && sh /tmp/get-docker.sh --version "$DOCKER_VERSION" \
   && rm -rf /var/lib/apt/lists/* /tmp/get-docker.sh \
   && mkdir -p /run/sshd \
   && useradd -m -s /bin/bash -G docker deployer \
