@@ -64,3 +64,20 @@ export function mergeHistory(perServer: Record<string, HistoryEntry[]>, limit: n
   }
   return [...byKey.values()].sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0)).slice(0, Math.max(0, limit));
 }
+
+/**
+ * What the history of ONE server says about its version tags: `succeeded`
+ * ran healthy at least once (deploy or rollback); `failedOnly` were deployed
+ * there but never ran healthy (failed or reverted). Tags without any entry
+ * (e.g. `meteor push` without activation) are in neither set.
+ */
+export function versionOutcomes(entries: HistoryEntry[]): { succeeded: Set<string>; failedOnly: Set<string> } {
+  const succeeded = new Set<string>();
+  const failed = new Set<string>();
+  for (const e of entries) {
+    if (!e.version || (e.action !== 'deploy' && e.action !== 'rollback')) continue;
+    if (e.result === 'success') succeeded.add(e.version);
+    else failed.add(e.version);
+  }
+  return { succeeded, failedOnly: new Set([...failed].filter((v) => !succeeded.has(v))) };
+}

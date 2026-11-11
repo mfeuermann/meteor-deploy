@@ -6,6 +6,7 @@ import {
   appendHistory,
   parseFacts,
   parseVersions,
+  selectVersionsToRemove,
   readHistory,
   readLock,
   retagActivate,
@@ -65,7 +66,14 @@ describe('parseFacts', () => {
       dockerRunning: true,
       dockerRootFreeBytes: 123456,
       hasBash: true,
+      sudo: 'ok',
     });
+  });
+
+  it('reports whether sudo works without a password (M13)', () => {
+    expect(parseFacts('arch=x86_64\nsudo=ok').sudo).toBe('ok');
+    expect(parseFacts('arch=x86_64\nsudo=password').sudo).toBe('password');
+    expect(parseFacts('arch=x86_64\nsudo=missing').sudo).toBe('missing');
   });
 
   it('maps empty values to null / false', () => {
@@ -75,6 +83,7 @@ describe('parseFacts', () => {
       dockerRunning: false,
       dockerRootFreeBytes: null,
       hasBash: false,
+      sudo: 'ok',
     });
   });
 });
@@ -191,5 +200,30 @@ describe('shArg', () => {
     expect(shArg('/opt/my.app/config/start.sh')).toBe('/opt/my.app/config/start.sh');
     expect(shArg('a b')).toBe(`'a b'`);
     expect(shArg('x;rm')).toBe(`'x;rm'`);
+  });
+});
+
+describe('selectVersionsToRemove', () => {
+  const v = {
+    latestId: 'd',
+    previousId: 'c',
+    versions: [
+      { tag: '20261104-000000', id: 'd' },
+      { tag: '20261103-000000', id: 'c' },
+      { tag: '20261102-000000', id: 'b' },
+      { tag: '20261101-000000', id: 'a' },
+    ],
+  };
+
+  it('keeps the newest versions and never the images behind latest/previous', () => {
+    expect(selectVersionsToRemove(v, 2)).toEqual(['20261102-000000', '20261101-000000']);
+    expect(selectVersionsToRemove(v, 0)).toEqual(['20261102-000000', '20261101-000000']);
+  });
+
+  it('removes versions that only failed without using up a kept slot (M2)', () => {
+    expect(selectVersionsToRemove(v, 3)).toEqual(['20261101-000000']);
+    expect(selectVersionsToRemove(v, 3, new Set(['20261102-000000']))).toEqual(['20261102-000000']);
+    // a failed version behind :previous stays and does not use a slot either
+    expect(selectVersionsToRemove(v, 3, new Set(['20261103-000000']))).toEqual([]);
   });
 });

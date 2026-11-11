@@ -1,5 +1,12 @@
 # POSIX sh (runs before we know bash exists). Prints key=value lines.
 echo "arch=$(uname -m)"
+# Every remote script runs its commands through sudo (MUP does the same), so
+# sudo must exist and must not ask for a password (-n fails instead of asking).
+if command -v sudo >/dev/null 2>&1; then
+  if sudo -n true >/dev/null 2>&1; then echo "sudo=ok"; else echo "sudo=password"; fi
+else
+  echo "sudo=missing"
+fi
 ver=""
 running=0
 free=""

@@ -40,6 +40,8 @@ export interface ServerFacts {
   dockerRunning: boolean;
   dockerRootFreeBytes: number | null;
   hasBash: boolean;
+  /** `ok`: sudo works without a password; `password`: it asks for one; `missing`: not installed. */
+  sudo: 'ok' | 'password' | 'missing';
 }
 
 export function parseFacts(stdout: string): ServerFacts {
@@ -56,6 +58,7 @@ export function parseFacts(stdout: string): ServerFacts {
     dockerRunning: kv.get('docker_running') === '1',
     dockerRootFreeBytes: Number.isFinite(freeNum) ? freeNum : null,
     hasBash: kv.get('bash') === '1',
+    sudo: kv.get('sudo') === 'password' ? 'password' : kv.get('sudo') === 'missing' ? 'missing' : 'ok',
   };
 }
 
@@ -148,19 +151,36 @@ export async function listVersions(conn: SshConnection, localRepo: string): Prom
   return parseVersions(r.stdout);
 }
 
-/** Removes version tags beyond the newest `keep`; never the images behind latest/previous. */
-export async function pruneVersions(conn: SshConnection, localRepo: string, keep: number): Promise<string[]> {
+/**
+ * Version tags to remove: every tag in `failed` (versions that never ran
+ * healthy, so they do not use up a kept slot) and the rest beyond the newest
+ * `keep`. Images behind :latest / :previous are never removed.
+ */
+export function selectVersionsToRemove(v: ImageVersions, keep: number, failed: ReadonlySet<string> = new Set()): string[] {
+  const protectedId = (id: string) => id === v.latestId || id === v.previousId;
+  const kept = v.versions.filter((x) => !failed.has(x.tag)).slice(0, Math.max(0, keep));
+  return v.versions.filter((x) => !kept.includes(x) && !protectedId(x.id)).map((x) => x.tag);
+}
+
+/** Removes old version tags (see `selectVersionsToRemove`); returns the removed tags. */
+export async function pruneVersions(conn: SshConnection, localRepo: string, keep: number, o: { failed?: ReadonlySet<string> } = {}): Promise<string[]> {
   const v = await listVersions(conn, localRepo);
-  const remove = v.versions
-    .slice(Math.max(0, keep))
-    .filter((x) => x.id !== v.latestId && x.id !== v.previousId)
-    .map((x) => x.tag);
+  const remove = selectVersionsToRemove(v, keep, o.failed);
   if (remove.length === 0) return [];
   const r = await conn.runScript(await comet('versions.sh', { repo: localRepo, remove }));
   return r.stdout
     .split('\n')
     .map((l) => /^removed (\S+)$/.exec(l.trim())?.[1])
     .filter((t): t is string => !!t);
+}
+
+/**
+ * Removes dangling (untagged) images, like MUP's Prepare Bundle does on every
+ * deploy. Old base images and images that lost their :previous tag pile up
+ * otherwise. Failures are ignored: it is housekeeping, not part of the deploy.
+ */
+export async function pruneImages(conn: SshConnection): Promise<void> {
+  await conn.exec('sudo docker image prune -f >/dev/null 2>&1 || true');
 }
 
 /** Image IDs behind :latest / :previous before an activation ('' = no such tag). */

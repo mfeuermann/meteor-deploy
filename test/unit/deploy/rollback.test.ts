@@ -49,6 +49,14 @@ describe('chooseRollbackTarget (Review Focus 4)', () => {
     expect(chooseRollbackTarget({ ...three, latestId: 'mup' })).toEqual({ kind: 'version', tag: V3 });
   });
 
+  it('only picks versions that ran successfully when the history is known (M2)', () => {
+    expect(chooseRollbackTarget(three, undefined, new Set([V3, V1]))).toEqual({ kind: 'version', tag: V1 });
+    expect(chooseRollbackTarget({ ...three, previousId: 'p' }, undefined, new Set([V3]))).toEqual({ kind: 'previous' });
+    expect(chooseRollbackTarget({ ...three, latestId: 'mup' }, undefined, new Set([V2]))).toEqual({ kind: 'version', tag: V2 });
+    // --to is explicit: the history does not filter it
+    expect(chooseRollbackTarget(three, V2, new Set([V3]))).toEqual({ kind: 'version', tag: V2 });
+  });
+
   it('falls back to :previous when the running version is the oldest kept one', () => {
     expect(chooseRollbackTarget({ latestId: 'a', previousId: 'p', versions: [{ tag: V1, id: 'a' }] })).toEqual({ kind: 'previous' });
     expect(chooseRollbackTarget({ latestId: 'a', previousId: 'a', versions: [{ tag: V1, id: 'a' }] }).kind).toBe('none');
@@ -82,7 +90,7 @@ async function setup(versions: Record<string, ImageVersions>) {
     buildApp: async () => [{ platform: 'linux/amd64', version: V3, localTag: `mup-myapp:${V3}`, imageId: 'x', nodeVersion: '24', depsHash: 'd', fromCache: false }],
     ensureLocalRegistry: async () => ({ port: 5555 }),
     pushToLocalRegistry: async (t) => t,
-    stopLocalRegistry: async () => {},
+    stopLocalRegistry: async () => true,
     distributeToServer: async () => ({ durationMs: 1 }),
     pruneVersions: async () => [],
     readLock: async (c) => (calls.push(`read-lock:${c.name}`), { user: 'eve', machine: 'box', pid: 1, startedAt: 'x', command: 'deploy', tool: 't' }),
@@ -132,6 +140,18 @@ describe('rollbackPipeline', () => {
     const canary = await rollbackPipeline(c.ctx, {}, c.deps);
     expect(canary.skipped).toEqual(['two']);
     expect(c.calls.some((x) => x.startsWith('activate:'))).toBe(false);
+  });
+
+  it('skips a version whose deploy failed on that server (M2)', async () => {
+    const s = await setup({ one: three, two: three });
+    const h = (version: string, result: HistoryEntry['result']): HistoryEntry => ({
+      version, action: 'deploy', result, startedAt: 'x', durationMs: 1, user: 'u', machine: 'm', servers: ['one', 'two'], tool: 't',
+    });
+    s.deps.readHistory = async (c) => (c.name === 'one' ? [h(V1, 'success'), h(V2, 'reverted'), h(V3, 'success')] : []);
+    await rollbackPipeline(s.ctx, { strategy: 'parallel' }, s.deps);
+    expect(s.calls).toContain(`activate:one:rollback:${V1}`);
+    // no history on "two" (e.g. it was lost): the kept versions are used as they are
+    expect(s.calls).toContain(`activate:two:rollback:${V2}`);
   });
 
   it('--to rolls back to the given version', async () => {

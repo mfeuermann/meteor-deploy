@@ -57,18 +57,23 @@ function pushSettingsLeaves(list: string[], v: unknown, isRoot = true) {
 
 /**
  * Values that must never be printed: app env and per-server env (except public
- * keys and plain numbers/booleans), SSH and registry passwords, the serialized
- * Meteor settings and its non-public string values.
+ * keys and plain numbers/booleans), SSH passwords and key passphrases, the
+ * registry password, and for the Meteor settings and every per-server settings
+ * file: the serialized JSON and its non-public string values.
  */
-export function collectSecrets(config: NormalizedConfig, settings?: unknown): string[] {
+export function collectSecrets(config: NormalizedConfig, settings?: unknown, perServerSettings: unknown[] = []): string[] {
   const out: string[] = [];
   pushEnv(out, config.app?.env);
   for (const ref of Object.values(config.app?.servers ?? {})) pushEnv(out, ref?.env);
-  for (const s of Object.values(config.servers ?? {})) push(out, s?.password);
+  for (const s of Object.values(config.servers ?? {})) {
+    push(out, s?.password);
+    push(out, (s?.opts as { passphrase?: unknown } | undefined)?.passphrase);
+  }
   if (config.privateDockerRegistry?.password) push(out, config.privateDockerRegistry.password);
-  if (settings !== undefined) {
-    push(out, JSON.stringify(settings));
-    pushSettingsLeaves(out, settings);
+  for (const v of [settings, ...perServerSettings]) {
+    if (v === undefined) continue;
+    push(out, JSON.stringify(v));
+    pushSettingsLeaves(out, v);
   }
   return [...new Set(out)];
 }

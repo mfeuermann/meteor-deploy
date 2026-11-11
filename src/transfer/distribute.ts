@@ -1,24 +1,20 @@
 import { CometError } from '../core/errors.js';
-import { renderTemplate } from '../remote/render.js';
+import { cometScript } from '../remote/ops.js';
 import type { SshConnection } from '../ssh/connection.js';
 import { openReverseTunnel } from './tunnel.js';
 
-/** Plain image references only (they are rendered into the script unquoted). */
-const IMAGE_REF_RE = /^[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?(@sha256:[0-9a-f]{64})?$/i;
-
-function checkRef(what: string, v: string): string {
-  if (!IMAGE_REF_RE.test(v)) throw new CometError(`Invalid ${what} "${v}".`);
-  return v;
-}
-
+/**
+ * Template variables for `pull-via-tunnel.sh`. The references are shell-quoted
+ * by the template (`q()`), so any valid Docker reference works, including
+ * registries with a port (`registry.example.com:5000/org/image:tag`); Docker
+ * itself rejects invalid ones.
+ */
 export function pullScriptVars(o: { remotePort: number; registryRef: string; targetTag: string; baseImage: string }): Record<string, string> {
   if (!Number.isInteger(o.remotePort) || o.remotePort <= 0 || o.remotePort > 65535) throw new CometError(`Invalid tunnel port ${o.remotePort}.`);
-  return {
-    remotePort: String(o.remotePort),
-    registryRef: checkRef('registry reference', o.registryRef),
-    targetTag: checkRef('image tag', o.targetTag),
-    baseImage: checkRef('base image', o.baseImage),
-  };
+  for (const [what, v] of [['registry reference', o.registryRef], ['image tag', o.targetTag], ['base image', o.baseImage]]) {
+    if (!v.trim()) throw new CometError(`The ${what} is empty.`);
+  }
+  return { tunnelRef: `127.0.0.1:${o.remotePort}/${o.registryRef}`, targetTag: o.targetTag, baseImage: o.baseImage };
 }
 
 /** Pulls the image from the local registry through a reverse tunnel; only missing layers travel. */
@@ -29,7 +25,7 @@ export async function distributeToServer(
   const start = Date.now();
   const tunnel = await openReverseTunnel(conn, o.registryPort);
   try {
-    const script = await renderTemplate('comet/pull-via-tunnel.sh', pullScriptVars({ ...o, remotePort: tunnel.remotePort }));
+    const script = await cometScript('pull-via-tunnel.sh', pullScriptVars({ ...o, remotePort: tunnel.remotePort }));
     let buf = '';
     await conn.runScriptOrThrow(script, `Pulling ${o.targetTag}`, {
       onStdout: (chunk) => {

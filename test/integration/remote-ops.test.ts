@@ -20,6 +20,7 @@ import {
   type LockInfo,
 } from '../../src/remote/ops.js';
 import { SshConnection } from '../../src/ssh/connection.js';
+import { SshPool } from '../../src/ssh/pool.js';
 import { fakeServersConfig, startFakeServers, type FakeServer } from '../harness/fake-servers.js';
 
 const APP = 'opsapp';
@@ -52,6 +53,7 @@ describe('remote ops on a fake server', () => {
     expect(f.dockerVersion).toMatch(/^\d+\./);
     expect(f.hasBash).toBe(true);
     expect(f.arch).not.toBe('');
+    expect(f.sudo).toBe('ok');
   });
 
   it('locks exclusively', async () => {
@@ -157,5 +159,48 @@ describe('remote ops on a fake server', () => {
     expect(h).toHaveLength(2);
     expect(h[0]).toEqual(e);
     expect(h[1].action).toBe('rollback');
+  });
+});
+
+describe('facts for an SSH user whose sudo asks for a password (M13)', () => {
+  let server: FakeServer;
+  let conn: SshConnection;
+
+  beforeAll(async () => {
+    [server] = await startFakeServers(1, { user: 'deployer' });
+    await server.exec('rm -f /etc/sudoers.d/deployer');
+    const [name, cfg] = Object.entries(fakeServersConfig([server], 'password'))[0];
+    conn = await SshConnection.connect(name, cfg, { cwd: process.cwd(), basePath: process.cwd() });
+  });
+
+  afterAll(async () => {
+    await conn?.close();
+    await server?.stop();
+  });
+
+  it('reports sudo=password instead of a Docker problem', async () => {
+    const f = await serverFacts(conn);
+    expect(f.sudo).toBe('password');
+  });
+
+  it('replaces a dropped SSH connection with a new one (M8)', async () => {
+    const servers = fakeServersConfig([server], 'password');
+    const [name] = Object.keys(servers);
+    const pool = new SshPool(servers, { cwd: process.cwd(), basePath: process.cwd() });
+    try {
+      const first = await pool.get(name);
+      expect((await first.exec('echo one')).stdout.trim()).toBe('one');
+      // kill the server side of every deployer session ("[d]" keeps pkill from matching its own shell)
+      await server.exec("pkill -KILL -f 'sshd: [d]eployer'");
+      for (let i = 0; i < 50 && first.isAlive; i++) await new Promise((r) => setTimeout(r, 100));
+      expect(first.isAlive).toBe(false);
+      await expect(first.exec('echo two')).rejects.toThrow(/SSH connection .* closed/);
+
+      const second = await pool.get(name);
+      expect(second).not.toBe(first);
+      expect((await second.exec('echo three')).stdout.trim()).toBe('three');
+    } finally {
+      await pool.closeAll();
+    }
   });
 });

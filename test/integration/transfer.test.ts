@@ -3,7 +3,7 @@ import { run } from '../../src/local/exec.js';
 import { SshConnection } from '../../src/ssh/connection.js';
 import { distributeToServer } from '../../src/transfer/distribute.js';
 import { ensureLocalRegistry, pushToLocalRegistry } from '../../src/transfer/local-registry.js';
-import { TunnelUnavailableError } from '../../src/transfer/tunnel.js';
+import { probeForwarding, TunnelUnavailableError } from '../../src/transfer/tunnel.js';
 import { fakeServersConfig, startFakeServers, type FakeServer } from '../harness/fake-servers.js';
 
 const BASE = 'busybox:1.36';
@@ -66,6 +66,16 @@ describe('image distribution through the local registry and a reverse tunnel', (
     }
     expect(lines.some((l) => /Already exists/.test(l))).toBe(true);
     expect(lines.filter((l) => /Pull complete/.test(l))).toHaveLength(1);
+  });
+
+  it('the preflight probe finds a server without TCP forwarding and passes a normal one (M3)', async () => {
+    const [bad, good] = await Promise.all([connect(noForward[0]), connect(servers[0])]);
+    try {
+      expect(await probeForwarding(bad)).toEqual(expect.any(String));
+      expect(await probeForwarding(good)).toBeNull();
+    } finally {
+      await Promise.all([bad.close(), good.close()]);
+    }
   });
 
   it('reports a server without TCP forwarding', async () => {

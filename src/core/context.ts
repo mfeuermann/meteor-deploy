@@ -5,6 +5,7 @@ import type { NormalizedConfig, RawConfig } from '../config/types.js';
 import { hasFatal, validateConfig, type Issue } from '../config/validate.js';
 import { createReporter, type Reporter } from '../output/reporter.js';
 import { collectSecrets } from '../output/secrets.js';
+import { loadServerSettings } from '../remote/app-files.js';
 import type { SshConnection } from '../ssh/connection.js';
 import { SshPool } from '../ssh/pool.js';
 import { CometError } from './errors.js';
@@ -121,7 +122,9 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
       if (!settingsLoaded) {
         settings = loadSettings({ cwd, basePath, settingsFlag: argv.settings }).settings;
         settingsLoaded = true;
-        reporter.addSecrets(collectSecrets(config, settings));
+        // Per-server settings files are secret too; loading them here also fails early when one is missing.
+        const perServer = Object.keys(config.app.servers ?? {}).map((s) => loadServerSettings(config, s, { cwd, basePath }));
+        reporter.addSecrets(collectSecrets(config, settings, perServer));
       }
       return settings;
     },

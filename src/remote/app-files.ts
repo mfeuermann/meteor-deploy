@@ -9,6 +9,7 @@ import cloneDeep from 'lodash/cloneDeep.js';
 import merge from 'lodash/merge.js';
 import { loadSettingsFile, resolveUserPath } from '../config/load.js';
 import type { NormalizedConfig } from '../config/types.js';
+import { CometError } from '../core/errors.js';
 import { renderTemplate } from './render.js';
 
 const START_SH = 'mup/meteor/templates/start.sh';
@@ -63,6 +64,37 @@ function createEnv(c: NormalizedConfig, settings: unknown): Record<string, unkno
   return env;
 }
 
+/**
+ * The settings file of one server (`app.servers.<name>.settings`, MUP's
+ * per-server METEOR_SETTINGS), or undefined when that server has none.
+ */
+export function loadServerSettings(c: NormalizedConfig, serverName: string, o: { cwd: string; basePath: string }): unknown {
+  const ref = serverRef(c, serverName);
+  if (!ref.settings) return undefined;
+  return loadSettingsFile(resolveUserPath(ref.settings, { cwd: o.cwd, basePath: o.basePath, base: 'cwd' }));
+}
+
+/**
+ * Docker reads `--env-file` with a line scanner whose token limit is 64 KiB:
+ * a longer line (in practice a huge METEOR_SETTINGS) makes `docker run` fail
+ * with "bufio.Scanner: token too long", so the app would never start.
+ */
+const ENV_FILE_MAX_LINE_BYTES = 64 * 1024;
+
+function assertEnvLinesFit(envList: string, serverName: string): void {
+  for (const line of envList.split('\n')) {
+    const bytes = Buffer.byteLength(line, 'utf8');
+    if (bytes < ENV_FILE_MAX_LINE_BYTES) continue;
+    const key = line.trim().split('=')[0];
+    throw new CometError(
+      `The env.list for server "${serverName}" has a ${key} line of ${(bytes / 1024).toFixed(1)} KiB. ` +
+        'Docker reads --env-file lines only up to 64 KiB, so the app could not start.',
+      { hint: key === 'METEOR_SETTINGS' ? 'Make the settings smaller, e.g. move large data out of settings.json into the database or a file.' : `Shorten the value of ${key}.` },
+    );
+  }
+}
+
+/** env.list of one server, exactly as MUP renders it; throws when Docker could not read it. */
 export async function renderEnvList(
   c: NormalizedConfig,
   settings: unknown,
@@ -75,14 +107,16 @@ export async function renderEnvList(
     // PORT of a server is its published host port (start.sh), not a container env var.
     hostVars = { env: { ...ref.env, PORT: undefined } };
   }
-  if (ref.settings) {
-    const path = resolveUserPath(ref.settings, { cwd: o.cwd, basePath: o.basePath, base: 'cwd' });
-    const perServer = JSON.stringify(loadSettingsFile(path));
+  const perServerSettings = loadServerSettings(c, serverName, o);
+  if (perServerSettings !== undefined) {
+    const perServer = JSON.stringify(perServerSettings);
     if (hostVars) hostVars.env.METEOR_SETTINGS = perServer;
     else hostVars = { env: { METEOR_SETTINGS: perServer } };
   }
   const vars = { env: createEnv(c, settings) || {}, appName: c.app.name };
-  return renderTemplate(ENV_LIST, merge(vars, hostVars));
+  const out = await renderTemplate(ENV_LIST, merge(vars, hostVars));
+  assertEnvLinesFit(out, serverName);
+  return out;
 }
 
 export async function renderMeteorStart(c: NormalizedConfig, o: { removeImage?: boolean } = {}): Promise<string> {

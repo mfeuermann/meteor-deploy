@@ -1,7 +1,7 @@
 import type { Argv } from 'yargs';
 import type { BaseContext, CommandContext, GlobalArgs } from '../core/context.js';
 
-export type CommandGroup = 'meteor' | 'docker' | 'mongo' | 'proxy';
+export type CommandGroup = 'meteor' | 'docker';
 
 interface CommandBase {
   command: string;
@@ -29,8 +29,6 @@ export type MakeContext = (argv: GlobalArgs & Record<string, unknown>, needsConf
 const GROUP_DESCRIPTIONS: Record<CommandGroup, string> = {
   meteor: 'Meteor app commands',
   docker: 'Docker commands',
-  mongo: 'MongoDB commands',
-  proxy: 'Reverse proxy commands',
 };
 
 function addCommand(y: Argv, m: CommandModule, makeCtx: MakeContext): Argv {

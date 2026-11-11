@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { collectSecrets, maskSecrets } from '../../../src/output/secrets.js';
 import type { NormalizedConfig } from '../../../src/config/types.js';
+import { createContext } from '../../../src/core/context.js';
+import { createReporter } from '../../../src/output/reporter.js';
+import { tempDir } from '../../helpers/fs.js';
 
 describe('maskSecrets', () => {
   it('masks longest secrets first', () => {
@@ -58,5 +61,32 @@ describe('collectSecrets', () => {
     expect(s).toContain('nested-password');
     expect(s).not.toContain('public-site-name');
     expect(s).not.toContain('abc');
+  });
+});
+
+describe('secrets that were never masked (M7)', () => {
+  it('collects the SSH key passphrase and the per-server settings', () => {
+    const config = {
+      servers: { one: { host: 'h', username: 'root', pem: '~/.ssh/id', opts: { passphrase: 'my-key-passphrase' } } },
+      app: { name: 'app', env: {}, servers: { one: { settings: 'one.json' } } },
+    } as unknown as NormalizedConfig;
+    const s = collectSecrets(config, { public: {} }, [{ private: { token: 'per-server-token-1' } }]);
+    expect(s).toContain('my-key-passphrase');
+    expect(s).toContain('per-server-token-1');
+    expect(s).toContain(JSON.stringify({ private: { token: 'per-server-token-1' } }));
+  });
+
+  it('masks per-server settings once the settings are loaded', async () => {
+    const dir = tempDir({
+      '.deploy/mup.js': `module.exports = {
+        servers: { one: { host: '192.0.2.1', username: 'root', password: 'pw-one' } },
+        app: { name: 'myapp', path: '../app', servers: { one: { settings: '.deploy/one.json' } }, env: { ROOT_URL: 'http://a.com' }, docker: { image: 'zodern/meteor' } },
+      };`,
+      '.deploy/settings.json': '{"public":{}}',
+      '.deploy/one.json': '{"private":{"token":"per-server-token-2"}}',
+    });
+    const ctx = await createContext({ config: '.deploy/mup.js' }, { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }) });
+    ctx.getSettings();
+    expect(ctx.reporter.mask('token per-server-token-2 here')).toBe('token *** here');
   });
 });

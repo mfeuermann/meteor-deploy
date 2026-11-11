@@ -77,11 +77,16 @@ async function setup(o: { extra?: string; activate?: Record<string, ActivationRe
       calls.push(`prune:${conn.name}`);
       return [];
     },
+    pruneImages: async (conn) => {
+      calls.push(`prune-images:${conn.name}`);
+    },
+    readHistory: async () => [],
     releaseLock: async (conn) => {
       calls.push(`release:${conn.name}`);
     },
     stopLocalRegistry: async () => {
       calls.push('stop-registry');
+      return true;
     },
   };
   return { ctx, deps, calls, history, output: () => lines.join('') };
@@ -108,6 +113,8 @@ describe('deployPipeline', () => {
       'history:two',
       'prune:one',
       'prune:two',
+      'prune-images:one',
+      'prune-images:two',
       'release:one',
       'release:two',
       'stop-registry',
@@ -205,6 +212,39 @@ describe('deployPipeline', () => {
     expect(s.calls).not.toContain('activate:two:20261107-183005');
     expect(s.calls).toEqual(expect.arrayContaining(['history:one', 'release:one', 'release:two', 'stop-registry']));
     expect(s.output()).toMatch(/two\s+-\s+skipped/);
+  });
+
+  it('names the version the servers run after a build-cache hit (M1)', async () => {
+    const cached = '20261101-090000';
+    const s = await setup({ activate: { one: 'reverted', two: 'healthy' } });
+    s.deps.buildApp = async () => [{ platform: 'linux/amd64', version: cached, localTag: `mup-myapp:${cached}`, imageId: 'sha256:x', nodeVersion: '24', depsHash: 'd', fromCache: true }];
+    const out = await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false, strategy: 'parallel' }, s.deps);
+    expect(out.version).toBe(cached);
+    expect(s.output()).toContain(`two run ${cached}`);
+  });
+
+  it('removes versions that only failed on a server when pruning (M2) and prunes dangling images (M9)', async () => {
+    const s = await setup();
+    const seen: Record<string, string[]> = {};
+    s.deps.readHistory = async (conn) =>
+      conn.name === 'one'
+        ? [{ version: '20261101-000000', action: 'deploy', result: 'reverted', startedAt: 'x', durationMs: 1, user: 'u', machine: 'm', servers: ['one'], tool: 't' }]
+        : [];
+    s.deps.pruneVersions = async (conn, _repo, _keep, o) => {
+      seen[conn.name] = [...(o?.failed ?? [])];
+      return [];
+    };
+    await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps);
+    expect(seen).toEqual({ one: ['20261101-000000'], two: [] });
+    expect(s.calls).toEqual(expect.arrayContaining(['prune-images:one', 'prune-images:two']));
+  });
+
+  it('refuses settings too large for env.list before building anything (M11)', async () => {
+    const s = await setup();
+    s.ctx.getSettings = () => ({ big: 'y'.repeat(70 * 1024) });
+    await expect(deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps)).rejects.toThrow(/64 KiB/);
+    expect(s.calls).not.toContain('build');
+    expect(s.calls.some((c) => c.startsWith('lock:'))).toBe(false);
   });
 
   it('meteor build / push stop early', async () => {

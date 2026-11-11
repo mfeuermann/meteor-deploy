@@ -124,6 +124,11 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
   let touched = false;
   try {
     r.server(server, o.mode === 'rollback' ? `rollback to ${o.version ?? ':previous'}` : 'activate', 'running');
+    // Render first: a config that cannot be rendered must fail before anything changes.
+    const files =
+      o.mode === 'rollback'
+        ? null
+        : { startSh: await renderStartSh(config, server), envList: await renderEnvList(config, d.settings, server, { cwd: d.cwd, basePath: d.basePath }) };
     if (o.mode !== 'rollback') snapshotTaken = await snapshotConfig(conn, app.name);
     if (o.mode === 'rollback' && !o.version) {
       tagsBefore = await retagSwap(conn, localImageRepo(config));
@@ -134,10 +139,10 @@ export async function activateServer(d: ActivateDeps, o: { version: string | nul
       tagsBefore = await retagActivate(conn, localImageRepo(config), o.version);
       touched = true;
     }
-    if (o.mode !== 'rollback') {
+    if (files) {
       touched = true;
-      await conn.writeFile(`${appDir(config)}/config/start.sh`, await renderStartSh(config, server));
-      await conn.writeFile(`${appDir(config)}/config/env.list`, await renderEnvList(config, d.settings, server, { cwd: d.cwd, basePath: d.basePath }), 0o600);
+      await conn.writeFile(`${appDir(config)}/config/start.sh`, files.startSh);
+      await conn.writeFile(`${appDir(config)}/config/env.list`, files.envList, 0o600);
     }
     touched = true;
     const health = await startAndCheck(d, out);

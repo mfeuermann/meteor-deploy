@@ -1,9 +1,11 @@
 import type { CometOptions, Platform } from '../config/types.js';
 import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
+import { meteorExecutable } from '../build/meteor-build.js';
 import { buildxPlatforms, dockerAvailable } from '../local/docker.js';
 import { run } from '../local/exec.js';
 import { readLock, serverFacts, type LockInfo, type ServerFacts } from '../remote/ops.js';
+import { probeForwarding } from '../transfer/tunnel.js';
 
 export type { Platform };
 
@@ -20,8 +22,9 @@ export function platformForArch(unameM: string): Platform {
 }
 
 export interface PreflightInput {
-  local: { docker: { ok: boolean; version?: string; error?: string }; platforms: string[]; meteorOk: boolean };
-  servers: Record<string, { facts?: ServerFacts; error?: string; lock?: LockInfo | null }>;
+  local: { docker: { ok: boolean; version?: string; error?: string }; platforms: string[]; meteorOk: boolean; meteorExecutable?: string };
+  /** `forwardingError`: why the server refuses reverse port forwarding (null/absent = it works or was not checked). */
+  servers: Record<string, { facts?: ServerFacts; error?: string; lock?: LockInfo | null; forwardingError?: string | null }>;
   override: CometOptions['platform'];
   needsBuild: boolean;
   checkLocks: boolean;
@@ -45,7 +48,10 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
 
   if (i.needsBuild) {
     if (!i.local.docker.ok) errors.push(`Local Docker is not available: ${i.local.docker.error ?? 'unknown error'}`);
-    if (!i.local.meteorOk) errors.push('The "meteor" command was not found locally. Install Meteor to build the app.');
+    if (!i.local.meteorOk) {
+      const exe = i.local.meteorExecutable ?? 'meteor';
+      errors.push(`The "${exe}" command was not found locally. Install Meteor to build the app${exe === 'meteor' ? '' : ' or fix buildOptions.executable'}.`);
+    }
   }
 
   for (const [name, s] of Object.entries(i.servers)) {
@@ -55,7 +61,20 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
     }
     const f = s.facts;
     if (!f.hasBash) errors.push(`Server "${name}": bash is required on the server.`);
-    if (!f.dockerRunning) {
+    if (s.forwardingError) {
+      errors.push(
+        `Server "${name}": SSH reverse port forwarding does not work (${s.forwardingError}). ` +
+          'comet-deploy sends the image through it: set "AllowTcpForwarding yes" in /etc/ssh/sshd_config and reload sshd.',
+      );
+    }
+    if (f.sudo === 'password') {
+      errors.push(
+        `Server "${name}": sudo asks for a password. The SSH user needs passwordless sudo, like with MUP ` +
+          '(e.g. "deployer ALL=(ALL) NOPASSWD:ALL" in /etc/sudoers.d/deployer), or connect as root.',
+      );
+    } else if (f.sudo === 'missing') {
+      errors.push(`Server "${name}": sudo is not installed. Every remote command runs through sudo (as with MUP); install it, e.g. "apt-get install sudo".`);
+    } else if (!f.dockerRunning) {
       errors.push(`Server "${name}": Docker is ${f.dockerVersion ? 'not running' : 'not installed'}. Run "comet-deploy setup".`);
     } else {
       const major = Number(/^(\d+)\./.exec(f.dockerVersion ?? '')?.[1]);
@@ -94,19 +113,21 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
 export async function runPreflight(ctx: CommandContext, servers: string[], o: { needsBuild: boolean; checkLocks: boolean }): Promise<PreflightResult> {
   const appName = ctx.config.app.name;
   const localP = o.needsBuild
-    ? Promise.all([dockerAvailable(), buildxPlatforms(), run('meteor', ['--version']).then((r) => r.code === 0)])
+    ? Promise.all([dockerAvailable(), buildxPlatforms(), run(meteorExecutable(ctx.config.app), ['--version']).then((r) => r.code === 0)])
     : Promise.resolve([{ ok: true }, [], true] as const);
   const serverResults = await Promise.allSettled(
     servers.map(async (name) => {
       const conn = await ctx.ssh.get(name);
       const facts = await serverFacts(conn);
       const lock = o.checkLocks ? await readLock(conn, appName) : null;
-      return { facts, lock };
+      // Only a deploy (needsBuild) distributes the image through a reverse tunnel.
+      const forwardingError = o.needsBuild ? await probeForwarding(conn) : null;
+      return { facts, lock, forwardingError };
     }),
   );
   const [docker, platforms, meteorOk] = await localP;
   const input: PreflightInput = {
-    local: { docker, platforms: [...platforms], meteorOk },
+    local: { docker, platforms: [...platforms], meteorOk, meteorExecutable: meteorExecutable(ctx.config.app) },
     servers: Object.fromEntries(
       servers.map((name, idx) => {
         const r = serverResults[idx];

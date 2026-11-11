@@ -14,6 +14,11 @@ export function meteorArchFor(p: Platform): MeteorArch {
   return p === 'linux/arm64' ? 'os.linux.aarch64' : 'os.linux.x86_64';
 }
 
+/** The Meteor command used for builds: `buildOptions.executable`, or `meteor`. */
+export function meteorExecutable(app: Pick<AppConfig, 'buildOptions'>): string {
+  return app.buildOptions?.executable || 'meteor';
+}
+
 /** MUP's createBuildArgs (ref. §4.1) with a configurable architecture. */
 export function meteorBuildArgs(app: AppConfig, buildLocation: string, arch: MeteorArch, appPath: string): string[] {
   const b = app.buildOptions ?? ({} as AppConfig['buildOptions']);
@@ -39,7 +44,7 @@ export async function runMeteorBuild(
   if (app.buildOptions?.cleanBuildLocation) {
     await rm(o.buildLocation, { recursive: true, force: true, maxRetries: 10 });
   }
-  const exe = app.buildOptions?.executable || 'meteor';
+  const exe = meteorExecutable(app);
   const tail: string[] = [];
   const r = await run(exe, meteorBuildArgs(app, o.buildLocation, o.arch, o.appPath), {
     cwd: o.appPath,

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { CometError } from '../../../src/core/errors.js';
-import { evaluatePreflight, platformForArch, type PreflightInput } from '../../../src/deploy/preflight.js';
+import { createContext } from '../../../src/core/context.js';
+import { evaluatePreflight, platformForArch, runPreflight, type PreflightInput } from '../../../src/deploy/preflight.js';
+import { createReporter } from '../../../src/output/reporter.js';
+import { tempDir } from '../../helpers/fs.js';
 import type { ServerFacts } from '../../../src/remote/ops.js';
 
 const GiB = 1024 ** 3;
@@ -10,6 +13,7 @@ const facts = (f: Partial<ServerFacts> = {}): ServerFacts => ({
   dockerRunning: true,
   dockerRootFreeBytes: 50 * GiB,
   hasBash: true,
+  sudo: 'ok',
   ...f,
 });
 
@@ -100,5 +104,35 @@ describe('evaluatePreflight', () => {
 
   it('requires bash on the server', () => {
     expect(evaluatePreflight(input({ servers: { one: { facts: facts({ hasBash: false }) } } })).errors.join('\n')).toMatch(/bash/);
+  });
+
+  it('says that sudo needs a password instead of "Docker is not running" (M13)', () => {
+    const r = evaluatePreflight(input({ servers: { one: { facts: facts({ sudo: 'password', dockerRunning: false }) } } }));
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toMatch(/sudo/);
+    expect(r.errors[0]).toMatch(/password/);
+    expect(r.errors[0]).toMatch(/NOPASSWD/);
+    const m = evaluatePreflight(input({ servers: { one: { facts: facts({ sudo: 'missing', dockerRunning: false }) } } }));
+    expect(m.errors).toEqual([expect.stringMatching(/sudo is not installed/)]);
+  });
+
+  it('fails early when the server does not allow TCP forwarding (M3)', () => {
+    const r = evaluatePreflight(input({ servers: { one: { facts: facts(), forwardingError: 'reverse port forwarding is disabled' } } }));
+    expect(r.errors).toEqual([expect.stringMatching(/"one".*forwarding.*AllowTcpForwarding yes/s)]);
+  });
+
+  it('names the configured Meteor executable when it is missing (M4)', () => {
+    const local = { docker: { ok: true }, platforms: ['linux/amd64'], meteorOk: false, meteorExecutable: '/opt/meteor/bin/meteor' };
+    expect(evaluatePreflight(input({ local })).errors.join('\n')).toMatch(/"\/opt\/meteor\/bin\/meteor"/);
+  });
+});
+
+describe('runPreflight', () => {
+  it('checks buildOptions.executable instead of always "meteor" (M4)', async () => {
+    const dir = tempDir({
+      '.deploy/mup.js': `module.exports = { servers: { one: { host: '192.0.2.1', username: 'root', password: 'pw' } }, app: { name: 'myapp', path: '../app', servers: { one: {} }, env: { ROOT_URL: 'http://a.com' }, docker: { image: 'zodern/meteor' }, buildOptions: { executable: 'comet-test-no-such-meteor' } } };`,
+    });
+    const ctx = await createContext({ config: '.deploy/mup.js' }, { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }) });
+    await expect(runPreflight(ctx, [], { needsBuild: true, checkLocks: false })).rejects.toThrow(/"comet-test-no-such-meteor"/);
   });
 });

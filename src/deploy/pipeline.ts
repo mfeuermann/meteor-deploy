@@ -10,11 +10,23 @@ import { TOOL_ID } from '../core/version.js';
 import { verboseOutput } from '../output/lines.js';
 import { formatDuration, type ServerStatus, type SummaryRow } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStop, renderStartSh } from '../remote/app-files.js';
-import { acquireLock, appendHistory, listVersions, pruneVersions, readLock, releaseLock, type HistoryEntry, type LockInfo } from '../remote/ops.js';
+import {
+  acquireLock,
+  appendHistory,
+  listVersions,
+  pruneImages,
+  pruneVersions,
+  readHistory,
+  readLock,
+  releaseLock,
+  type HistoryEntry,
+  type LockInfo,
+} from '../remote/ops.js';
+import type { SshConnection } from '../ssh/connection.js';
 import { distributeToServer } from '../transfer/distribute.js';
 import { ensureLocalRegistry, pushToLocalRegistry, stopLocalRegistry } from '../transfer/local-registry.js';
 import { activateServer, startServer, type ActivationResult } from './activate.js';
-import { deployerName, makeHistoryEntry } from './history.js';
+import { deployerName, makeHistoryEntry, versionOutcomes } from './history.js';
 import { runPreflight } from './preflight.js';
 import { chooseRollbackTarget, type RollbackTarget } from './rollback.js';
 import { runStrategy } from './strategy.js';
@@ -34,6 +46,8 @@ export interface PipelineDeps {
   listVersions: typeof listVersions;
   appendHistory: typeof appendHistory;
   pruneVersions: typeof pruneVersions;
+  pruneImages: typeof pruneImages;
+  readHistory: typeof readHistory;
   readGitInfo: typeof readGitInfo;
   signal?: AbortSignal;
 }
@@ -60,6 +74,8 @@ const DEFAULT_DEPS: PipelineDeps = {
   listVersions,
   appendHistory,
   pruneVersions,
+  pruneImages,
+  readHistory,
   readGitInfo,
 };
 
@@ -73,6 +89,15 @@ export function assertPhase1Supported(ctx: CommandContext): void {
   if (c.cometDeploy.transfer === 'registry' || c.cometDeploy.transfer === 'stream') throw phase2(`cometDeploy.transfer "${c.cometDeploy.transfer}"`);
 }
 
+/**
+ * Renders the env.list of every server once, so a config Docker could not read
+ * (e.g. METEOR_SETTINGS over 64 KiB) fails before the build and before any
+ * server is locked or changed.
+ */
+async function checkEnvLists(ctx: CommandContext, servers: string[], settings: unknown): Promise<void> {
+  for (const s of servers) await renderEnvList(ctx.config, settings, s, { cwd: ctx.cwd, basePath: ctx.basePath });
+}
+
 export function lockInfo(command: string): LockInfo {
   return { user: deployerName(), machine: hostname(), pid: process.pid, startedAt: new Date().toISOString(), command, tool: TOOL_ID };
 }
@@ -82,6 +107,18 @@ function aborted(signal?: AbortSignal, what = 'Deploy'): void {
 }
 
 const historyResult = (s: ActivationResult['status']): HistoryEntry['result'] => (s === 'healthy' ? 'success' : s === 'reverted' ? 'reverted' : 'failed');
+
+/** How many history entries are read to learn which versions ran on a server. */
+const HISTORY_WINDOW = 1000;
+
+/**
+ * The version outcomes of one server from its deploy history, or null when
+ * the history is empty or cannot be read (then nothing is filtered by it).
+ */
+async function serverVersionOutcomes(d: Pick<PipelineDeps, 'readHistory'>, conn: SshConnection, appName: string) {
+  const entries = await d.readHistory(conn, appName, HISTORY_WINDOW).catch(() => []);
+  return entries.length ? versionOutcomes(entries) : null;
+}
 
 export function describeHolder(h: LockInfo | undefined | null): string {
   return h ? `${h.user}@${h.machine} ("${h.command}" since ${h.startedAt})` : 'an unknown process';
@@ -214,6 +251,7 @@ export async function deployPipeline(
   return run.run('meteor.deploy', async () => {
     const pre = await r.phase('Preflight', () => d.preflight(ctx, servers, { needsBuild: true, checkLocks: c.cometDeploy.lock && o.stopAfter !== 'build' && !o.forceUnlock }));
     const settings = ctx.getSettings();
+    await checkEnvLists(ctx, servers, settings);
     let built: BuiltImage[] = [];
     let results: ActivationResult[] = [];
     let skipped: string[] = [];
@@ -223,7 +261,9 @@ export async function deployPipeline(
         r.phase('Build', () => d.buildApp(ctx, { platforms: pre.platforms, version, cachedBuild: o.cachedBuild, forceBuild: o.forceBuild })),
       );
     });
-    if (o.stopAfter === 'build') return { version, results, skipped, ok: true };
+    // After a build-cache hit the image carries the version of the build it came from (M1).
+    const deployedVersion = [...new Set(built.map((b) => b.version))].join(', ') || version;
+    if (o.stopAfter === 'build') return { version: deployedVersion, results, skipped, ok: true };
     aborted(d.signal);
 
     const imageFor = (s: string): BuiltImage => {
@@ -267,7 +307,7 @@ export async function deployPipeline(
         }),
       );
       aborted(d.signal);
-      if (o.stopAfter === 'push') return { version, results, skipped, ok: true };
+      if (o.stopAfter === 'push') return { version: deployedVersion, results, skipped, ok: true };
 
       ({ results, skipped } = await run.run('default.reconfig', () =>
         run.run('meteor.envconfig', () =>
@@ -304,8 +344,11 @@ export async function deployPipeline(
           .filter((res) => res.status === 'healthy')
           .map(async (res) => {
             try {
-              const removed = await d.pruneVersions(await ctx.ssh.get(res.server), localImageRepo(c), c.cometDeploy.keepVersions);
+              const conn = await ctx.ssh.get(res.server);
+              const failed = (await serverVersionOutcomes(d, conn, c.app.name))?.failedOnly ?? new Set<string>();
+              const removed = await d.pruneVersions(conn, localImageRepo(c), c.cometDeploy.keepVersions, { failed });
               if (removed.length) r.verboseLine(res.server, `removed old versions: ${removed.join(', ')}`);
+              await d.pruneImages(conn);
             } catch (err) {
               r.warn(`Could not remove old versions on "${res.server}": ${(err as Error).message}`);
             }
@@ -316,10 +359,10 @@ export async function deployPipeline(
       if (registryStarted) await d.stopLocalRegistry().catch(() => {});
     }
 
-    reportOutcome(ctx, summaryRows(results, skipped, (s) => imageFor(s).version), results, skipped, version);
+    reportOutcome(ctx, summaryRows(results, skipped, (s) => imageFor(s).version), results, skipped, deployedVersion);
     aborted(d.signal);
     const ok = skipped.length === 0 && results.every((x) => x.status === 'healthy');
-    return { version, results, skipped, ok };
+    return { version: deployedVersion, results, skipped, ok };
   });
 }
 
@@ -384,6 +427,7 @@ export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: Come
     ctx.runner.run('meteor.envconfig', () =>
       ctx.runner.run('meteor.start', async () => {
         const settings = ctx.getSettings();
+        await checkEnvLists(ctx, ctx.appServers(), settings);
         const outcome = await lockedRollout(ctx, { action: 'reconfig', strategy: o.strategy, phase: 'Reconfigure', forceUnlock: o.forceUnlock }, d, async (s) =>
           d.activateServer(
             { conn: await ctx.ssh.get(s), config: ctx.config, settings, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: ctx.reporter },
@@ -463,11 +507,20 @@ export async function envconfigAll(ctx: CommandContext): Promise<void> {
   assertPhase1Supported(ctx);
   await ctx.runner.run('meteor.envconfig', async () => {
     const settings = ctx.getSettings();
-    for (const s of ctx.appServers()) {
-      const conn = await ctx.ssh.get(s);
-      await conn.writeFile(`${appDir(ctx.config)}/config/start.sh`, await renderStartSh(ctx.config, s));
-      await conn.writeFile(`${appDir(ctx.config)}/config/env.list`, await renderEnvList(ctx.config, settings, s, { cwd: ctx.cwd, basePath: ctx.basePath }), 0o600);
-      ctx.reporter.server(s, 'envconfig', 'ok');
+    const servers = ctx.appServers();
+    // Render everything first, so one bad server does not leave the others half-written.
+    const files = await Promise.all(
+      servers.map(async (s) => ({
+        s,
+        startSh: await renderStartSh(ctx.config, s),
+        envList: await renderEnvList(ctx.config, settings, s, { cwd: ctx.cwd, basePath: ctx.basePath }),
+      })),
+    );
+    for (const f of files) {
+      const conn = await ctx.ssh.get(f.s);
+      await conn.writeFile(`${appDir(ctx.config)}/config/start.sh`, f.startSh);
+      await conn.writeFile(`${appDir(ctx.config)}/config/env.list`, f.envList, 0o600);
+      ctx.reporter.server(f.s, 'envconfig', 'ok');
     }
   });
 }
@@ -497,7 +550,11 @@ export async function rollbackPipeline(
       async (s) => {
         const started = Date.now();
         const conn = await ctx.ssh.get(s);
-        const target = chooseRollbackTarget(await d.listVersions(conn, localImageRepo(ctx.config)), o.to);
+        const [versions, outcomes] = await Promise.all([
+          d.listVersions(conn, localImageRepo(ctx.config)),
+          o.to ? Promise.resolve(null) : serverVersionOutcomes(d, conn, ctx.config.app.name),
+        ]);
+        const target = chooseRollbackTarget(versions, o.to, outcomes?.succeeded);
         targets.set(s, target);
         if (target.kind === 'none') {
           ctx.reporter.server(s, 'rollback', 'failed', target.reason);

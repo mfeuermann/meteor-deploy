@@ -172,4 +172,12 @@ describe('activateServer', () => {
     expect(m.calls).not.toContain('retag-restore');
     expect(m.calls).not.toContain('sudo bash /opt/myapp/config/start.sh');
   });
+
+  it('M11: a config that cannot be rendered fails before the server is changed', async () => {
+    const m = mockConn('COMET_HEALTH ok 200 1\n');
+    const r = await activateServer({ ...deps(m.conn), settings: { big: 'y'.repeat(70 * 1024) } }, { version: '20261107-183005', mode: 'deploy' });
+    expect(r.status).toBe('failed');
+    expect(r.error).toMatch(/64 KiB.*not changed/s);
+    expect(m.calls).toEqual([]);
+  });
 });

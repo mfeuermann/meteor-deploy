@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig, loadSettingsFile } from '../../../src/config/load.js';
 import { normalizeConfig } from '../../../src/config/normalize.js';
 import type { NormalizedConfig } from '../../../src/config/types.js';
+import { CometError } from '../../../src/core/errors.js';
 import {
   renderEnvList,
   renderMeteorDestroy,
@@ -81,6 +82,31 @@ describe('METEOR_SETTINGS with special characters (Review Focus 1)', () => {
     const lines = out.split('\n');
     expect(lines).toContain('  METEOR_SETTINGS=' + JSON.stringify(settings));
     expect(out).toContain('x$HOME \\"q\\" ü');
+  });
+});
+
+describe('env.list line limit (M11)', () => {
+  const config = normalizeConfig(
+    {
+      servers: { one: { host: '192.0.2.1', username: 'root' } },
+      app: { name: 'x', path: '/srv/x', servers: { one: {} }, env: { ROOT_URL: 'http://x.example.com' } },
+    },
+    { basePath: '/srv' },
+  );
+  const o = { cwd: '/srv', basePath: '/srv' };
+
+  it('refuses METEOR_SETTINGS that Docker cannot read (lines of 64 KiB and more)', async () => {
+    const err = await renderEnvList(config, { b: 'y'.repeat(64 * 1024) }, 'one', o).catch((e) => e);
+    expect(err).toBeInstanceOf(CometError);
+    expect(err.message).toMatch(/METEOR_SETTINGS/);
+    expect(err.message).toMatch(/64 KiB/);
+    expect(err.message).toMatch(/"one"/);
+  });
+
+  it('accepts a line just below the limit, counted in bytes', async () => {
+    const prefix = '  METEOR_SETTINGS='.length + JSON.stringify({ b: '' }).length;
+    await expect(renderEnvList(config, { b: 'y'.repeat(65535 - prefix) }, 'one', o)).resolves.toContain('METEOR_SETTINGS=');
+    await expect(renderEnvList(config, { b: 'ü'.repeat(Math.ceil((65536 - prefix) / 2)) }, 'one', o)).rejects.toThrow(/64 KiB/);
   });
 });
 

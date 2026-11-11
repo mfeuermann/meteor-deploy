@@ -1,6 +1,6 @@
 import { hostname } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { makeHistoryEntry, mergeHistory } from '../../../src/deploy/history.js';
+import { makeHistoryEntry, mergeHistory, versionOutcomes } from '../../../src/deploy/history.js';
 import type { HistoryEntry } from '../../../src/remote/ops.js';
 
 const e = (p: Partial<HistoryEntry>): HistoryEntry => ({
@@ -54,5 +54,21 @@ describe('mergeHistory', () => {
 
   it('applies the limit', () => {
     expect(mergeHistory({ one: [e({ version: 'a' }), e({ version: 'b', startedAt: '2026-11-09T00:00:00.000Z' })] }, 1).map((m) => m.version)).toEqual(['b']);
+  });
+});
+
+describe('versionOutcomes (M2)', () => {
+  it('splits the versions of one server into those that ran successfully and those that only failed', () => {
+    const o = versionOutcomes([
+      e({ version: 'v1', result: 'success' }),
+      e({ version: 'v2', result: 'reverted' }),
+      e({ version: 'v3', result: 'failed' }),
+      e({ version: 'v3', result: 'success', action: 'rollback' }),
+      e({ version: 'v4', result: 'failed' }),
+      e({ version: null, result: 'success', action: 'rollback' }),
+      e({ version: 'v5', result: 'success', action: 'restart' }),
+    ]);
+    expect([...o.succeeded].sort()).toEqual(['v1', 'v3']);
+    expect([...o.failedOnly].sort()).toEqual(['v2', 'v4']);
   });
 });
