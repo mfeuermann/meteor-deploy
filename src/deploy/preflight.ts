@@ -8,6 +8,7 @@ import type { CometOptions, Platform } from '../config/types.js';
 import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
 import { meteorExecutable } from '../build/meteor-build.js';
+import { resolveAppPath } from '../config/normalize.js';
 import { buildxPlatforms, dockerAvailable } from '../local/docker.js';
 import { run } from '../local/exec.js';
 import { readLock, serverFacts, type LockInfo, type ServerFacts } from '../remote/ops.js';
@@ -136,8 +137,8 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
   // Only when Docker works: otherwise buildx reports no platforms and every platform would
   // repeat the Docker error in a less helpful form.
   if (i.needsBuild && i.local.docker.ok && i.local.platforms.length === 0) {
-    // `docker buildx ls` failed or listed nothing: the plugin is missing, not the emulation.
-    errors.push('Docker buildx is not available locally ("docker buildx ls" failed). Install the buildx plugin; Docker Desktop and OrbStack include it.');
+    // `docker buildx inspect` failed or listed nothing: the plugin is missing, not the emulation.
+    errors.push('Docker buildx is not available locally ("docker buildx inspect" failed). Install the buildx plugin; Docker Desktop and OrbStack include it.');
   } else if (i.needsBuild && i.local.docker.ok) {
     for (const p of platforms) {
       if (!i.local.platforms.includes(p)) {
@@ -159,7 +160,7 @@ export async function runPreflight(ctx: CommandContext, servers: string[], o: { 
   const appName = ctx.config.app.name;
   // Started first and awaited last, so the local checks overlap with the SSH round trips.
   const localP = o.needsBuild
-    ? Promise.all([dockerAvailable(), buildxPlatforms(), run(meteorExecutable(ctx.config.app), ['--version']).then((r) => r.code === 0)])
+    ? Promise.all([dockerAvailable(), buildxPlatforms(), run(meteorExecutable(ctx.config.app), ['--version'], { cwd: resolveAppPath(ctx.config, ctx.basePath) }).then((r) => r.code === 0)])
     : Promise.resolve([{ ok: true }, [], true] as const);
   // allSettled: a server that cannot be reached becomes one error in the list instead of
   // hiding the results of the others.

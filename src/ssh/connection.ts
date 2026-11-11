@@ -64,6 +64,11 @@ export class SshConnection {
   private closed = false;
   /** ssh2 reported that the connection ended, closed or failed. */
   private dropped = false;
+  /**
+   * Rejects of the SFTP requests waiting for an answer. ssh2 never answers a request sent after
+   * the connection died, so the drop rejects them instead of leaving the deploy hanging.
+   */
+  private readonly pendingFileOps = new Set<(err: CometError) => void>();
 
   private constructor(
     readonly name: string,
@@ -79,7 +84,12 @@ export class SshConnection {
       else reject();
     });
     // ssh2 emits these before it closes the open channels, so a command cut off by the drop sees `dropped`.
-    const drop = () => void (this.dropped = true);
+    const drop = () => {
+      this.dropped = true;
+      this.sftpPromise = undefined;
+      for (const fail of this.pendingFileOps) fail(this.closedError('a file transfer was interrupted'));
+      this.pendingFileOps.clear();
+    };
     client.on('end', drop);
     client.on('close', drop);
     client.on('error', drop);
@@ -202,12 +212,46 @@ export class SshConnection {
   }
 
   private sftp(): Promise<SFTPWrapper> {
-    this.sftpPromise ??= new Promise<SFTPWrapper>((resolve, reject) => {
-      this.call('cannot open SFTP', () => this.client.sftp((err, sftp) => (err ? reject(this.dropped ? this.closedError('cannot open SFTP', err) : new CometError(`[${this.name}] SFTP failed: ${err.message}`, { cause: err })) : resolve(sftp))), reject);
+    if (this.sftpPromise) return this.sftpPromise;
+    const opening = new Promise<SFTPWrapper>((resolve, reject) => {
+      this.call('cannot open SFTP', () => this.client.sftp((err, sftp) => {
+        if (err) return reject(this.dropped ? this.closedError('cannot open SFTP', err) : new CometError(`[${this.name}] SFTP failed: ${err.message}`, { cause: err }));
+        // A session the server closed is not reused: the next call opens a new one.
+        sftp.on('close', () => {
+          if (this.sftpPromise === opening) this.sftpPromise = undefined;
+        });
+        resolve(sftp);
+      }), reject);
     });
+    this.sftpPromise = opening;
     // A failed SFTP session is not cached: the next call tries again.
-    this.sftpPromise.catch(() => (this.sftpPromise = undefined));
-    return this.sftpPromise;
+    opening.catch(() => {
+      if (this.sftpPromise === opening) this.sftpPromise = undefined;
+    });
+    return opening;
+  }
+
+  /**
+   * Sends one SFTP request and waits for its answer. Rejects with the connection's closed error
+   * when the connection is already gone or drops before the answer (ssh2 would never call back),
+   * and with `failed(err)` when the server reports an error.
+   */
+  private async sftpRequest(what: string, send: (sftp: SFTPWrapper, done: (err?: Error | null) => void) => void, failed: (err: Error) => CometError): Promise<void> {
+    const sftp = await this.sftp();
+    await new Promise<void>((resolve, reject) => {
+      if (!this.isAlive) return reject(this.closedError(what));
+      this.pendingFileOps.add(reject);
+      const settle = (err?: Error | null) => {
+        this.pendingFileOps.delete(reject);
+        if (!err) resolve();
+        else reject(this.dropped ? this.closedError(what, err) : failed(err));
+      };
+      try {
+        send(sftp, settle);
+      } catch (err) {
+        settle(err as Error);
+      }
+    });
   }
 
   /**
@@ -217,17 +261,13 @@ export class SshConnection {
    * @throws CometError when the file cannot be written.
    */
   async writeFile(remotePath: string, content: string, mode?: number): Promise<void> {
-    const sftp = await this.sftp();
+    const what = `cannot write ${remotePath}`;
     const failed = (err: Error) => new CometError(`[${this.name}] Cannot write ${remotePath}: ${err.message}`, { cause: err });
-    await new Promise<void>((resolve, reject) => {
-      sftp.writeFile(remotePath, content, mode === undefined ? {} : { mode }, (err) => (err ? reject(failed(err)) : resolve()));
-    });
+    await this.sftpRequest(what, (sftp, done) => sftp.writeFile(remotePath, content, mode === undefined ? {} : { mode }, done), failed);
     if (mode === undefined) return;
     // OpenSSH's SFTP server applies the open request's mode only when it creates the file, so
     // an existing env.list written by MUP with 0644 would keep exposing its secrets.
-    await new Promise<void>((resolve, reject) => {
-      sftp.chmod(remotePath, mode, (err) => (err ? reject(failed(err)) : resolve()));
-    });
+    await this.sftpRequest(what, (sftp, done) => sftp.chmod(remotePath, mode, done), failed);
   }
 
   /**
@@ -237,12 +277,11 @@ export class SshConnection {
    * @throws CometError when the upload fails.
    */
   async putFile(localPath: string, remotePath: string, onProgress?: (sent: number, total: number) => void): Promise<void> {
-    const sftp = await this.sftp();
-    await new Promise<void>((resolve, reject) => {
-      sftp.fastPut(localPath, remotePath, { step: onProgress ? (sent, _chunk, total) => onProgress(sent, total) : undefined }, (err) =>
-        err ? reject(new CometError(`[${this.name}] Cannot upload ${localPath} to ${remotePath}: ${err.message}`, { cause: err })) : resolve(),
-      );
-    });
+    await this.sftpRequest(
+      `cannot upload ${localPath}`,
+      (sftp, done) => sftp.fastPut(localPath, remotePath, { step: onProgress ? (sent, _chunk, total) => onProgress(sent, total) : undefined }, done),
+      (err) => new CometError(`[${this.name}] Cannot upload ${localPath} to ${remotePath}: ${err.message}`, { cause: err }),
+    );
   }
 
   /**

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { chmodSync } from 'node:fs';
+import { join } from 'node:path';
 import { CometError } from '../../../src/core/errors.js';
 import { createContext } from '../../../src/core/context.js';
 import { evaluatePreflight, platformForArch, runPreflight, type PreflightInput } from '../../../src/deploy/preflight.js';
@@ -149,5 +151,16 @@ describe('runPreflight', () => {
     });
     const ctx = await createContext({ config: '.deploy/mup.js' }, { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }) });
     await expect(runPreflight(ctx, [], { needsBuild: true, checkLocks: false, distributes: true })).rejects.toThrow(/"comet-test-no-such-meteor"/);
+  });
+
+  it('runs a relative buildOptions.executable from the app directory, as the build does', async () => {
+    const dir = tempDir({
+      '.deploy/mup.js': `module.exports = { servers: { one: { host: '192.0.2.1', username: 'root', password: 'pw' } }, app: { name: 'myapp', path: '../app', servers: { one: {} }, env: { ROOT_URL: 'http://a.com' }, docker: { image: 'zodern/meteor' }, buildOptions: { executable: './tools/meteor' } } };`,
+      'app/tools/meteor': '#!/bin/sh\necho "Meteor 3.0"\n',
+    });
+    chmodSync(join(dir, 'app/tools/meteor'), 0o755);
+    const ctx = await createContext({ config: '.deploy/mup.js' }, { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }) });
+    const err = await runPreflight(ctx, [], { needsBuild: true, checkLocks: false, distributes: true }).catch((e: Error) => e);
+    expect(String(err instanceof Error ? err.message : '')).not.toMatch(/tools\/meteor/);
   });
 });

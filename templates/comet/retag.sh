@@ -45,7 +45,8 @@ if [ -n "$(image_id "$REPO:latest")" ]; then
   sudo docker tag "$REPO:latest" "$REPO:comet-swap"
   sudo docker tag "$REPO:previous" "$REPO:latest"
   sudo docker tag "$REPO:comet-swap" "$REPO:previous"
-  sudo docker rmi "$REPO:comet-swap" >/dev/null
+  # The swap is done; a leftover temporary tag is overwritten by the next swap and removed by destroy.
+  sudo docker rmi "$REPO:comet-swap" >/dev/null 2>&1 || true
 else
   sudo docker tag "$REPO:previous" "$REPO:latest"
 fi

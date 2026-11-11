@@ -99,6 +99,11 @@ describe('argKeysForInstructions', () => {
     expect(argKeysForInstructions(['RUN echo $AB'], ['A.'])).toEqual([]);
     expect(() => argKeysForInstructions(['RUN echo x'], ['A('])).not.toThrow();
   });
+
+  it('finds keys used with a Dockerfile modifier such as ${KEY:-default}', () => {
+    expect(argKeysForInstructions(['RUN echo ${FOO:-x} ${BAR:+y}'], ['FOO', 'BAR'])).toEqual(['BAR', 'FOO']);
+    expect(argKeysForInstructions(['RUN echo ${FOOD:-x}'], ['FOO'])).toEqual([]);
+  });
 });
 
 describe('computeDepsHash with symlinks in npm/', () => {

@@ -4,7 +4,7 @@
  * push uploads only layers the registry does not have yet; the container itself runs only while
  * a deploy needs it.
  */
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { CometError } from '../core/errors.js';
@@ -67,7 +67,7 @@ async function withLeaseLock<T>(e: Required<RegistryEnv>, fn: () => Promise<T>):
     }
     // An empty file is a lock that is being written right now: wait for it like for a live one.
     if (Number.isInteger(holder) && holder > 0 && !e.isAlive(holder)) {
-      rmSync(lock, { force: true });
+      removeStaleLock(lock, holder, e.pid);
       continue;
     }
     if (Date.now() > deadline) {
@@ -80,7 +80,43 @@ async function withLeaseLock<T>(e: Required<RegistryEnv>, fn: () => Promise<T>):
   try {
     return await fn();
   } finally {
-    rmSync(lock, { force: true });
+    // Only our own lock: one taken over meanwhile belongs to another process now.
+    if (readPid(lock) === e.pid) rmSync(lock, { force: true });
+  }
+}
+
+/** The pid in a lock file; NaN when the file is missing, empty or unreadable. */
+function readPid(file: string): number {
+  try {
+    return Number(readFileSync(file, 'utf8')) || NaN;
+  } catch {
+    return NaN;
+  }
+}
+
+/**
+ * Removes the lock of `deadPid` under a second, short-lived lock, after reading the holder again.
+ * Two processes that both saw the same dead holder would otherwise each remove "the stale lock",
+ * and the second one would remove the lock the first one had just taken. A takeover lock lasts
+ * only a moment, so one older than 10 s was left by a crash and is removed.
+ */
+function removeStaleLock(lock: string, deadPid: number, pid: number): void {
+  const takeover = `${lock}.takeover`;
+  try {
+    writeFileSync(takeover, String(pid), { flag: 'wx' });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    try {
+      if (Date.now() - statSync(takeover).mtimeMs > 10_000) rmSync(takeover, { force: true });
+    } catch {
+      // removed meanwhile
+    }
+    return;
+  }
+  try {
+    if (readPid(lock) === deadPid) rmSync(lock, { force: true });
+  } finally {
+    rmSync(takeover, { force: true });
   }
 }
 

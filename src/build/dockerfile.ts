@@ -169,7 +169,8 @@ export function argKeysForInstructions(instructions: string[], envKeys: string[]
   const text = instructions.join('\n');
   // MUP's schema allows any env key name, so the key is escaped before it goes into the pattern.
   const literal = (k: string) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return envKeys.filter((k) => new RegExp(`\\$(\\{${literal(k)}\\}|${literal(k)}(?![A-Za-z0-9_]))`).test(text)).sort();
+  // `$KEY`, `${KEY}` and `${KEY:-default}`-style modifiers; never a longer name such as `$KEYS`.
+  return envKeys.filter((k) => new RegExp(`\\$\\{?${literal(k)}(?![A-Za-z0-9_])`).test(text)).sort();
 }
 
 /**

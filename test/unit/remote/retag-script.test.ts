@@ -10,7 +10,8 @@ import { cometScript } from '../../../src/remote/ops.js';
 import { tempDir } from '../../helpers/fs.js';
 
 const FAKE_DOCKER = `#!/bin/bash
-# state: one "<ref> <id>" line per tag; FAIL_TAG makes "docker tag ... <FAIL_TAG>" fail
+# state: one "<ref> <id>" line per tag; FAIL_TAG makes "docker tag ... <FAIL_TAG>" fail,
+# FAIL_RMI makes every "docker rmi" fail
 state="$STATE"
 resolve() { awk -v r="$1" '$1 == r { print $2 }' "$state"; }
 case "$1" in
@@ -24,6 +25,7 @@ case "$1" in
     grep -v "^$3 " "$state" > "$state.tmp"; mv "$state.tmp" "$state"
     echo "$3 $id" >> "$state" ;;
   rmi)
+    [ -n "$FAIL_RMI" ] && { echo "rmi failed" >&2; exit 1; }
     grep -v "^$2 " "$state" > "$state.tmp"; mv "$state.tmp" "$state" ;;
   *) exit 2 ;;
 esac
@@ -69,5 +71,13 @@ describe('retag.sh activate', () => {
     expect(code).not.toBe(0);
     expect(h.read()['mup-app:previous']).toBeUndefined();
     expect(h.read()['mup-app:latest']).toBe('sha256:b');
+  });
+});
+
+describe('retag.sh swap', () => {
+  it('reports the swap as done when only removing the temporary tag fails', async () => {
+    const h = fakeHost({ 'mup-app:latest': 'sha256:b', 'mup-app:previous': 'sha256:a' });
+    expect(h.run(await cometScript('retag.sh', { mode: 'swap', repo: 'mup-app' }), { FAIL_RMI: '1' })).toBe(0);
+    expect(h.read()).toMatchObject({ 'mup-app:latest': 'sha256:a', 'mup-app:previous': 'sha256:b' });
   });
 });

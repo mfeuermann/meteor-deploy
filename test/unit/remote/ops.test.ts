@@ -169,7 +169,9 @@ describe('lock', () => {
 
   it('fails clearly when the app was never set up', async () => {
     const { conn } = fakeConn(() => 'missing-config\n');
-    await expect(acquireLock(conn, 'app', LOCK)).rejects.toThrow(/setup/);
+    const err = await acquireLock(conn, 'app', LOCK).catch((e: CometError) => e);
+    expect((err as CometError).message).toBe('[one] /opt/app/config does not exist.');
+    expect((err as CometError).hint).toMatch(/comet-deploy setup/);
   });
 
   it('reads no lock as null', async () => {

@@ -180,7 +180,7 @@ export async function acquireLock(conn: SshConnection, appName: string, info: Lo
   const { status, rest } = splitStatus(r.stdout);
   if (status === 'acquired') return { ok: true };
   if (status === 'missing-config') {
-    throw new CometError(`[${conn.name}] ${configDir(appName)} does not exist. Run "comet-deploy setup" first.`);
+    throw new CometError(`[${conn.name}] ${configDir(appName)} does not exist.`, { hint: 'Run "comet-deploy setup" first.' });
   }
   return { ok: false, holder: parseHolder(rest) };
 }

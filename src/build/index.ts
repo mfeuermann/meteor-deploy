@@ -4,9 +4,10 @@
  * layered app image with `docker buildx build`. The result is one local image per platform, ready
  * to be pushed to the local registry.
  */
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { resolveAppPath } from '../config/normalize.js';
-import type { DockerOptions, Platform } from '../config/types.js';
+import type { AppConfig, DockerOptions, Platform } from '../config/types.js';
 import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
 import { localImageRepo } from '../core/naming.js';
@@ -42,6 +43,41 @@ export interface BuiltImage {
 export function prepareBundleSupported(docker: Pick<DockerOptions, 'image' | 'prepareBundle'>): boolean {
   if ('prepareBundle' in docker) return !!docker.prepareBundle;
   return ['abernix/meteord', 'zodern/meteor'].some((img) => (docker.image ?? '').startsWith(img));
+}
+
+/** The env keys that the build instructions use, which become `--build-arg`s. */
+const buildArgKeys = (app: AppConfig) => argKeysForInstructions(app.docker.buildInstructions ?? [], Object.keys(app.env ?? {}));
+
+/**
+ * The inputs outside the app files that change the image, for the input hash. The values of
+ * the env keys that become build args count too, as one sha256 digest: the cache state file
+ * on disk must not hold them.
+ */
+export function hashExtras(app: AppConfig, platform: Platform): Record<string, unknown> {
+  const args = buildArgKeys(app).map((k) => [k, String(app.env[k])]);
+  return {
+    buildOptions: app.buildOptions,
+    platform,
+    tool: TOOL_ID,
+    image: app.docker.image,
+    buildInstructions: app.docker.buildInstructions ?? [],
+    dockerfile: DOCKERFILE_VERSION,
+    buildArgs: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+  };
+}
+
+/**
+ * Paths the input hash leaves out. The build location may lie inside the app; hashing it would
+ * change the hash on every build. The config directory only when its path inside the app starts
+ * with a dot directory (MUP's usual `<app>/.deploy`, with `path: '../'`): Meteor never bundles
+ * a dot directory, so editing mup.js or settings.json there must not force a rebuild. Any other
+ * config directory inside the app (`deploy/`, `private/deploy/`) or the app root itself holds
+ * files Meteor loads or bundles, so it stays in the hash.
+ */
+export function hashExclusions(appPath: string, basePath: string, buildLocation: string): string[] {
+  const rel = relative(appPath, basePath);
+  const dotDir = rel !== '' && !isAbsolute(rel) && !rel.startsWith('..') && rel.split(sep)[0].startsWith('.');
+  return dotDir ? [buildLocation, basePath] : [buildLocation];
 }
 
 /** Suffix that keeps the local tags and build directories of a multi-platform build apart. */
@@ -93,16 +129,7 @@ export async function buildApp(
       continue;
     }
 
-    // `extra` holds the inputs outside the app directory that change the image. The build
-    // location may lie inside the app; hashing it would change the hash on every build. The
-    // config directory too (MUP's usual `<app>/.deploy`, with `path: '../'`): Meteor never
-    // bundles a dot directory, and editing mup.js or settings.json must not force a rebuild.
-    // A config in the app root itself is not excluded (Meteor would load a mup.js there).
-    const inputHash = await computeInputHash(
-      appPath,
-      { buildOptions: app.buildOptions, platform, tool: TOOL_ID, image: app.docker.image, buildInstructions: instructions, dockerfile: DOCKERFILE_VERSION },
-      { exclude: [buildLocation, ctx.basePath] },
-    );
+    const inputHash = await computeInputHash(appPath, hashExtras(app, platform), { exclude: hashExclusions(appPath, ctx.basePath, buildLocation) });
     if (!o.forceBuild) {
       const e = cache.lookup(inputHash, platform);
       // The tag may have been removed or rebuilt since (`docker image prune`, a manual build).
@@ -122,7 +149,7 @@ export async function buildApp(
     const nodeVersion = readNodeVersion(bundleDir);
     const plan = planBuildContext(bundleDir);
     const depsHash = await computeDepsHash(bundleDir, plan);
-    const argKeys = argKeysForInstructions(instructions, Object.keys(app.env ?? {}));
+    const argKeys = buildArgKeys(app);
     // Build-arg values are recorded in the image history (`docker history`) on every server.
     if (argKeys.length) r.warn(`build args are visible in image history: ${argKeys.join(', ')}`);
     const dockerfile = renderDockerfile({

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { RunResult } from '../../../src/local/exec.js';
 import { ensureLocalRegistry, stopLocalRegistry, type RegistryEnv } from '../../../src/transfer/local-registry.js';
@@ -103,5 +103,45 @@ describe('local registry shared by concurrent deploys (M5)', () => {
     writeFileSync(lock, '400'); // pid 400 died while holding it
     expect(await stopLocalRegistry(env(d, dir, 100, alive))).toBe(true);
     expect(existsSync(lock)).toBe(false);
+  });
+
+  it('does not take over a lock that a live deploy took after the dead holder was seen', async () => {
+    const d = fakeDocker();
+    const dir = tempDir();
+    const lock = `${dir}.lock`;
+    writeFileSync(lock, '400'); // left by a process that died
+    const alive = new Set([100]);
+    const e: RegistryEnv = {
+      ...env(d, dir, 100, alive),
+      isAlive: (p) => {
+        // Between our read of "400" and the takeover, deploy 500 takes over the stale lock first.
+        if (p === 400 && !alive.has(500)) {
+          alive.add(500);
+          rmSync(lock);
+          writeFileSync(lock, '500');
+        }
+        return alive.has(p);
+      },
+    };
+    let done = false;
+    const p = ensureLocalRegistry(e).then(() => (done = true));
+    await new Promise((r) => setTimeout(r, 250));
+    expect(done).toBe(false);
+    expect(readFileSync(lock, 'utf8')).toBe('500');
+    rmSync(lock); // deploy 500 is done
+    await p;
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('leaves the lock alone at the end when another process holds it by then', async () => {
+    const d = fakeDocker();
+    const dir = tempDir();
+    const lock = `${dir}.lock`;
+    const docker: RegistryEnv['docker'] = async (args) => {
+      if (args[0] === 'inspect') writeFileSync(lock, '600'); // our lock was taken over meanwhile
+      return d.docker(args);
+    };
+    await ensureLocalRegistry({ ...env(d, dir, 100, new Set([100, 600])), docker });
+    expect(readFileSync(lock, 'utf8')).toBe('600');
   });
 });

@@ -89,6 +89,21 @@ describe('validateConfig', () => {
     expect(find(issues, 'app.servers.one'), JSON.stringify(issues)).toBeDefined();
   });
 
+  it.each<[string, (c: RawConfig) => void, string]>([
+    ['app.path that is not a string', (c) => (c.app.path = 1), 'app.path'],
+    ['app.env that is not an object, with mongo', (c) => {
+      c.app.env = 'x';
+      c.mongo = {};
+    }, 'app.env'],
+    ['app.env that is not an object, with proxy', (c) => {
+      c.app.env = 'x';
+      c.proxy = { domains: 'app.example.com' };
+    }, 'app.env'],
+  ])('reports an %s instead of crashing', (_name, mutate, path) => {
+    const issues = check(mutate);
+    expect(find(issues, path), JSON.stringify(issues)).toBeDefined();
+  });
+
   it('accepts ssh2 options in servers.*.opts, such as passphrase', () => {
     expect(check((c) => (c.servers.one.opts = { port: 2222, passphrase: 'secret phrase' }))).toEqual([]);
   });

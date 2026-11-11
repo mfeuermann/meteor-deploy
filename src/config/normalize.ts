@@ -36,7 +36,9 @@ export const DEFAULT_COMET_OPTIONS: Readonly<CometOptions> = Object.freeze({
 
 /** Absolute app path, resolved like MUP's `api.resolvePath(basePath, app.path)`. */
 export function resolveAppPath(config: { app: { path?: string } }, basePath: string): string {
-  return resolve(expandTilde(basePath), expandTilde(config.app.path || ''));
+  // A path that is not a string is reported by validation; it must not crash here first.
+  const path = typeof config.app.path === 'string' ? config.app.path : '';
+  return resolve(expandTilde(basePath), expandTilde(path));
 }
 
 // --- ports of MUP 1.5.11 prepareConfig steps (plugins/meteor, mongo, proxy) ---
@@ -67,12 +69,18 @@ function prepareMeteor(config: RawConfig, basePath: string): RawConfig {
 }
 
 /**
+ * Whether `app.env` is missing or an object. Another value (`env: 'x'`) is reported by
+ * validation; the steps that add env vars skip it instead of crashing on it first.
+ */
+const envIsObject = (app: RawConfig) => app.env === undefined || app.env === null || typeof app.env === 'object';
+
+/**
  * MUP's built-in MongoDB: `MONGO_URL` is always replaced with the local `mongodb` container
  * (validate.ts warns when the user's URL looks external) and the app is linked to it.
  * comet-deploy does not run the `mongo` section yet, but normalizes it for parity.
  */
 function prepareMongo(config: RawConfig): RawConfig {
-  if (!config.app || !config.mongo) return config;
+  if (!config.app || !config.mongo || !envIsObject(config.app)) return config;
   config.mongo.version = config.mongo.version || '3.4.24';
   config.app.env = config.app.env || {};
   // String(): a missing app.name is reported by validation, it must not crash here first.
@@ -119,7 +127,7 @@ function normalizeUrl(config: RawConfig): string {
  * does not run the `proxy` section yet, but normalizes it for parity.
  */
 function prepareProxy(config: RawConfig): RawConfig {
-  if (!config.app || !config.proxy) return config;
+  if (!config.app || !config.proxy || !envIsObject(config.app)) return config;
   const swarmEnabled = config.swarm && config.swarm.enabled;
   config.app.env = config.app.env || {};
   config.app.docker = config.app.docker || {};

@@ -66,6 +66,13 @@ export interface CommandContext extends BaseContext {
    * file is missing or invalid.
    */
   getSettings(): unknown;
+  /**
+   * Loads the settings only so that their values are masked in the output, for the commands
+   * that print app output (logs, the log tail of a failed health check) without using the
+   * settings. Never throws: a missing or invalid file is reported by `getSettings` where the
+   * settings are needed.
+   */
+  maskSettings(): void;
   /** Keys of `app.servers` selected by `--servers`, in config order. */
   appServers(): string[];
 }
@@ -147,6 +154,32 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
 
   let settings: unknown;
   let settingsLoaded = false;
+  const appServers = () => {
+    const appKeys = Object.keys(config.app.servers ?? {});
+    return serverFilter ? appKeys.filter((n) => serverFilter.includes(n)) : appKeys;
+  };
+
+  const getSettings = (): unknown => {
+    if (!settingsLoaded) {
+      const loaded = loadSettings({ cwd, basePath, settingsFlag: argv.settings }).settings;
+      // Per-server settings files are secret too. Loading them here also fails early when one
+      // is missing, before anything changes on the servers. Only the selected servers' files:
+      // the others are never rendered or printed, and may not exist on this machine.
+      const perServer = appServers().map((s) => loadServerSettings(config, s, { cwd, basePath }));
+      reporter.addSecrets(collectSecrets(config, loaded, perServer));
+      // Cached only when everything loaded, so a failure is reported again on the next call.
+      settings = loaded;
+      settingsLoaded = true;
+    }
+    return settings;
+  };
+  const maskSettings = () => {
+    try {
+      getSettings();
+    } catch {
+      // Not needed by the command; where the settings are used, getSettings reports it.
+    }
+  };
 
   return {
     ...base,
@@ -154,20 +187,8 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
     serverFilter,
     ssh: (deps.sshPoolFactory ?? defaultSshPoolFactory)(config, cwd, basePath),
     runner: new CommandRunner((config.hooks as Record<string, unknown> | undefined) ?? {}),
-    getSettings() {
-      if (!settingsLoaded) {
-        settings = loadSettings({ cwd, basePath, settingsFlag: argv.settings }).settings;
-        settingsLoaded = true;
-        // Per-server settings files are secret too. Loading them here also fails early when one
-        // is missing, before anything changes on the servers.
-        const perServer = Object.keys(config.app.servers ?? {}).map((s) => loadServerSettings(config, s, { cwd, basePath }));
-        reporter.addSecrets(collectSecrets(config, settings, perServer));
-      }
-      return settings;
-    },
-    appServers() {
-      const appKeys = Object.keys(config.app.servers ?? {});
-      return serverFilter ? appKeys.filter((n) => serverFilter.includes(n)) : appKeys;
-    },
+    getSettings,
+    maskSettings,
+    appServers,
   };
 }

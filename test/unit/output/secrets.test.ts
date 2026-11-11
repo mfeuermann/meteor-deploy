@@ -89,4 +89,50 @@ describe('secrets that were never masked (M7)', () => {
     ctx.getSettings();
     expect(ctx.reporter.mask('token per-server-token-2 here')).toBe('token *** here');
   });
+
+  it('loads only the per-server settings of the servers selected with --servers', async () => {
+    const dir = tempDir({
+      '.deploy/mup.js': `module.exports = {
+        servers: { one: { host: '192.0.2.1', username: 'root', password: 'pw' }, staging: { host: '192.0.2.2', username: 'root', password: 'pw' } },
+        app: { name: 'myapp', path: '../app', servers: { one: { settings: '.deploy/one.json' }, staging: { settings: '.deploy/staging.json' } }, env: { ROOT_URL: 'http://a.com' }, docker: { image: 'zodern/meteor' } },
+      };`,
+      '.deploy/settings.json': '{"public":{}}',
+      '.deploy/one.json': '{"private":{"token":"per-server-token-3"}}',
+      // .deploy/staging.json does not exist on this machine
+    });
+    const ctx = await createContext({ config: '.deploy/mup.js', servers: 'one' }, { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }) });
+    expect(() => ctx.getSettings()).not.toThrow();
+    expect(ctx.reporter.mask('per-server-token-3')).toBe('***');
+  });
+
+  it('keeps failing when a per-server settings file is missing, also on a second call', async () => {
+    const dir = tempDir({
+      '.deploy/mup.js': `module.exports = {
+        servers: { one: { host: '192.0.2.1', username: 'root', password: 'pw' } },
+        app: { name: 'myapp', path: '../app', servers: { one: { settings: '.deploy/one.json' } }, env: { ROOT_URL: 'http://a.com' }, docker: { image: 'zodern/meteor' } },
+      };`,
+      '.deploy/settings.json': '{"public":{}}',
+    });
+    const ctx = await createContext({ config: '.deploy/mup.js' }, { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }) });
+    expect(() => ctx.getSettings()).toThrow(/one\.json/);
+    expect(() => ctx.getSettings()).toThrow(/one\.json/);
+  });
+
+  it('masks the settings for commands that do not use them (logs, restart, rollback), without failing on a missing file', async () => {
+    const files = {
+      '.deploy/mup.js': `module.exports = {
+        servers: { one: { host: '192.0.2.1', username: 'root', password: 'pw' } },
+        app: { name: 'myapp', path: '../app', servers: { one: {} }, env: { ROOT_URL: 'http://a.com' }, docker: { image: 'zodern/meteor' } },
+      };`,
+    };
+    const reporter = () => createReporter({ verbose: false, tty: false, write: () => {} });
+    const dir = tempDir({ ...files, '.deploy/settings.json': '{"private":{"apiKey":"settings-api-key-1"}}' });
+    const ctx = await createContext({ config: '.deploy/mup.js' }, { cwd: dir, reporter: reporter() });
+    ctx.maskSettings();
+    expect(ctx.reporter.mask('key settings-api-key-1')).toBe('key ***');
+
+    const missing = await createContext({ config: '.deploy/mup.js', settings: 'nope.json' }, { cwd: tempDir(files), reporter: reporter() });
+    expect(() => missing.maskSettings()).not.toThrow();
+    expect(() => missing.getSettings()).toThrow();
+  });
 });

@@ -73,6 +73,9 @@ function addCommand(y: Argv, m: CommandModule, makeCtx: MakeContext): Argv {
         ctx.reporter.info('Hooks are not supported yet: they are planned for phase 2 of comet-deploy.');
         return;
       }
+      // Commands such as logs, restart and rollback print app output but never load the
+      // settings; their values must be masked there too.
+      if ('maskSettings' in ctx) ctx.maskSettings();
       await m.run(ctx as CommandContext, argv);
     } finally {
       // Only a CommandContext has an SSH pool. A failing close must not hide the command's error.

@@ -186,6 +186,17 @@ describe('deployPipeline', () => {
     expect((err as CometError).hint).toBeUndefined();
   });
 
+  it('keeps the hint of a server error when the servers cannot be locked', async () => {
+    const s = await setup();
+    s.deps.acquireLock = async (conn) => {
+      if (conn.name === 'two') throw new CometError('[two] Cannot write to /opt/myapp/config: No such file', { hint: 'Run "comet-deploy setup" first.' });
+      return { ok: true };
+    };
+    const err = await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps).catch((e: CometError) => e);
+    expect((err as CometError).message).toMatch(/Cannot write to \/opt\/myapp\/config/);
+    expect((err as CometError).hint).toBe('Run "comet-deploy setup" first.');
+  });
+
   it('canary revert: not ok, others skipped, history says reverted', async () => {
     const s = await setup({ activate: { one: 'reverted' } });
     const out = await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps);

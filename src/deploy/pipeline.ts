@@ -228,11 +228,13 @@ export async function lockServers(
   });
   if (problems.length) {
     await releaseServers(ctx, locked, d);
-    // The "wait for the other deploy" hint only fits a lock that someone holds; other problems
-    // (no connection, setup never run) explain themselves.
+    // The "wait for the other deploy" hint only fits a lock that someone holds; a server error
+    // brings its own hint (e.g. "run setup first"), each one given once.
     const held = results.some((x) => x.status === 'fulfilled' && !x.value.r.ok);
+    const hints = new Set(results.flatMap((x) => (x.status === 'rejected' && x.reason instanceof CometError && x.reason.hint ? [x.reason.hint] : [])));
+    if (held) hints.add('Wait for the other deploy to finish. If none is running, release the lock with "comet-deploy unlock" (or add --force-unlock).');
     throw new CometError(`Cannot lock the servers:\n${problems.map((p) => `  - ${p}`).join('\n')}`, {
-      hint: held ? 'Wait for the other deploy to finish. If none is running, release the lock with "comet-deploy unlock" (or add --force-unlock).' : undefined,
+      hint: hints.size ? [...hints].join('\n') : undefined,
     });
   }
   return locked;
