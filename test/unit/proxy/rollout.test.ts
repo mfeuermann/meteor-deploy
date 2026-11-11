@@ -356,6 +356,14 @@ describe('createProxyRollout', () => {
     expect(warnings).toMatch(/"one".*nginx -t failed/);
   });
 
+  it('a missing proxy.shared file stops a deploy before anything else', async () => {
+    const { ctx } = await context(mup("{ domains: 'a.example.com', shared: { nginxConfig: './nope.conf' } }"));
+    const calls: string[] = [];
+    const p = createProxyRollout(ctx, { action: 'deploy', strategy: 'canary' }, fakeProxyDeps({ one: new Error('not asked'), two: new Error('not asked') }, calls));
+    await expect(p).rejects.toThrow(/Cannot read proxy\.shared\.nginxConfig \(.*nope\.conf\)/);
+    expect(calls).toEqual([]);
+  });
+
   it('finish without prepare does nothing', async () => {
     const { ctx } = await context(mup(LB));
     const calls: string[] = [];

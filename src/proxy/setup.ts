@@ -11,6 +11,11 @@
  *
  * Each command takes the deploy lock of every app server (§4.6), so it never runs during a
  * deploy of this app. A server where the app is not set up yet has nothing to lock.
+ *
+ * With load balancing, `proxy setup` writes the upstream only when its servers and ports are the
+ * config's already (MUP's file, with the down marks kept). Turning load balancing on, or moving
+ * servers to another port or address, is left to the next deploy, which does it once each
+ * server runs the config: the running containers do not listen where the new upstream points.
  */
 import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
@@ -20,6 +25,7 @@ import { runOnServers } from '../remote/on-servers.js';
 import { acquireLock, cometScript, readLock, releaseLock } from '../remote/ops.js';
 import type { SshConnection } from '../ssh/connection.js';
 import {
+  LB_OFF_WITHOUT_BACKEND,
   loadBalancingHosts,
   PROXY_DIR,
   PROXY_NAME,
@@ -143,8 +149,18 @@ export async function proxySetup(ctx: CommandContext, d: ProxyLockDeps = LOCK_DE
   const c = ctx.config;
   ctx.runner.refuseHooks(['proxy.setup', 'proxy.start']);
   const servers = proxyServers(c, ctx.serverFilter);
+  // A file the config names but that cannot be read stops the command before any server is asked.
+  if (p.shared) await renderSharedFiles(c, { basePath: ctx.basePath, cwd: ctx.cwd });
+  const upstreamPath = `${PROXY_DIR}/upstream/${c.app.name}`;
   await withAppLock(ctx, 'proxy setup', d, async () => {
+    const appServers = new Set(Object.keys(c.app.servers ?? {}));
+    if (!p.loadBalancing && proxyServers(c, null).some((s) => !appServers.has(s))) {
+      const linked = await Promise.all(servers.map(async (s) => (await readRemote(await ctx.ssh.get(s), upstreamPath)) !== null));
+      if (linked.some(Boolean)) throw new CometError(LB_OFF_WITHOUT_BACKEND);
+    }
     const before: Record<string, ProxyInputs> = {};
+    /** Proxy servers whose upstream exists (load balancing runs there): they get the config container. */
+    const balanced = new Set<string>();
     await ctx.runner.run('proxy.setup', async () => {
       await desiredProxyFiles(c, ctx.basePath);
       const setupSh = await renderProxySetupSh(c);
@@ -161,9 +177,22 @@ export async function proxySetup(ctx: CommandContext, d: ProxyLockDeps = LOCK_DE
           await conn.runScriptOrThrow(nginxConfigSh, 'Pushing Nginx Config', out);
           await syncCerts(conn, c, ctx.basePath, out);
           if (p.loadBalancing) {
+            const current = await readRemote(conn, upstreamPath);
+            if (current === null) {
+              ctx.reporter.info(`[${s}] load balancing is turned on by the next "comet-deploy deploy", once every server runs with it`);
+              return;
+            }
+            balanced.add(s);
+            const entries = parseUpstream(current);
+            const want = desiredEntries(c);
+            const same = entries.length === want.length && want.every((w) => entries.some((e) => e.host === w.host && e.port === w.port));
+            if (!same) {
+              ctx.reporter.info(`[${s}] the upstream keeps its servers and ports: the next "comet-deploy deploy" moves each server once it runs the config`);
+              return;
+            }
             // MUP's upstream, but a server drained by an unfinished deploy stays down (spec §4.1).
-            const down = new Set(parseUpstream((await readRemote(conn, `${PROXY_DIR}/upstream/${c.app.name}`)) ?? '').filter((e) => e.down).map((e) => e.host));
-            await writeUpstreamFile(conn, c, formatUpstream(c, desiredEntries(c).map((e) => ({ ...e, down: down.has(e.host) }))), out);
+            const down = new Set(entries.filter((e) => e.down).map((e) => e.host));
+            await writeUpstreamFile(conn, c, formatUpstream(c, want.map((e) => ({ ...e, down: down.has(e.host) }))), out);
           } else {
             await removeLoadBalancing(conn, c, out);
           }
@@ -171,9 +200,9 @@ export async function proxySetup(ctx: CommandContext, d: ProxyLockDeps = LOCK_DE
       );
     });
     await runProxyStart(ctx, servers, { force: false, before, parallel: true });
-    if (p.loadBalancing) {
+    if (p.loadBalancing && balanced.size > 0) {
       const script = await renderServiceConfigureSh(c);
-      await runOnServers(ctx, servers, 'proxy load balancing', async (conn, s) => {
+      await runOnServers(ctx, servers.filter((s) => balanced.has(s)), 'proxy load balancing', async (conn, s) => {
         await conn.runScriptOrThrow(script, 'Configure Proxy', verboseOutput(ctx.reporter, s));
       });
     }
@@ -329,7 +358,11 @@ export function formatProxyStatus(rows: ProxyStatusRow[]): string {
       const one = r.downServers.length === 1;
       lines.push(`   - Drained: ${r.downServers.join(', ')} (run "comet-deploy restart --servers ${r.downServers.join(',')}" once ${one ? 'it is' : 'they are'} healthy)`);
     }
-    if (r.outOfSync.length) lines.push(`   - Out of sync: ${r.outOfSync.join(', ')} (run "comet-deploy proxy setup" to sync)`);
+    if (r.outOfSync.length) {
+      // proxy setup leaves turning on load balancing to a deploy (see above).
+      const fix = r.outOfSync.includes('load balancing enabled') ? 'comet-deploy deploy' : 'comet-deploy proxy setup';
+      lines.push(`   - Out of sync: ${r.outOfSync.join(', ')} (run "${fix}" to sync)`);
+    }
   }
   return lines.join('\n');
 }

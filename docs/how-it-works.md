@@ -344,6 +344,8 @@ With a `proxy` section the app runs behind MUP's reverse proxy: `zodern/nginx-pr
 
 `setup` and `proxy setup` run MUP's proxy scripts and upload the same files as MUP. MUP then always recreates the proxy containers, which interrupts every app on the server. comet-deploy recreates them only when one of the files they are created from changed (`config/start.sh`, `shared-config.sh`, `env.list`, `env_letsencrypt.list`, `nginx-default.conf`, `nginx.tmpl`, `nginx-shared.tmpl`) or when they do not both run. It compares a checksum of these files from before and after the upload; nothing extra is stored on the server. When nothing changed, it prints `[<server>] proxy up to date` and regenerates the nginx config once (docker-gen inside `mup-nginx-proxy`, then `nginx -t` and a reload), so new or removed files of the app still take effect. `proxy start` always recreates the containers, as in MUP.
 
+With load balancing, `setup` and `proxy setup` write the app's upstream only when its servers and ports already match the config (MUP's file, with the `down` marks kept). MUP writes the config's upstream at once, and when the running containers do not publish that port yet, every request fails until the next deploy. comet-deploy leaves turning load balancing on, and moving a server to a new `PORT` or address, to the next `deploy`, which does it server by server once each one runs the config (see below). The config container `mup-proxy-configure-<app>` follows the upstream.
+
 ### The app's proxy files on deploy
 
 MUP writes the app's proxy files only in `setup`: a `mup deploy` after a change of `clientUploadLimit` or of a certificate leaves the old files in place. comet-deploy brings them up to date on every `deploy` and `reconfig`, on every proxy server:
@@ -359,9 +361,9 @@ The order keeps nginx from pointing at something that does not run:
 - Domain files and certificates are written before activation.
 - Turning `loadBalancing` on writes the upstream after every server has been activated; until then nginx routes to the containers as it does without load balancing. If a server did not deploy, load balancing is not turned on yet: `loadBalancing was not enabled on the proxies because <servers> did not deploy; run the deploy again`.
 - Turning `loadBalancing` off removes the upstream before activation.
-- A changed `app.env.PORT`, `privateIp` or `host` changes that server's line in the upstream when the server is activated. A new server joins the upstream after it is healthy; a removed server leaves it at the start.
+- A changed `app.env.PORT`, `privateIp` or `host` changes that server's line in the upstream when the server is activated and healthy with the new config. A server that is reverted, skipped or not selected with `--servers` keeps its line, because it still runs its previous `start.sh`. A new server joins the upstream after it is healthy; a removed server leaves it at the start. A server that has no line at the end (a new server or a new address that did not deploy) is named: `"<server>" is not in load balancing: it does not run this config yet. Run "comet-deploy deploy --servers <server>" to add it.`
 
-`rollback` and `restart` do not change the proxy files.
+`rollback` and `restart` do not change the proxy files: they run the server's own `start.sh`, so the upstream keeps every server's address and port, and only the `down` marks change.
 
 **Shared settings.** `proxy.shared` configures the proxy itself, so applying it restarts the proxy for every app on the server. `deploy` never applies it. When the app's config has a `shared` section whose effect differs from the files on a proxy server, `deploy` warns: `The shared proxy settings (proxy.shared) differ from the ones on <servers>. A deploy does not apply them, because that restarts the proxy for every app on the server. Run "comet-deploy proxy reconfig-shared" to apply them.` A config without `shared` never warns, so it never leads you to overwrite the settings another app has set.
 
@@ -396,6 +398,7 @@ Rules:
 - **Failures.** A server that ends `reverted` goes back in after its restored version passed the check. A server that ends `revert-failed`, or that an interrupted deploy left drained (a lost connection, a killed process), stays out, and the command says so: `"<server>" stays out of load balancing because it did not end healthy. Once it is healthy, run "comet-deploy restart --servers <server>" to put it back.` `status` and `proxy status` list it as `Drained:`. See [Troubleshooting](troubleshooting.md#a-server-stays-out-of-load-balancing).
 - **Ctrl+C.** The servers that passed their health check go back in before the command exits, as the locks are released.
 - **`--servers`** updates every proxy whose upstream holds a restarted server, also when that proxy server is not in `--servers`.
+- **A proxy server that cannot be written** is tried again with every later write, at the latest at the end of the command. If it is still unreachable then, the command names it and the servers that may still be out of load balancing there: `Could not update the reverse proxy on "<proxy>": …. Its upstream may still have <servers> out of load balancing: once "<proxy>" is reachable, run "comet-deploy restart --servers <servers>".` A server counts as out of load balancing when it is marked `down` on any proxy server.
 - **MUP.** `mup proxy setup` rewrites the upstream without the marks, so it puts drained servers back in. comet-deploy cannot prevent that.
 - `cometDeploy.zeroDowntime: false` turns draining off; the restart is then the same as with MUP.
 

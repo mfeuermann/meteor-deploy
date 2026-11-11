@@ -20,6 +20,10 @@ export const PROXY_DIR = `/opt/${PROXY_NAME}`;
 /** The error for a proxy server without a running proxy, after `Server "<name>": `. */
 export const PROXY_NOT_SET_UP = `the reverse proxy is not set up (container ${PROXY_NAME} is missing or stopped). Run "comet-deploy proxy setup" first.`;
 
+/** The error for turning off load balancing while `proxy.servers` has servers without the app (deploy and `proxy setup`). */
+export const LB_OFF_WITHOUT_BACKEND =
+  'Turning off loadBalancing while the proxy runs on servers without the app would leave those proxies without a backend. Remove proxy.servers first or keep loadBalancing.';
+
 /** The `proxy` section; callers only use these helpers for configs that have one. */
 function proxyOf(c: NormalizedConfig): Record<string, any> {
   if (!c.proxy) throw new CometError('The config has no "proxy" section.');

@@ -27,7 +27,7 @@ import { containerName } from '../core/naming.js';
 import { verboseOutput } from '../output/lines.js';
 import { shArg } from '../remote/ops.js';
 import type { SshConnection } from '../ssh/connection.js';
-import { PROXY_NOT_SET_UP, proxyDomains, proxyServers } from './render.js';
+import { LB_OFF_WITHOUT_BACKEND, PROXY_NOT_SET_UP, proxyDomains, proxyServers, renderSharedFiles } from './render.js';
 import {
   applyProxySync,
   desiredProxyFiles,
@@ -126,7 +126,8 @@ async function readStates(ctx: CommandContext, d: ProxyRolloutDeps, proxies: str
  * reconfig it reads the local files first (a file that cannot be read fails before any server is
  * asked), then the state of every proxy server.
  *
- * @throws CometError for an unreadable file, a proxy server that cannot be read or does not run
+ * @throws CometError for an unreadable file (also one that `proxy.shared` names, although a deploy
+ *   does not apply it), a proxy server that cannot be read or does not run
  *   the proxy, and for turning off load balancing while the proxy also runs on servers without
  *   the app (those proxies would be left without a backend).
  */
@@ -138,17 +139,14 @@ export async function createProxyRollout(
   const c = ctx.config;
   if (!c.proxy) return null;
   const desired = o.action === 'deploy' || o.action === 'reconfig' ? await desiredProxyFiles(c, ctx.basePath) : null;
+  if (desired && c.proxy.shared) await renderSharedFiles(c, { basePath: ctx.basePath, cwd: ctx.cwd });
   const proxies = rolloutProxies(ctx);
   const domains = proxyDomains(c);
   const states = await readStates(ctx, d, proxies);
   if (desired) {
     const appServers = new Set(Object.keys(c.app.servers ?? {}));
     const disabling = proxies.some((p) => planProxySync(desired, states.get(p)!, domains).lbTransition === 'disable');
-    if (disabling && proxyServers(c, null).some((p) => !appServers.has(p))) {
-      throw new CometError(
-        'Turning off loadBalancing while the proxy runs on servers without the app would leave those proxies without a backend. Remove proxy.servers first or keep loadBalancing.',
-      );
-    }
+    if (disabling && proxyServers(c, null).some((p) => !appServers.has(p))) throw new CometError(LB_OFF_WITHOUT_BACKEND);
   }
   return new Rollout(ctx, o, d, { desired, proxies, domains });
 }

@@ -6,7 +6,7 @@ import { createContext, type CommandContext } from '../../../src/core/context.js
 import { createReporter } from '../../../src/output/reporter.js';
 import { formatProxyStatus, proxySetup, proxyStart } from '../../../src/proxy/setup.js';
 import { readNginxTmpl, renderNginxConfigSh, renderProxyStartSh, renderServiceConfigureSh } from '../../../src/proxy/render.js';
-import { parseUpstream } from '../../../src/proxy/upstream.js';
+import { desiredEntries, formatUpstream, parseUpstream } from '../../../src/proxy/upstream.js';
 import type { ExecOptions, ExecResult, SshConnection } from '../../../src/ssh/connection.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -113,7 +113,9 @@ describe('proxySetup', () => {
   });
 
   it('configures the load balancing container after the start (MUP post.proxy.setup)', async () => {
-    const s = await setup('proxy-lb', { digests: { one: ['digest=-\nrunning=0'], two: ['digest=-\nrunning=0'] } });
+    const world: World = { digests: { one: ['digest=-\nrunning=0'], two: ['digest=-\nrunning=0'] } };
+    const s = await setup('proxy-lb', world);
+    world.upstream = formatUpstream(s.ctx.config, desiredEntries(s.ctx.config));
     await proxySetup(s.ctx);
     const steps = s.steps('two');
     expect(steps.at(-2)).toBe('service-configure.sh');
@@ -139,10 +141,46 @@ describe('proxySetup', () => {
   });
 
   it('keeps the down marks of the upstream file', async () => {
-    const s = await setup('proxy-lb', { upstream: '\nserver 10.0.0.1:4000;\n\nserver 10.0.0.2:4000 down;\n\n' });
+    const world: World = {};
+    const s = await setup('proxy-lb', world);
+    const [one, two] = desiredEntries(s.ctx.config);
+    world.upstream = formatUpstream(s.ctx.config, [one, { ...two, down: true }]);
     await proxySetup(s.ctx);
     const content = Buffer.from(/echo '([A-Za-z0-9+/=]+)' \| base64 -d/.exec(s.scripts.upstream)![1], 'base64').toString('utf8');
     expect(parseUpstream(content).map((e) => `${e.host}${e.down ? ' down' : ''}`)).toEqual(['10.0.0.1', '10.0.0.2 down']);
+  });
+
+  it('leaves turning on load balancing to the next deploy: no upstream, no links, no config container', async () => {
+    const s = await setup('proxy-lb');
+    await proxySetup(s.ctx);
+    for (const server of ['one', 'two']) {
+      expect(s.steps(server)).not.toContain('upstream');
+      expect(s.steps(server)).not.toContain('service-configure.sh');
+    }
+    expect(s.out()).toContain('[one] load balancing is turned on by the next "comet-deploy deploy", once every server runs with it');
+  });
+
+  it('leaves an upstream whose ports or addresses differ from the config to the next deploy', async () => {
+    // The servers still listen on 4000; the config has another PORT.
+    const s = await setup('proxy-lb', { upstream: '\nserver 10.0.0.1:4000;\n\nserver 10.0.0.2:4000;\n\n' });
+    await proxySetup(s.ctx);
+    expect(s.steps('one')).not.toContain('upstream');
+    expect(s.steps('one')).toContain('service-configure.sh');
+    expect(s.out()).toContain('[one] the upstream keeps its servers and ports: the next "comet-deploy deploy" moves each server once it runs the config');
+  });
+
+  it('refuses to turn off load balancing while the proxy runs on servers without the app, before any change', async () => {
+    const s = await setup('proxy-off-extra', { upstream: '\nserver 10.0.0.1:4000;\n\n' });
+    await expect(proxySetup(s.ctx)).rejects.toThrow(
+      'Turning off loadBalancing while the proxy runs on servers without the app would leave those proxies without a backend. Remove proxy.servers first or keep loadBalancing.',
+    );
+    expect(s.log.filter((l) => !/:(lock|unlock|read-upstream)$/.test(l) && !l.includes('.deploy.lock'))).toEqual([]);
+  });
+
+  it('stops before it changes anything when a proxy.shared file is missing', async () => {
+    const s = await setup('proxy-shared-missing');
+    await expect(proxySetup(s.ctx)).rejects.toThrow(/Cannot read proxy\.shared\.nginxConfig \(.*missing-nginx\.conf\)/);
+    expect(s.log).toEqual([]);
   });
 
   it('locks every app server, also outside --servers, and releases the locks', async () => {
@@ -186,6 +224,11 @@ describe('formatProxyStatus', () => {
     expect(lines).toContain('       - HTTPS: 443');
     expect(lines).toContain('       - a.com.chain.pem: Feb  1 12:00:00 2027 GMT');
     expect(text).toContain('Drained: two (run "comet-deploy restart --servers two" once it is healthy)');
-    expect(text).toContain('Out of sync: vhost.d/a.com updated');
+    expect(text).toContain('Out of sync: vhost.d/a.com updated (run "comet-deploy proxy setup" to sync)');
+  });
+
+  it('points at deploy when load balancing still has to be turned on', () => {
+    const row = { server: 'one', nginx: 'running', letsEncrypt: 'running', certificates: {}, downServers: [], outOfSync: ['load balancing enabled'] };
+    expect(formatProxyStatus([row])).toContain('Out of sync: load balancing enabled (run "comet-deploy deploy" to sync)');
   });
 });

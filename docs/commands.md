@@ -261,7 +261,7 @@ comet-deploy restart [--strategy canary|rolling|parallel] [--force-unlock]
 
 Stops and starts the app on each server by strategy (MUP's `meteor-stop.sh`, then `meteor-start.sh` with the files already on the server) and runs the health check. Nothing changes on the server, so there is nothing to revert; a server that does not come up is reported as failed, with its last log lines. A history entry `restart` is written.
 
-Behind the proxy it switches like [`deploy`](#deploy), without a gap, or with `loadBalancing` out of load balancing while the server restarts. It does not change the proxy files. A server that is still out of load balancing after an interrupted deploy goes back in when `restart --servers <server>` finds it healthy.
+Behind the proxy it switches like [`deploy`](#deploy), without a gap, or with `loadBalancing` out of load balancing while the server restarts. It does not change the proxy files: the upstream keeps each server's address and port, only the `down` mark of a restarting server changes. A server that is still out of load balancing after an interrupted deploy goes back in when `restart --servers <server>` finds it healthy.
 
 | Option | Description |
 |---|---|
@@ -322,7 +322,7 @@ Which version each server rolls back to:
 
 If the health check fails, the server goes back to the image that ran before the rollback. Running `rollback` again goes one more version back. Version names are listed by [`history`](#history).
 
-Behind the proxy it switches like [`deploy`](#deploy), without a gap, or with `loadBalancing` out of load balancing while the server restarts. It does not change the proxy files.
+Behind the proxy it switches like [`deploy`](#deploy), without a gap, or with `loadBalancing` out of load balancing while the server restarts. It does not change the proxy files: the upstream keeps each server's address and port.
 
 At the end it prints `Rolled back one, two to <version>.`, or `Rolled back one, two to the versions listed above.` when the servers went back to different versions (the summary table shows the version per server).
 
@@ -465,14 +465,14 @@ The `proxy` group has MUP 1.5.11's proxy commands. They need a `proxy` section i
 
 | Command | What it does |
 |---|---|
-| `proxy setup` | What `mup proxy setup` does, with MUP's scripts: `proxy-setup.sh`, the proxy's `start.sh` and `nginx.tmpl`, the app's `vhost.d` files, your own certificates, and with `loadBalancing` the app's upstream and its config container (`mup-proxy-configure-<app>`). Then the proxy containers are recreated, **only when** one of the files they are created from changed or they do not both run. Otherwise it prints `[<server>] proxy up to date` and regenerates the nginx config, so new or removed files of the app still take effect. Servers that are out of load balancing stay out (see [`deploy`](#deploy)). |
+| `proxy setup` | What `mup proxy setup` does, with MUP's scripts: `proxy-setup.sh`, the proxy's `start.sh` and `nginx.tmpl`, the app's `vhost.d` files, your own certificates, and with `loadBalancing` the app's upstream and its config container (`mup-proxy-configure-<app>`). The upstream is written only when its servers and ports already match the config: turning load balancing on, or a new `PORT` or address, waits for the next `deploy` (`[<server>] load balancing is turned on by the next "comet-deploy deploy", …`), because the running containers do not listen there yet. Turning load balancing off is refused while `proxy.servers` has servers without the app. Then the proxy containers are recreated, **only when** one of the files they are created from changed or they do not both run. Otherwise it prints `[<server>] proxy up to date` and regenerates the nginx config, so new or removed files of the app still take effect. Servers that are out of load balancing stay out (see [`deploy`](#deploy)). |
 | `proxy reconfig-shared` | Uploads the `proxy.shared` settings one server after another (an empty `shared` resets them to MUP's defaults), then recreates the proxy containers where the files changed. The shared settings apply to every app on the server. |
 | `proxy start` | Recreates both proxy containers, always, as MUP does (`proxy-start.sh`). The way to force a restart of the proxy. |
 | `proxy stop` | Removes both proxy containers (MUP's `proxy-stop.sh`). Every app behind the proxy on that server is unreachable until `proxy start`. |
 | `proxy logs [options]` | `docker logs` of `mup-nginx-proxy`; options pass through (`-f`, `--tail 50`). |
 | `proxy logs-le [options]` | `docker logs` of `mup-nginx-proxy-letsencrypt`. As in MUP, it reads the app servers. |
 | `proxy nginx-config` | Prints the generated `/etc/nginx/conf.d/default.conf` of each proxy server. |
-| `proxy status` | MUP's `=> Reverse Proxy Status` block: both containers, the published ports and the expiry date of each certificate. comet-deploy adds the servers that are out of load balancing (`- Drained: <servers> (run "comet-deploy restart --servers <servers>" once they are healthy)`) and the app's proxy files that do not match the config (`- Out of sync: … (run "comet-deploy proxy setup" to sync)`). |
+| `proxy status` | MUP's `=> Reverse Proxy Status` block: both containers, the published ports and the expiry date of each certificate. comet-deploy adds the servers that are out of load balancing (`- Drained: <servers> (run "comet-deploy restart --servers <servers>" once they are healthy)`) and the app's proxy files that do not match the config (`- Out of sync: … (run "comet-deploy proxy setup" to sync)`; when load balancing still has to be turned on, `comet-deploy deploy`). |
 | `proxy envconfig` | Fails, as it does in MUP: `"proxy envconfig" has no implementation in MUP 1.5.11 either: it is listed in its help, but running it fails.` |
 
 ```bash

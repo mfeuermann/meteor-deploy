@@ -660,10 +660,22 @@ The app's proxy files are written before any server is activated. If that fails,
 A file named in the config that cannot be read locally (`ssl.crt`, `ssl.key`, `nginxServerConfig`, `nginxLocationConfig`) stops the command even earlier, before the build: `Cannot read proxy.ssl.crt (<path>): …`. The paths are relative to the config's directory.
 
 ```
-Warning: Could not update the reverse proxy on "one": … Run "comet-deploy proxy setup" once it is reachable.
+Warning: Could not update the reverse proxy on "one": connect ETIMEDOUT. Its upstream may still have two out of load balancing: once "one" is reachable, run "comet-deploy restart --servers two".
 ```
 
-This one comes at the end, after the servers were activated: the final upstream update (putting servers back, or turning load balancing on) did not reach that proxy server. When it is reachable again, `comet-deploy proxy setup` writes the upstream, keeping the `down` marks of drained servers.
+This one comes at the end, after the servers were activated: the upstream on that proxy server could not be written, also not in the last try at the end of the command, so it may still have a server marked `down`. When the proxy server is reachable again, `comet-deploy restart --servers two` restarts `two` and, once it is healthy, writes the upstream on every proxy server. (`proxy setup` would keep the `down` mark.)
+
+```
+Warning: Could not update the reverse proxy on "one": …. Run "comet-deploy proxy setup" once it is reachable.
+```
+
+Here no server is out of load balancing because of it, but other proxy files of the app (turning load balancing on, its links or its config container) were not written. `comet-deploy proxy setup` writes them; to turn load balancing on, run `comet-deploy deploy` again.
+
+```
+Warning: "three" is not in load balancing: it does not run this config yet. Run "comet-deploy deploy --servers three" to add it.
+```
+
+A new server, or a server whose `privateIp` or `host` changed, joins the upstream only once it is healthy with the new config. It did not get there in this run (it failed, was reverted or was not selected); fix it and deploy it again.
 
 ### No Let's Encrypt certificate
 
