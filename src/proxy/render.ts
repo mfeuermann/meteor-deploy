@@ -17,6 +17,9 @@ export const PROXY_NAME = 'mup-nginx-proxy';
 /** Where MUP keeps the shared proxy's files on a server. */
 export const PROXY_DIR = `/opt/${PROXY_NAME}`;
 
+/** The error for a proxy server without a running proxy, after `Server "<name>": `. */
+export const PROXY_NOT_SET_UP = `the reverse proxy is not set up (container ${PROXY_NAME} is missing or stopped). Run "comet-deploy proxy setup" first.`;
+
 /** The `proxy` section; callers only use these helpers for configs that have one. */
 function proxyOf(c: NormalizedConfig): Record<string, any> {
   if (!c.proxy) throw new CometError('The config has no "proxy" section.');

@@ -3,11 +3,13 @@ import type { BuiltImage } from '../../../src/build/index.js';
 import { createContext, type CommandContext } from '../../../src/core/context.js';
 import { CometError } from '../../../src/core/errors.js';
 import type { ActivationResult } from '../../../src/deploy/activate.js';
-import { deployPipeline, lockServers, type PipelineDeps } from '../../../src/deploy/pipeline.js';
+import { deployPipeline, lockServers, restartPipeline, type PipelineDeps } from '../../../src/deploy/pipeline.js';
+import { createProxyRollout } from '../../../src/proxy/rollout.js';
 import { createReporter } from '../../../src/output/reporter.js';
 import { SetupMissingError, type HistoryEntry } from '../../../src/remote/ops.js';
 import type { SshConnection } from '../../../src/ssh/connection.js';
 import { tempDir } from '../../helpers/fs.js';
+import { fakeProxyDeps, inSyncState } from '../../helpers/proxy.js';
 
 const MUP = (extra = '') => `module.exports = {
   servers: { one: { host: '192.0.2.1', username: 'root', password: 'pw-one' }, two: { host: '192.0.2.2', username: 'root', password: 'pw-two' } },
@@ -15,13 +17,13 @@ const MUP = (extra = '') => `module.exports = {
   ${extra}
 };`;
 
-async function setup(o: { extra?: string; activate?: Record<string, ActivationResult['status']>; strategy?: string } = {}) {
+async function setup(o: { extra?: string; activate?: Record<string, ActivationResult['status']>; strategy?: string; servers?: string } = {}) {
   const dir = tempDir({ '.deploy/mup.js': MUP(o.extra), '.deploy/settings.json': '{"public":{}}' });
   const lines: string[] = [];
   const reporter = createReporter({ verbose: false, tty: false, write: (s) => void lines.push(s) });
   const conns: Record<string, SshConnection> = {};
   const ctx: CommandContext = await createContext(
-    { config: '.deploy/mup.js' },
+    { config: '.deploy/mup.js', ...(o.servers ? { servers: o.servers } : {}) },
     {
       cwd: dir,
       reporter,
@@ -41,8 +43,8 @@ async function setup(o: { extra?: string; activate?: Record<string, ActivationRe
   const built: BuiltImage = { platform: 'linux/amd64', version: '20261107-183005', localTag: 'mup-myapp:20261107-183005', imageId: 'sha256:x', nodeVersion: '24.22.1', depsHash: 'd', fromCache: false };
   const deps: Partial<PipelineDeps> = {
     readGitInfo: async () => null,
-    preflight: async (_c, servers) => {
-      calls.push('preflight');
+    preflight: async (_c, servers, p) => {
+      calls.push(p.proxyServers?.length ? `preflight:proxy=${p.proxyServers.join(',')}` : 'preflight');
       return { errors: [], warnings: [], platformByServer: Object.fromEntries(servers.map((s) => [s, 'linux/amd64'])), platforms: ['linux/amd64'] };
     },
     buildApp: async () => {
@@ -66,7 +68,7 @@ async function setup(o: { extra?: string; activate?: Record<string, ActivationRe
       return { durationMs: 1 };
     },
     activateServer: async (d, x) => {
-      calls.push(`activate:${d.serverName}:${x.version}`);
+      calls.push(`activate:${d.serverName}:${x.version}${x.switch ? `:${x.switch.kind}` : ''}`);
       return { server: d.serverName, status: o.activate?.[d.serverName] ?? 'healthy', durationMs: 1 };
     },
     appendHistory: async (conn, _app, e) => {
@@ -123,12 +125,10 @@ describe('deployPipeline', () => {
     expect(s.history.one[0]).toMatchObject({ action: 'deploy', result: 'success', version: '20261107-183005', servers: ['one', 'two'] });
   });
 
-  it('refuses proxy and mongo configs (phase 2)', async () => {
-    const p = await setup({ extra: "proxy: { domains: 'a.com' }," });
-    await expect(deployPipeline(p.ctx, { cachedBuild: false, forceBuild: false }, p.deps)).rejects.toThrow(/phase 2/);
+  it('refuses mongo configs (phase 2)', async () => {
     const m = await setup({ extra: 'mongo: { servers: { one: {} } },' });
     await expect(deployPipeline(m.ctx, { cachedBuild: false, forceBuild: false }, m.deps)).rejects.toThrow(/phase 2/);
-    expect(p.calls).toEqual([]);
+    expect(m.calls).toEqual([]);
   });
 
   it('stops before activation when aborted, releasing locks and the registry (Review Focus 2)', async () => {
@@ -307,5 +307,165 @@ describe('deployPipeline', () => {
       return { ok: true };
     };
     await expect(lockServers(s.ctx, ['one', 'two'], 'proxy setup', deps, { skipNotSetUp: true })).rejects.toThrow(/exit code 1/);
+  });
+});
+
+describe('pipelines behind the proxy', () => {
+  const V = '20261107-183005';
+  const LE = "proxy: { domains: 'a.com' },";
+  const LB = "proxy: { domains: 'a.com', loadBalancing: true },";
+  const deploy = (s: Awaited<ReturnType<typeof setup>>, o: { strategy?: 'canary' | 'rolling' | 'parallel' } = {}) =>
+    deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false, ...o }, s.deps);
+  /** The real rollout over fake proxy servers `one` and `two` in the given state. */
+  async function withProxies(s: Awaited<ReturnType<typeof setup>>, lb: 'keep' | 'off', o: Parameters<typeof fakeProxyDeps>[2] = {}) {
+    const state = await inSyncState(s.ctx, { lb });
+    const d = fakeProxyDeps({ one: state, two: state }, s.calls, o);
+    s.deps.createProxyRollout = (ctx, x) => createProxyRollout(ctx, x, d);
+  }
+  const flow = (calls: string[]) => calls.filter((c) => /^(drain|activate|healthy|finalize):/.test(c));
+
+  it('deploy: preflight checks the proxy servers, the rollout wraps the activation and finishes before the unlock', async () => {
+    const s = await setup({ extra: LE });
+    s.deps.createProxyRollout = async (_ctx, o) => {
+      s.calls.push(`proxy:create:${o.action}`);
+      return {
+        prepare: async () => void s.calls.push('proxy:prepare'),
+        activate: async (server, run) => {
+          s.calls.push(`proxy:activate:${server}`);
+          return run({ kind: 'zero-downtime' });
+        },
+        finish: async (results) => {
+          s.calls.push(`proxy:finish:${results.length}`);
+          return ['a proxy warning'];
+        },
+      };
+    };
+    const out = await deploy(s);
+    expect(out.ok).toBe(true);
+    expect(s.calls).toEqual([
+      'preflight:proxy=one,two',
+      'settings',
+      'proxy:create:deploy',
+      'build',
+      'lock:one',
+      'lock:two',
+      'registry',
+      'push',
+      `distribute:one:mup-myapp:${V}`,
+      `distribute:two:mup-myapp:${V}`,
+      'proxy:prepare',
+      'proxy:activate:one',
+      `activate:one:${V}:zero-downtime`,
+      'proxy:activate:two',
+      `activate:two:${V}:zero-downtime`,
+      'history:one',
+      'history:two',
+      'prune:one',
+      'prune:two',
+      'prune-images:one',
+      'prune-images:two',
+      'proxy:finish:2',
+      'release:one',
+      'release:two',
+      'stop-registry',
+    ]);
+    expect(s.output().indexOf('a proxy warning')).toBeGreaterThan(s.output().indexOf('SERVER'));
+  });
+
+  it('a missing nginxServerConfig fails before the build (Review Focus 5)', async () => {
+    const s = await setup({ extra: "proxy: { domains: 'a.com', nginxServerConfig: './missing.conf' }," });
+    await expect(deploy(s)).rejects.toThrow(/proxy\.nginxServerConfig/);
+    expect(s.calls).not.toContain('build');
+    expect(s.calls.some((c) => c.startsWith('lock:'))).toBe(false);
+  });
+
+  it('load balancing, canary: drain → activate → healthy, server by server', async () => {
+    const s = await setup({ extra: LB });
+    await withProxies(s, 'keep');
+    expect((await deploy(s)).ok).toBe(true);
+    expect(flow(s.calls)).toEqual([
+      'drain:one',
+      `activate:one:${V}:restart`,
+      'healthy:one',
+      'drain:two',
+      `activate:two:${V}:restart`,
+      'healthy:two',
+      'finalize:',
+    ]);
+  });
+
+  it('load balancing, parallel: no drain', async () => {
+    const s = await setup({ extra: LB });
+    await withProxies(s, 'keep');
+    await deploy(s, { strategy: 'parallel' });
+    expect(s.calls.some((c) => c.startsWith('drain:'))).toBe(false);
+  });
+
+  it('load balancing, revert-failed on two: two stays down and the summary says how to bring it back', async () => {
+    const s = await setup({ extra: LB, activate: { two: 'revert-failed' } });
+    await withProxies(s, 'keep');
+    expect((await deploy(s)).ok).toBe(false);
+    expect(s.calls).toContain('finalize:two');
+    expect(s.output()).toContain('comet-deploy restart --servers two');
+  });
+
+  it('Ctrl+C after one: the rollout still finishes, two is neither drained nor deployed (Review Focus 3)', async () => {
+    const s = await setup({ extra: LB });
+    await withProxies(s, 'keep');
+    const ac = new AbortController();
+    const activate = s.deps.activateServer!;
+    s.deps.activateServer = async (d, x) => {
+      const r = await activate(d, x);
+      ac.abort();
+      return r;
+    };
+    s.deps.signal = ac.signal;
+    await expect(deploy(s)).rejects.toThrow('Deploy aborted');
+    expect(flow(s.calls)).toEqual(['drain:one', `activate:one:${V}:restart`, 'healthy:one', 'finalize:']);
+    expect(s.calls.indexOf('finalize:')).toBeLessThan(s.calls.indexOf('release:one'));
+  });
+
+  it('a proxy that cannot be written does not stop the deploy, and the summary names it (Review Focus 4)', async () => {
+    const s = await setup({ extra: LB });
+    await withProxies(s, 'keep', { failWrite: 'two' });
+    const out = await deploy(s);
+    expect(out.results.map((r) => r.status)).toEqual(['healthy', 'healthy']);
+    expect(s.output()).toMatch(/"two".*connection refused/);
+  });
+
+  it('load balancing locks every app server, also for --servers one', async () => {
+    const s = await setup({ extra: LB, servers: 'one' });
+    await withProxies(s, 'keep');
+    await deploy(s);
+    expect(s.calls.filter((c) => c.startsWith('lock:'))).toEqual(['lock:one', 'lock:two']);
+    expect(s.calls.filter((c) => c.startsWith('activate:'))).toEqual([`activate:one:${V}:restart`]);
+    expect(s.calls).toEqual(expect.arrayContaining(['release:one', 'release:two']));
+  });
+
+  it('enabling load balancing writes the upstream only after every server is healthy', async () => {
+    const s = await setup({ extra: LB });
+    await withProxies(s, 'off');
+    await deploy(s);
+    const enable = s.calls.indexOf('sync:after:one:lb-enable+service');
+    expect(enable).toBeGreaterThan(s.calls.indexOf(`activate:two:${V}:restart`));
+    expect(enable).toBeLessThan(s.calls.indexOf('release:one'));
+
+    const f = await setup({ extra: LB, activate: { two: 'reverted' }, strategy: 'parallel' });
+    await withProxies(f, 'off');
+    await deploy(f, { strategy: 'parallel' });
+    expect(f.calls.some((c) => c.startsWith('sync:after'))).toBe(false);
+    expect(f.output()).toContain('loadBalancing was not enabled on the proxies because two did not deploy; run the deploy again');
+  });
+
+  it('restart with the zero-downtime switch does not stop the app first', async () => {
+    const s = await setup({ extra: LE });
+    await withProxies(s, 'off');
+    s.deps.startServer = async (d, x) => {
+      s.calls.push(`start:${d.serverName}:${x?.switch?.kind ?? 'none'}`);
+      return { server: d.serverName, status: 'healthy', durationMs: 1 };
+    };
+    const out = await restartPipeline(s.ctx, {}, s.deps);
+    expect(out.ok).toBe(true);
+    expect(s.calls.filter((c) => c.startsWith('start:'))).toEqual(['start:one:zero-downtime', 'start:two:zero-downtime']);
   });
 });

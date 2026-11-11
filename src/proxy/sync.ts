@@ -21,11 +21,13 @@ import { cometScript, shArg } from '../remote/ops.js';
 import type { ExecOptions, SshConnection } from '../ssh/connection.js';
 import {
   customCertFiles,
+  PROXY_DIR,
   PROXY_NAME,
   proxyDomains,
   readConfigFile,
   renderNginxConfigSh,
   renderServiceConfigureSh,
+  renderSharedFiles,
   renderSslCleanupSh,
   renderSslSetupSh,
   vhostContent,
@@ -343,4 +345,41 @@ export async function applyProxySync(
   }
   if (plan.regenerate[phase]) await regenerateNginx(conn, out);
   else await reloadNginx(conn, out);
+}
+
+/** A remote file's content, or null when it is missing. */
+export async function readRemote(conn: SshConnection, path: string): Promise<string | null> {
+  const r = await conn.exec(`if sudo test -f ${shArg(path)}; then sudo base64 -w0 ${shArg(path)}; else echo -; fi`);
+  const v = r.stdout.trim();
+  return r.code !== 0 || v === '-' ? null : Buffer.from(v, 'base64').toString('utf8');
+}
+
+/**
+ * `nginx-default.conf` as it is after a proxy start: `start.sh` appends
+ * `client_max_body_size <limit>;` when the file does not mention it.
+ */
+export function startedNginxDefault(content: string, limit: unknown): string {
+  return content.includes('client_max_body_size') ? content : `${content}client_max_body_size ${limit || '10M'};\n`;
+}
+
+/**
+ * Whether the shared proxy settings of the config (`proxy.shared`, as `proxy reconfig-shared`
+ * would upload them) differ in effect from the files on one proxy server (proxy spec §4.2):
+ * `nginx-default.conf` also matches with the `client_max_body_size` line the proxy's `start.sh`
+ * appends; the other files must match exactly. Nothing is printed: `env.list` can hold secrets.
+ */
+export async function sharedSettingsDrift(conn: SshConnection, c: NormalizedConfig, o: { basePath: string; cwd: string }): Promise<boolean> {
+  const want = await renderSharedFiles(c, o);
+  const limit = (c.proxy?.shared as Record<string, unknown> | undefined)?.clientUploadLimit;
+  const dir = `${PROXY_DIR}/config`;
+  const [sharedConfig, env, envLe, nginxDefault, template] = await Promise.all(
+    ['shared-config.sh', 'env.list', 'env_letsencrypt.list', 'nginx-default.conf', 'nginx-shared.tmpl'].map((f) => readRemote(conn, `${dir}/${f}`)),
+  );
+  return (
+    sharedConfig !== want.sharedConfigSh ||
+    env !== want.envList ||
+    envLe !== want.envLetsEncryptList ||
+    (nginxDefault !== want.nginxDefaultConf && nginxDefault !== startedNginxDefault(want.nginxDefaultConf, limit)) ||
+    template !== want.template
+  );
 }

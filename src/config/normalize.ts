@@ -18,7 +18,9 @@ import type { CometOptions, NormalizedConfig, RawConfig } from './types.js';
  * - `transfer: 'auto'` and `platform: 'auto'`: work without configuration (reverse tunnel,
  *   platform from each server's `uname -m`).
  * - `keepVersions: 5`: a few versions to roll back to without filling the servers' disks.
- * - `zeroDowntime: true`: reserved for deploys behind the proxy (phase 2); no effect yet.
+ * - `zeroDowntime: true`: behind the proxy a new container replaces the running one without a
+ *   gap, and load-balanced servers are taken out of the upstream while they restart; `false`
+ *   restarts in place like MUP.
  * - `healthCheck: { path: '/', maxStatus: 499 }`: MUP's deploy check accepts any HTTP answer,
  *   even a 500. comet-deploy fails the check on a 5xx but passes a 4xx, because an app that
  *   answers 401 or 404 on `/` is up.

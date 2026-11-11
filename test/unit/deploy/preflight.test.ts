@@ -164,3 +164,19 @@ describe('runPreflight', () => {
     expect(String(err instanceof Error ? err.message : '')).not.toMatch(/tools\/meteor/);
   });
 });
+
+describe('evaluatePreflight: proxy servers', () => {
+  it('requires a running proxy on every proxy server', () => {
+    const r = evaluatePreflight(input({ proxyServers: { one: { proxyRunning: false } } }));
+    expect(r.errors).toEqual([
+      'Server "one": the reverse proxy is not set up (container mup-nginx-proxy is missing or stopped). Run "comet-deploy proxy setup" first.',
+    ]);
+    expect(evaluatePreflight(input({ proxyServers: { one: { proxyRunning: true } } })).errors).toEqual([]);
+  });
+
+  it('reports a proxy server that cannot be reached once', () => {
+    expect(evaluatePreflight(input({ proxyServers: { edge: { error: 'connect ETIMEDOUT' } } })).errors).toEqual(['Server "edge": connect ETIMEDOUT']);
+    const both = evaluatePreflight(input({ servers: { one: { error: 'connect ETIMEDOUT' } }, proxyServers: { one: { error: 'connect ETIMEDOUT' } } }));
+    expect(both.errors).toEqual(['Server "one": connect ETIMEDOUT']);
+  });
+});

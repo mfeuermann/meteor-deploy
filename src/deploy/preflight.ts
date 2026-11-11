@@ -13,6 +13,7 @@ import { buildxPlatforms, dockerAvailable } from '../local/docker.js';
 import { run } from '../local/exec.js';
 import { readLock, serverFacts, type LockInfo, type ServerFacts } from '../remote/ops.js';
 import { probeForwarding } from '../transfer/tunnel.js';
+import { PROXY_NAME, PROXY_NOT_SET_UP } from '../proxy/render.js';
 
 export type { Platform };
 
@@ -41,6 +42,11 @@ export interface PreflightInput {
    * server refuses reverse port forwarding (null/absent = it works or was not checked).
    */
   servers: Record<string, { facts?: ServerFacts; error?: string; lock?: LockInfo | null; forwardingError?: string | null }>;
+  /**
+   * The servers the reverse proxy runs on (`proxy.servers`, else the app servers): whether
+   * `mup-nginx-proxy` runs there, or `error` when that could not be read. Absent without a proxy.
+   */
+  proxyServers?: Record<string, { proxyRunning?: boolean; error?: string }>;
   /** `cometDeploy.platform`: `auto` (from `uname -m`) or a fixed platform for every server. */
   override: CometOptions['platform'];
   /** Whether this command builds locally; the local checks only matter then. */
@@ -133,6 +139,15 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
     }
   }
 
+  for (const [name, p] of Object.entries(i.proxyServers ?? {})) {
+    if (p.error) {
+      // An app server that cannot be reached is reported above already.
+      if (!i.servers[name]?.error) errors.push(`Server "${name}": ${p.error}`);
+    } else if (p.proxyRunning === false) {
+      errors.push(`Server "${name}": ${PROXY_NOT_SET_UP}`);
+    }
+  }
+
   const platforms = [...new Set(Object.values(platformByServer))];
   // Only when Docker works: otherwise buildx reports no platforms and every platform would
   // repeat the Docker error in a less helpful form.
@@ -156,8 +171,14 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
  * Collects the local and per-server facts in parallel (read-only on the servers), prints the
  * warnings and throws one `CometError` that lists every error. Returns the platform plan.
  */
-export async function runPreflight(ctx: CommandContext, servers: string[], o: { needsBuild: boolean; checkLocks: boolean; distributes: boolean }): Promise<PreflightResult> {
+export async function runPreflight(
+  ctx: CommandContext,
+  servers: string[],
+  o: { needsBuild: boolean; checkLocks: boolean; distributes: boolean; proxyServers?: string[] },
+): Promise<PreflightResult> {
   const appName = ctx.config.app.name;
+  const proxyServers = o.proxyServers ?? [];
+  const proxyName = (s: string) => (proxyServers.includes(s) ? PROXY_NAME : undefined);
   // Started first and awaited last, so the local checks overlap with the SSH round trips.
   const localP = o.needsBuild
     ? Promise.all([dockerAvailable(), buildxPlatforms(), run(meteorExecutable(ctx.config.app), ['--version'], { cwd: resolveAppPath(ctx.config, ctx.basePath) }).then((r) => r.code === 0)])
@@ -167,14 +188,27 @@ export async function runPreflight(ctx: CommandContext, servers: string[], o: { 
   const serverResults = await Promise.allSettled(
     servers.map(async (name) => {
       const conn = await ctx.ssh.get(name);
-      const facts = await serverFacts(conn, o.distributes ? appName : undefined);
+      const facts = await serverFacts(conn, o.distributes ? appName : undefined, { proxyName: proxyName(name) });
       const lock = o.checkLocks ? await readLock(conn, appName) : null;
       // The image reaches the servers through a reverse tunnel; `meteor build` sends nothing.
       const forwardingError = o.distributes ? await probeForwarding(conn) : null;
       return { facts, lock, forwardingError };
     }),
   );
+  // Proxy servers without the app (`proxy.servers`) only need to run the proxy.
+  const proxyOnly = proxyServers.filter((s) => !servers.includes(s));
+  const proxyOnlyResults = await Promise.allSettled(proxyOnly.map(async (name) => serverFacts(await ctx.ssh.get(name), undefined, { proxyName: PROXY_NAME })));
   const [docker, platforms, meteorOk] = await localP;
+  const reason = (e: unknown) => (e as Error)?.message ?? String(e);
+  const proxyFacts = (name: string): { proxyRunning?: boolean; error?: string } => {
+    const i = servers.indexOf(name);
+    if (i >= 0) {
+      const r = serverResults[i];
+      return r.status === 'fulfilled' ? { proxyRunning: r.value.facts.proxyRunning } : { error: reason(r.reason) };
+    }
+    const r = proxyOnlyResults[proxyOnly.indexOf(name)];
+    return r.status === 'fulfilled' ? { proxyRunning: r.value.proxyRunning } : { error: reason(r.reason) };
+  };
   const input: PreflightInput = {
     local: { docker, platforms: [...platforms], meteorOk, meteorExecutable: meteorExecutable(ctx.config.app) },
     servers: Object.fromEntries(
@@ -183,6 +217,7 @@ export async function runPreflight(ctx: CommandContext, servers: string[], o: { 
         return [name, r.status === 'fulfilled' ? r.value : { error: (r.reason as Error)?.message ?? String(r.reason) }];
       }),
     ),
+    ...(proxyServers.length ? { proxyServers: Object.fromEntries(proxyServers.map((s) => [s, proxyFacts(s)])) } : {}),
     override: ctx.config.cometDeploy.platform,
     needsBuild: o.needsBuild,
     checkLocks: o.checkLocks,

@@ -11,20 +11,24 @@
  *     Every problem is reported here, before anything is built or changed.
  *  2. Build: once per target platform, locally, or reused from the build cache.
  *     `meteor build` stops here.
- *  3. Lock: the deploy lock on every server. Everything before this step only reads from the
- *     servers; everything after it runs in a `try` whose `finally` releases the locks.
+ *  3. Lock: the deploy lock on every server (with load balancing on every app server, see
+ *     `lockTargets`). Everything before this step only reads from the servers; everything after
+ *     it runs in a `try` whose `finally` releases the locks.
  *  4. Distribute: push to the local registry, then every server pulls the missing layers through
  *     an SSH reverse tunnel. The running app is not touched yet. `meteor push` stops here.
  *  5. Activate: server by server according to the strategy (canary, rolling or parallel); see
  *     `activateServer` for snapshot → retag → write config → start → health check → revert.
+ *     Behind the reverse proxy a `ProxyRollout` (src/proxy/rollout.ts) wraps this phase: it
+ *     syncs the app's proxy files first, drains load-balanced servers while they restart or
+ *     replaces the container without downtime, and finishes the proxy before the unlock.
  *  6. History: one entry per server that was activated.
  *  7. Prune: old version tags and dangling images, on the servers that ended healthy.
  *  8. Unlock (`finally`): release the locks and this deploy's lease on the local registry.
  *  9. Summary: the per-server table, the log tails of failed servers and a warning when the
  *     servers ended on different versions.
  *
- * `reconfig`, `restart` and `rollback` share the lock → strategy → history → unlock part
- * (`lockedRollout`). Every step runs inside `ctx.runner.run()` under MUP's command key and in MUP's
+ * `reconfig`, `restart` and `rollback` share the proxy rollout → lock → strategy → history →
+ * unlock part (`lockedRollout`). Every step runs inside `ctx.runner.run()` under MUP's command key and in MUP's
  * nesting, so a hook configured for any of them is refused instead of silently skipped.
  */
 import { hostname } from 'node:os';
@@ -52,6 +56,7 @@ import {
   type HistoryEntry,
   type LockInfo,
 } from '../remote/ops.js';
+import { createProxyRollout, lockTargets, rolloutProxies } from '../proxy/rollout.js';
 import type { SshConnection } from '../ssh/connection.js';
 import { distributeToServer } from '../transfer/distribute.js';
 import { ensureLocalRegistry, pushToLocalRegistry, stopLocalRegistry } from '../transfer/local-registry.js';
@@ -60,6 +65,7 @@ import { deployerName, makeHistoryEntry, versionOutcomes } from './history.js';
 import { runPreflight } from './preflight.js';
 import { chooseRollbackTarget, type RollbackTarget } from './rollback.js';
 import { runStrategy } from './strategy.js';
+import type { SwitchMode } from './zero-downtime.js';
 
 /**
  * Everything the pipelines call that touches Docker, SSH, the servers or git. The defaults are
@@ -83,6 +89,8 @@ export interface PipelineDeps {
   pruneImages: typeof pruneImages;
   readHistory: typeof readHistory;
   readGitInfo: typeof readGitInfo;
+  /** The proxy part of the rollouts (null without a `proxy` section). */
+  createProxyRollout: typeof createProxyRollout;
   /**
    * Aborted by the CLI on the first Ctrl+C / SIGTERM: the running step finishes, no further
    * server is started, the locks are released and the command exits with code 130.
@@ -123,17 +131,17 @@ const DEFAULT_DEPS: PipelineDeps = {
   pruneImages,
   readHistory,
   readGitInfo,
+  createProxyRollout,
 };
 
 /**
- * Refuses the config sections this release cannot run yet (`proxy`, `mongo`,
- * `privateDockerRegistry`, the `registry` / `stream` transfers) with a `CometError`. Called before
- * anything else, so such a config fails up front instead of halfway through a deploy.
+ * Refuses the config sections this release cannot run yet (`mongo`, `privateDockerRegistry`, the
+ * `registry` / `stream` transfers) with a `CometError`. Called before anything else, so such a
+ * config fails up front instead of halfway through a deploy.
  */
 export function assertPhase1Supported(ctx: CommandContext): void {
   const c = ctx.config;
   const phase2 = (what: string) => new CometError(`${what} is not supported yet (planned for phase 2 of comet-deploy).`);
-  if (c.proxy) throw phase2('The "proxy" section');
   if (c.mongo) throw phase2('The "mongo" section');
   if (c.privateDockerRegistry) throw phase2('"privateDockerRegistry"');
   if (c.cometDeploy.transfer === 'registry' || c.cometDeploy.transfer === 'stream') throw phase2(`cometDeploy.transfer "${c.cometDeploy.transfer}"`);
@@ -359,17 +367,25 @@ export async function deployPipeline(
   const step = <T>(key: string, fn: () => Promise<T>): Promise<T> => (keys.includes(key) ? run.run(key, fn) : fn());
 
   return step('meteor.deploy', async () => {
+    // Only a full deploy goes through the proxy; `meteor build` / `meteor push` do not touch the app.
+    const proxied = !!c.proxy && !o.stopAfter;
     // A held lock only matters when this run will take one: `meteor build` never locks, and
     // `--force-unlock` releases the lock anyway.
-    const pre = await r.phase('Preflight', () => d.preflight(ctx, servers, {
+    const pre = await r.phase('Preflight', () =>
+      d.preflight(ctx, servers, {
         needsBuild: true,
         checkLocks: c.cometDeploy.lock && o.stopAfter !== 'build' && !o.forceUnlock,
         distributes: o.stopAfter !== 'build',
-      }));
+        ...(proxied ? { proxyServers: rolloutProxies(ctx) } : {}),
+      }),
+    );
     // Loaded before the build, as MUP's deploy does first: a missing or invalid settings file
     // fails now, and its values are registered as secrets before any later output is printed.
     const settings = ctx.getSettings();
     await checkEnvLists(ctx, servers, settings);
+    // Before the build too: a proxy file the config names that cannot be read fails now.
+    const rollout = proxied ? await d.createProxyRollout(ctx, { action: 'deploy', strategy }) : null;
+    let proxyWarnings: string[] = [];
     let built: BuiltImage[] = [];
     let results: ActivationResult[] = [];
     let skipped: string[] = [];
@@ -403,7 +419,7 @@ export async function deployPipeline(
     // does not touch them and can take minutes, which would block every other deploy, rollback or
     // restart for that long; preflight has already reported a held lock before the build.
     // `lockServers` cleans up after itself when it fails, so it stays outside the `try`.
-    const locked = await r.phase('Lock', () => lockServers(ctx, servers, 'deploy', d, { force: o.forceUnlock }));
+    const locked = await r.phase('Lock', () => lockServers(ctx, rollout ? lockTargets(ctx) : servers, 'deploy', d, { force: o.forceUnlock }));
     // Tells the `finally` whether this deploy holds a lease on the shared local registry.
     let registryStarted = false;
     try {
@@ -445,6 +461,9 @@ export async function deployPipeline(
       aborted(d.signal);
       if (o.stopAfter === 'push') return { version: deployedVersion, results, skipped, ok: true };
 
+      // The app's proxy files are brought in line before the first server switches to the new
+      // version; nothing of the running app is changed by that.
+      if (rollout) await rollout.prepare();
       // MUP's deploy continues with `default.reconfig` → `meteor.envconfig` → `meteor.start`.
       // One activation per server does all three, but the keys are entered in the same nesting
       // so that hooks on them are refused.
@@ -455,11 +474,14 @@ export async function deployPipeline(
               runStrategy(
                 servers,
                 strategy,
-                async (s) =>
-                  d.activateServer(
-                    { conn: await ctx.ssh.get(s), config: c, settings, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: r },
-                    { version: imageFor(s).version, mode: 'deploy' },
-                  ),
+                async (s) => {
+                  const activate = async (mode?: SwitchMode) =>
+                    d.activateServer(
+                      { conn: await ctx.ssh.get(s), config: c, settings, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: r },
+                      { version: imageFor(s).version, mode: 'deploy', switch: mode },
+                    );
+                  return rollout ? rollout.activate(s, activate) : activate();
+                },
                 d.signal,
               ),
             ),
@@ -491,14 +513,17 @@ export async function deployPipeline(
       );
     } finally {
       // Runs on success, on any error and on abort (including the `meteor push` return above).
-      // Neither call throws. `stopLocalRegistry` drops this deploy's lease and stops the
-      // container only when no other deploy on this machine still holds one.
+      // None of these calls throws. The proxy is finished while the locks are still held, so no
+      // other deploy rewrites the upstream in between. `stopLocalRegistry` drops this deploy's
+      // lease and stops the container only when no other deploy on this machine still holds one.
+      if (rollout) proxyWarnings = await rollout.finish(results);
       await releaseServers(ctx, locked, d);
       if (registryStarted) await d.stopLocalRegistry().catch(() => {});
     }
 
     // The summary is printed even after an abort; the abort error (exit code 130) follows it.
     reportOutcome(ctx, summaryRows(results, skipped, (s) => imageFor(s).version), results, skipped, deployedVersion);
+    for (const w of proxyWarnings) r.warn(w);
     aborted(d.signal);
     const ok = skipped.length === 0 && results.every((x) => x.status === 'healthy');
     return { version: deployedVersion, results, skipped, ok };
@@ -544,31 +569,45 @@ async function writeHistory(
 }
 
 /**
- * The common part of `reconfig`, `restart` and `rollback`: lock → `fn` on each server by strategy
- * → history → unlock. The locks are released even when something throws. `fn` handles one server;
- * if it throws, `runStrategy` records a failed result instead. Printing the summary is left to
- * the caller, which knows how to word it.
+ * Runs one server's change through the proxy rollout (drain, switch mode) when there is one, else
+ * directly with no switch mode.
+ */
+type ThroughProxy = (run: (mode?: SwitchMode) => Promise<ActivationResult>) => Promise<ActivationResult>;
+
+/**
+ * The common part of `reconfig`, `restart` and `rollback`: proxy rollout → lock → `fn` on each
+ * server by strategy → history → proxy finish → unlock. The locks are released even when
+ * something throws. `fn` handles one server and passes the part that changes the app through
+ * `through`; if it throws, `runStrategy` records a failed result instead. Printing the summary
+ * (and the proxy warnings after it) is left to the caller, which knows how to word it.
  */
 async function lockedRollout(
   ctx: CommandContext,
   o: { action: 'reconfig' | 'restart' | 'rollback'; strategy?: CometOptions['strategy']; phase: string; forceUnlock?: boolean; versionOf?: (s: string) => string | null },
   d: PipelineDeps,
-  fn: (s: string) => Promise<ActivationResult>,
-): Promise<LifecycleOutcome> {
+  fn: (s: string, through: ThroughProxy) => Promise<ActivationResult>,
+): Promise<LifecycleOutcome & { proxyWarnings: string[] }> {
   const servers = ctx.appServers();
   if (servers.length === 0) throw new CometError('No app servers selected.');
+  const strategy = o.strategy ?? ctx.config.cometDeploy.strategy;
+  // Before the lock: a proxy file that cannot be read or a proxy that does not run fails now.
+  const rollout = await d.createProxyRollout(ctx, { action: o.action, strategy });
   const startedAt = new Date();
-  const locked = await ctx.reporter.phase('Lock', () => lockServers(ctx, servers, o.action, d, { force: o.forceUnlock }));
+  const locked = await ctx.reporter.phase('Lock', () => lockServers(ctx, rollout ? lockTargets(ctx) : servers, o.action, d, { force: o.forceUnlock }));
   let results: ActivationResult[] = [];
   let skipped: string[] = [];
+  let proxyWarnings: string[] = [];
   try {
-    ({ results, skipped } = await ctx.reporter.phase(o.phase, () => runStrategy(servers, o.strategy ?? ctx.config.cometDeploy.strategy, fn, d.signal)));
+    if (rollout) await rollout.prepare();
+    const through = (s: string): ThroughProxy => (run) => (rollout ? rollout.activate(s, run) : run());
+    ({ results, skipped } = await ctx.reporter.phase(o.phase, () => runStrategy(servers, strategy, (s) => fn(s, through(s)), d.signal)));
     await writeHistory(ctx, d, { action: o.action, results, startedAt, servers, versionOf: o.versionOf });
   } finally {
+    if (rollout) proxyWarnings = await rollout.finish(results);
     await releaseServers(ctx, locked, d);
   }
   const ok = skipped.length === 0 && results.every((x) => x.status === 'healthy');
-  return { results, skipped, ok };
+  return { results, skipped, ok, proxyWarnings };
 }
 
 /**
@@ -587,16 +626,23 @@ export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: Come
         // while no server is locked yet.
         const settings = ctx.getSettings();
         await checkEnvLists(ctx, ctx.appServers(), settings);
-        const outcome = await lockedRollout(ctx, { action: 'reconfig', strategy: o.strategy, phase: 'Reconfigure', forceUnlock: o.forceUnlock }, d, async (s) =>
-          d.activateServer(
-            { conn: await ctx.ssh.get(s), config: ctx.config, settings, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: ctx.reporter },
-            { version: null, mode: 'reconfig' },
-          ),
+        const { proxyWarnings, ...outcome } = await lockedRollout(
+          ctx,
+          { action: 'reconfig', strategy: o.strategy, phase: 'Reconfigure', forceUnlock: o.forceUnlock },
+          d,
+          async (s, through) =>
+            through(async (mode) =>
+              d.activateServer(
+                { conn: await ctx.ssh.get(s), config: ctx.config, settings, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: ctx.reporter },
+                { version: null, mode: 'reconfig', switch: mode },
+              ),
+            ),
         );
         reportOutcome(ctx, summaryRows(outcome.results, outcome.skipped, () => null, 'not reconfigured (an earlier server failed)'), outcome.results, outcome.skipped, null, {
           mixed: (healthy, others) =>
             `MIXED CONFIGURATION: ${healthy.join(', ')} run the new configuration; ${others.join(', ')} kept the previous one. Fix the problem and run "comet-deploy reconfig" again.`,
         });
+        for (const w of proxyWarnings) ctx.reporter.warn(w);
         aborted(d.signal, 'Reconfig');
         return outcome;
       }),
@@ -608,21 +654,31 @@ export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: Come
  * `restart` (MUP `meteor.restart`): stop + start + health check per server by
  * strategy. Nothing changes on the server, so there is nothing to revert.
  * MUP restarts server after server; here the strategy decides, and the deploy
- * lock keeps a restart from running into a deploy.
+ * lock keeps a restart from running into a deploy. With the zero-downtime switch the app is
+ * not stopped first: a new container replaces it once it is healthy and routed to.
  */
 export async function restartPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy']; forceUnlock?: boolean }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
   return ctx.runner.run('meteor.restart', async () => {
     const stopScript = await renderMeteorStop(ctx.config);
-    const outcome = await lockedRollout(ctx, { action: 'restart', strategy: o.strategy, phase: 'Restart', forceUnlock: o.forceUnlock }, d, async (s) => {
-      const conn = await ctx.ssh.get(s);
-      ctx.reporter.server(s, 'stop', 'running');
-      await conn.runScriptOrThrow(stopScript, 'Stopping the app', verboseOutput(ctx.reporter, s));
-      return d.startServer({ conn, config: ctx.config, serverName: s, reporter: ctx.reporter });
-    });
+    const { proxyWarnings, ...outcome } = await lockedRollout(
+      ctx,
+      { action: 'restart', strategy: o.strategy, phase: 'Restart', forceUnlock: o.forceUnlock },
+      d,
+      async (s, through) =>
+        through(async (mode) => {
+          const conn = await ctx.ssh.get(s);
+          const deps = { conn, config: ctx.config, serverName: s, reporter: ctx.reporter };
+          if (mode?.kind === 'zero-downtime') return d.startServer(deps, { switch: mode });
+          ctx.reporter.server(s, 'stop', 'running');
+          await conn.runScriptOrThrow(stopScript, 'Stopping the app', verboseOutput(ctx.reporter, s));
+          return d.startServer(deps);
+        }),
+    );
     reportOutcome(ctx, summaryRows(outcome.results, outcome.skipped, () => null, 'not restarted (an earlier server failed)'), outcome.results, outcome.skipped, null, {
       mixed: (healthy, others) => `${healthy.join(', ')} restarted; ${others.join(', ')} did not. Check the logs with "comet-deploy logs".`,
     });
+    for (const w of proxyWarnings) ctx.reporter.warn(w);
     aborted(d.signal, 'Restart');
     return outcome;
   });
@@ -720,11 +776,11 @@ export async function rollbackPipeline(
     return t?.kind === 'version' ? t.tag : null;
   };
   return ctx.runner.run('default.rollback', async () => {
-    const outcome = await lockedRollout(
+    const { proxyWarnings, ...outcome } = await lockedRollout(
       ctx,
       { action: 'rollback', strategy: o.strategy, phase: 'Rollback', forceUnlock: o.forceUnlock, versionOf: tagOf },
       d,
-      async (s) => {
+      async (s, through) => {
         const started = Date.now();
         const conn = await ctx.ssh.get(s);
         // The history is only needed for the automatic choice, which skips versions that never
@@ -735,13 +791,16 @@ export async function rollbackPipeline(
         ]);
         const target = chooseRollbackTarget(versions, o.to, outcomes?.succeeded);
         targets.set(s, target);
+        // Decided before `through`: a server without a target is not drained, it keeps running.
         if (target.kind === 'none') {
           ctx.reporter.server(s, 'rollback', 'failed', target.reason);
           return { server: s, status: 'failed', durationMs: Date.now() - started, error: target.reason };
         }
-        return d.activateServer(
-          { conn, config: ctx.config, settings: null, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: ctx.reporter },
-          { version: tagOf(s), mode: 'rollback' },
+        return through((mode) =>
+          d.activateServer(
+            { conn, config: ctx.config, settings: null, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: ctx.reporter },
+            { version: tagOf(s), mode: 'rollback', switch: mode },
+          ),
         );
       },
     );
@@ -754,6 +813,7 @@ export async function rollbackPipeline(
         `MIXED VERSIONS: ${healthy.join(', ')} were rolled back; ${others.join(', ')} were not. ` +
         `Fix the problem and run "comet-deploy rollback --servers ${others.join(',')}"${o.to ? ` --to ${o.to}` : ''}.`,
     });
+    for (const w of proxyWarnings) ctx.reporter.warn(w);
     aborted(d.signal, 'Rollback');
     // One version is reported when every server rolled back to the same target; servers that
     // went back to different versions are listed per server in the summary.

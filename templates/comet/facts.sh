@@ -33,3 +33,7 @@ if command -v bash >/dev/null 2>&1; then echo "bash=1"; else echo "bash=0"; fi
 # Only asked for by commands that need the app directories that `setup` creates.
 if [ -d <%- q(configDir) %> ]; then echo "app_setup=1"; else echo "app_setup=0"; fi
 <% } %>
+<% if (proxyName) { %>
+# Only asked for on the servers the reverse proxy runs on.
+if [ "$(sudo docker inspect -f '{{.State.Running}}' <%- q(proxyName) %> 2>/dev/null)" = "true" ]; then echo "proxy_running=1"; else echo "proxy_running=0"; fi
+<% } %>

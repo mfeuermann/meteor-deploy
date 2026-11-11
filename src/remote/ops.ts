@@ -84,6 +84,8 @@ export interface ServerFacts {
   sudo: 'ok' | 'password' | 'missing';
   /** Whether `/opt/<app>/config` exists (`setup` was run); undefined when it was not asked for. */
   appSetup?: boolean;
+  /** Whether the reverse proxy container `mup-nginx-proxy` runs; undefined when it was not asked for. */
+  proxyRunning?: boolean;
 }
 
 /**
@@ -106,16 +108,18 @@ export function parseFacts(stdout: string): ServerFacts {
     hasBash: kv.get('bash') === '1',
     sudo: kv.get('sudo') === 'password' ? 'password' : kv.get('sudo') === 'missing' ? 'missing' : 'ok',
     ...(kv.has('app_setup') ? { appSetup: kv.get('app_setup') === '1' } : {}),
+    ...(kv.has('proxy_running') ? { proxyRunning: kv.get('proxy_running') === '1' } : {}),
   };
 }
 
 /**
- * Reads the facts of one server; with `appName` also whether the app was set up there. Throws
- * CometError when the script itself fails.
+ * Reads the facts of one server; with `appName` also whether the app was set up there, with
+ * `o.proxyName` whether that proxy container runs. Throws CometError when the script itself fails.
  */
-export async function serverFacts(conn: SshConnection, appName?: string): Promise<ServerFacts> {
+export async function serverFacts(conn: SshConnection, appName?: string, o: { proxyName?: string } = {}): Promise<ServerFacts> {
   // `sh -s`: works even where bash is missing, which is one of the facts.
-  const r = await conn.exec('sh -s', { stdin: await comet('facts.sh', { configDir: appName === undefined ? null : configDir(appName) }) });
+  const vars = { configDir: appName === undefined ? null : configDir(appName), proxyName: o.proxyName ?? null };
+  const r = await conn.exec('sh -s', { stdin: await comet('facts.sh', vars) });
   if (r.code !== 0) throw new CometError(`[${conn.name}] Cannot read server facts: ${r.stderr.trim() || `exit ${r.code}`}`);
   return parseFacts(r.stdout);
 }

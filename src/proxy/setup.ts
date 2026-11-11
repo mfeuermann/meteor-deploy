@@ -17,7 +17,7 @@ import { CometError } from '../core/errors.js';
 import { lockServers, releaseServers, type PipelineDeps } from '../deploy/pipeline.js';
 import { verboseOutput } from '../output/lines.js';
 import { runOnServers } from '../remote/on-servers.js';
-import { acquireLock, cometScript, readLock, releaseLock, shArg } from '../remote/ops.js';
+import { acquireLock, cometScript, readLock, releaseLock } from '../remote/ops.js';
 import type { SshConnection } from '../ssh/connection.js';
 import {
   loadBalancingHosts,
@@ -35,7 +35,17 @@ import {
   renderServiceConfigureSh,
   renderSharedFiles,
 } from './render.js';
-import { desiredProxyFiles, planProxySync, readProxyFileState, regenerateNginx, removeLoadBalancing, syncCerts, writeUpstreamFile } from './sync.js';
+import {
+  desiredProxyFiles,
+  planProxySync,
+  readProxyFileState,
+  readRemote,
+  regenerateNginx,
+  removeLoadBalancing,
+  startedNginxDefault,
+  syncCerts,
+  writeUpstreamFile,
+} from './sync.js';
 import { desiredEntries, formatUpstream, parseUpstream } from './upstream.js';
 
 /** The lock functions the proxy commands use (tests replace them). */
@@ -93,13 +103,6 @@ export async function proxyInputsDigest(conn: SshConnection): Promise<ProxyInput
   const digest = /^digest=(\S+)$/m.exec(r.stdout)?.[1];
   if (!digest) throw new CometError(`[${conn.name}] Unexpected output of the proxy file check:\n${r.stdout.slice(-2000)}`);
   return { digest, running: /^running=1$/m.test(r.stdout) };
-}
-
-/** A remote file's content, or null when it is missing. */
-async function readRemote(conn: SshConnection, path: string): Promise<string | null> {
-  const r = await conn.exec(`if sudo test -f ${shArg(path)}; then sudo base64 -w0 ${shArg(path)}; else echo -; fi`);
-  const v = r.stdout.trim();
-  return r.code !== 0 || v === '-' ? null : Buffer.from(v, 'base64').toString('utf8');
 }
 
 /**
@@ -198,14 +201,6 @@ export async function proxyStop(ctx: CommandContext, d: ProxyLockDeps = LOCK_DEP
       });
     }),
   );
-}
-
-/**
- * `nginx-default.conf` as it is after a proxy start: `start.sh` appends
- * `client_max_body_size <limit>;` when the file does not mention it.
- */
-function startedNginxDefault(content: string, limit: unknown): string {
-  return content.includes('client_max_body_size') ? content : `${content}client_max_body_size ${limit || '10M'};\n`;
 }
 
 /**
