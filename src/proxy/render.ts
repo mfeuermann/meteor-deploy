@@ -52,7 +52,7 @@ export function upstreamPort(c: NormalizedConfig): number {
 }
 
 /** Reads a file named by a config key; a failure names the key and the path. */
-function readConfigFile(key: string, path: string): string {
+export function readConfigFile(key: string, path: string): string {
   try {
     return readFileSync(path, 'utf8');
   } catch (err) {
