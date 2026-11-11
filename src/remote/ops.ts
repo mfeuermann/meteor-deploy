@@ -159,6 +159,13 @@ function splitStatus(stdout: string): { status: string; rest: string } {
 }
 
 /**
+ * The app's config directory is missing (or cannot be written), so the server was not set up
+ * with `comet-deploy setup` (or `meteor setup`) yet. Commands that may run before the app setup,
+ * like `proxy setup`, skip the lock on such a server.
+ */
+export class SetupMissingError extends CometError {}
+
+/**
  * Tries to take the deploy lock on one server. The holder info is first uploaded by SFTP to a
  * uniquely named temp file (so it never passes through a shell); lock-acquire.sh then creates
  * the lock directory with `mkdir`, which succeeds for exactly one of several concurrent
@@ -172,7 +179,7 @@ export async function acquireLock(conn: SshConnection, appName: string, info: Lo
   try {
     await conn.writeFile(tmpInfo, JSON.stringify(info), 0o600);
   } catch (err) {
-    throw new CometError(`[${conn.name}] Cannot write to ${configDir(appName)}: ${(err as Error).message}`, {
+    throw new SetupMissingError(`[${conn.name}] Cannot write to ${configDir(appName)}: ${(err as Error).message}`, {
       hint: 'Run "comet-deploy setup" first.',
     });
   }
@@ -180,7 +187,7 @@ export async function acquireLock(conn: SshConnection, appName: string, info: Lo
   const { status, rest } = splitStatus(r.stdout);
   if (status === 'acquired') return { ok: true };
   if (status === 'missing-config') {
-    throw new CometError(`[${conn.name}] ${configDir(appName)} does not exist.`, { hint: 'Run "comet-deploy setup" first.' });
+    throw new SetupMissingError(`[${conn.name}] ${configDir(appName)} does not exist.`, { hint: 'Run "comet-deploy setup" first.' });
   }
   return { ok: false, holder: parseHolder(rest) };
 }

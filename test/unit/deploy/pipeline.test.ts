@@ -3,9 +3,9 @@ import type { BuiltImage } from '../../../src/build/index.js';
 import { createContext, type CommandContext } from '../../../src/core/context.js';
 import { CometError } from '../../../src/core/errors.js';
 import type { ActivationResult } from '../../../src/deploy/activate.js';
-import { deployPipeline, type PipelineDeps } from '../../../src/deploy/pipeline.js';
+import { deployPipeline, lockServers, type PipelineDeps } from '../../../src/deploy/pipeline.js';
 import { createReporter } from '../../../src/output/reporter.js';
-import type { HistoryEntry } from '../../../src/remote/ops.js';
+import { SetupMissingError, type HistoryEntry } from '../../../src/remote/ops.js';
 import type { SshConnection } from '../../../src/ssh/connection.js';
 import { tempDir } from '../../helpers/fs.js';
 
@@ -291,5 +291,21 @@ describe('deployPipeline', () => {
     expect(p.calls.some((c) => c.startsWith('activate'))).toBe(false);
     expect(p.calls).toContain('distribute:two:mup-myapp:20261107-183005');
     expect(p.calls).toEqual(expect.arrayContaining(['release:one', 'release:two', 'stop-registry']));
+  });
+
+  it('lockServers with skipNotSetUp skips a server that is not set up and still reports other errors', async () => {
+    const s = await setup();
+    const deps = s.deps as PipelineDeps;
+    deps.acquireLock = async (conn) => {
+      if (conn.name === 'two') throw new SetupMissingError('[two] /opt/myapp/config does not exist.', { hint: 'Run "comet-deploy setup" first.' });
+      return { ok: true };
+    };
+    expect(await lockServers(s.ctx, ['one', 'two'], 'proxy setup', deps, { skipNotSetUp: true })).toEqual(['one']);
+    await expect(lockServers(s.ctx, ['one', 'two'], 'proxy setup', deps)).rejects.toThrow(/does not exist/);
+    deps.acquireLock = async (conn) => {
+      if (conn.name === 'two') throw new CometError('[two] Acquiring the deploy lock failed (exit code 1)');
+      return { ok: true };
+    };
+    await expect(lockServers(s.ctx, ['one', 'two'], 'proxy setup', deps, { skipNotSetUp: true })).rejects.toThrow(/exit code 1/);
   });
 });

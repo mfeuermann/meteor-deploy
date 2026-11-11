@@ -48,6 +48,7 @@ import {
   readHistory,
   readLock,
   releaseLock,
+  SetupMissingError,
   type HistoryEntry,
   type LockInfo,
 } from '../remote/ops.js';
@@ -205,21 +206,25 @@ async function forceUnlock(ctx: CommandContext, servers: string[], d: Pick<Pipel
  * Takes the deploy lock on every server in parallel, all or nothing: when any server is locked by
  * someone else or cannot be reached, the locks taken so far are released again and a `CometError`
  * lists every problem. Returns the servers that were locked (none when `cometDeploy.lock` is off);
- * that list is what the caller passes to `releaseServers`.
+ * that list is what the caller passes to `releaseServers`. With `skipNotSetUp`, a server whose
+ * app config directory is missing (`SetupMissingError`) is left out instead of failing the lock.
  */
 export async function lockServers(
   ctx: CommandContext,
   servers: string[],
   command: string,
   d: Pick<PipelineDeps, 'acquireLock' | 'releaseLock' | 'readLock'>,
-  o: { force?: boolean } = {},
+  o: { force?: boolean; skipNotSetUp?: boolean } = {},
 ): Promise<string[]> {
   if (!ctx.config.cometDeploy.lock) return [];
   if (o.force) await forceUnlock(ctx, servers, d);
   const info = lockInfo(command);
   const results = await Promise.allSettled(servers.map(async (s) => ({ s, r: await d.acquireLock(await ctx.ssh.get(s), ctx.config.app.name, info) })));
   const locked = results.flatMap((x) => (x.status === 'fulfilled' && x.value.r.ok ? [x.value.s] : []));
+  // A server without the app's config directory has no deploy running on it: nothing to lock.
+  const skipped = (x: PromiseSettledResult<unknown>) => !!o.skipNotSetUp && x.status === 'rejected' && x.reason instanceof SetupMissingError;
   const problems = results.flatMap((x, i) => {
+    if (skipped(x)) return [];
     if (x.status === 'rejected') return [`Server "${servers[i]}": ${(x.reason as Error)?.message ?? x.reason}`];
     if (!x.value.r.ok) {
       return [`Server "${servers[i]}" is locked by ${describeHolder(x.value.r.holder)}`];
@@ -231,7 +236,7 @@ export async function lockServers(
     // The "wait for the other deploy" hint only fits a lock that someone holds; a server error
     // brings its own hint (e.g. "run setup first"), each one given once.
     const held = results.some((x) => x.status === 'fulfilled' && !x.value.r.ok);
-    const hints = new Set(results.flatMap((x) => (x.status === 'rejected' && x.reason instanceof CometError && x.reason.hint ? [x.reason.hint] : [])));
+    const hints = new Set(results.flatMap((x) => (x.status === 'rejected' && !skipped(x) && x.reason instanceof CometError && x.reason.hint ? [x.reason.hint] : [])));
     if (held) hints.add('Wait for the other deploy to finish. If none is running, release the lock with "comet-deploy unlock" (or add --force-unlock).');
     throw new CometError(`Cannot lock the servers:\n${problems.map((p) => `  - ${p}`).join('\n')}`, {
       hint: hints.size ? [...hints].join('\n') : undefined,

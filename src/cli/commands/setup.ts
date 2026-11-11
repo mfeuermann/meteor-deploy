@@ -9,6 +9,7 @@ import { verboseOutput } from '../../output/lines.js';
 import { renderMeteorSetup } from '../../remote/app-files.js';
 import { runOnServers } from '../../remote/on-servers.js';
 import { renderTemplate } from '../../remote/render.js';
+import { proxySetup } from '../../proxy/setup.js';
 import type { ConfigCommand } from '../registry.js';
 
 /**
@@ -66,16 +67,17 @@ export async function meteorSetup(ctx: CommandContext): Promise<void> {
 
 /** `setup` (MUP `default.setup` → `docker.setup` → `meteor.setup`). */
 export async function setupAll(ctx: CommandContext): Promise<void> {
-  // All three keys now, so a hook on `meteor.setup` does not stop setup after Docker was set up.
-  ctx.runner.refuseHooks(['default.setup', 'docker.setup', 'meteor.setup']);
+  // All keys now, so a hook on a later step does not stop setup after Docker was set up.
+  const proxyKeys = ctx.config.proxy ? ['proxy.setup', 'proxy.start'] : [];
+  ctx.runner.refuseHooks(['default.setup', 'docker.setup', 'meteor.setup', ...proxyKeys]);
   await ctx.runner.run('default.setup', async () => {
-    // MUP would also set up these sections. Only warn, so a MUP config with them still gets
-    // Docker and the app directories.
-    for (const part of ['mongo', 'proxy'] as const) {
-      if (ctx.config[part]) ctx.reporter.warn(`The "${part}" section is not set up yet: it is planned for phase 2 of comet-deploy.`);
-    }
+    // MUP would also set up Mongo. Only warn, so a MUP config with it still gets Docker, the
+    // app directories and the proxy.
+    if (ctx.config.mongo) ctx.reporter.warn('The "mongo" section is not set up yet: it is planned for phase 2 of comet-deploy.');
     await dockerSetup(ctx);
     await meteorSetup(ctx);
+    // MUP's `post.setup` hook of the proxy plugin.
+    if (ctx.config.proxy) await proxySetup(ctx);
     ctx.reporter.info('\nNext, deploy the app with: comet-deploy deploy');
   });
 }

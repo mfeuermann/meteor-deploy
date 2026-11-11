@@ -7,6 +7,7 @@ import type { CommandContext } from '../../core/context.js';
 import { appDir, containerName, localImageRepo } from '../../core/naming.js';
 import { describeHolder } from '../../deploy/pipeline.js';
 import { formatTable } from '../../output/table.js';
+import { formatProxyStatus, proxyStatus } from '../../proxy/setup.js';
 import { cometScript, parseVersions, type LockInfo } from '../../remote/ops.js';
 import type { ConfigCommand } from '../registry.js';
 
@@ -119,11 +120,21 @@ async function status(ctx: CommandContext): Promise<void> {
 const overview = (y: import('yargs').Argv) => y.option('overview', { type: 'boolean', describe: 'Accepted for MUP compatibility (the output is always an overview)' });
 
 /** `status [--overview]`, under MUP's `default.status` key. */
+/** `proxy.status`: the shared proxy's status block (also MUP's `post.default.status`). */
+export async function showProxyStatus(ctx: CommandContext): Promise<void> {
+  const rows = await ctx.runner.run('proxy.status', () => proxyStatus(ctx));
+  ctx.reporter.info(formatProxyStatus(rows));
+}
+
 export const statusCommand: ConfigCommand = {
   command: 'status',
   describe: 'Show Docker, the app container, the running version, HTTP and locks per server',
   builder: overview,
-  run: (ctx) => ctx.runner.run('default.status', () => status(ctx)),
+  run: (ctx) =>
+    ctx.runner.run('default.status', async () => {
+      await status(ctx);
+      if (ctx.config.proxy) await showProxyStatus(ctx);
+    }),
 };
 
 /** `meteor status`: the same table, without the `default.status` key. */

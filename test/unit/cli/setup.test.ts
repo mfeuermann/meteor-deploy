@@ -19,7 +19,9 @@ const MUP = (extra = '') => `module.exports = {
 };`;
 
 const label = (s: string) =>
-  s.includes('minimumMajor=18')
+  s.includes('/opt/mup-nginx-proxy/certs')
+    ? 'proxy-setup'
+    : s.includes('minimumMajor=18')
     ? 'docker-setup'
     : s.includes('comet-deploy extras')
       ? 'destroy-extra'
@@ -45,9 +47,11 @@ async function setup(extra = '', servers?: string) {
       timeline.push(`start:${name}:${l}`);
       await new Promise((r) => setTimeout(r, 5));
       timeline.push(`end:${name}:${l}`);
-      return { code: 0, stdout: '', stderr: '' };
+      // The deploy lock of the proxy setup and the proxy's input digest need an answer.
+      const stdout = s.includes('echo "acquired"') ? 'acquired\n' : s.includes('# proxy-inputs.sh') ? 'digest=a\nrunning=1\n' : '';
+      return { code: 0, stdout, stderr: '' };
     };
-    return { name, host: name, runScript: run, runScriptOrThrow: run, exec: run } as unknown as SshConnection;
+    return { name, host: name, runScript: run, runScriptOrThrow: run, exec: run, writeFile: async () => {} } as unknown as SshConnection;
   };
   const ctx: CommandContext = await createContext(
     { config: '.deploy/mup.js', servers },
@@ -94,6 +98,15 @@ describe('setup', () => {
     expect(s.timeline.slice(0, 2).every((t) => t.startsWith('start:'))).toBe(true);
     expect(s.out()).toMatch(/mongo.*phase 2/i);
     expect(s.out()).toMatch(/comet-deploy deploy/);
+  });
+
+  it('sets up the proxy after the app, like MUP post.setup, without a "not set up yet" warning', async () => {
+    const s = await setup("proxy: { domains: 'a.com' },");
+    await setupAll(s.ctx);
+    expect(s.ctx.runner.history).toEqual(['default.setup', 'docker.setup', 'meteor.setup', 'proxy.setup', 'proxy.start']);
+    expect(s.out()).not.toMatch(/proxy.*not set up yet/i);
+    const firstProxy = s.timeline.findIndex((t) => t.endsWith(':proxy-setup'));
+    expect(firstProxy).toBeGreaterThan(s.timeline.map((t) => t.endsWith(':meteor-setup')).lastIndexOf(true));
   });
 
   it('respects --servers', async () => {

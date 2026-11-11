@@ -17,6 +17,7 @@ import { initCommand } from './commands/init.js';
 import { isEntryPoint } from './entry.js';
 import { LIFECYCLE_COMMANDS } from './commands/lifecycle.js';
 import { PHASE2_COMMANDS } from './commands/phase2.js';
+import { PROXY_COMMANDS } from './commands/proxy.js';
 import { rollbackCommand } from './commands/rollback.js';
 import { meteorSetupCommand, setupCommand } from './commands/setup.js';
 import { meteorStatusCommand, statusCommand } from './commands/status.js';
@@ -67,6 +68,7 @@ export const COMMANDS: CommandModule[] = [
   meteorStatusCommand,
   meteorDestroyCommand,
   ...DOCKER_COMMANDS,
+  ...PROXY_COMMANDS,
   ...PHASE2_COMMANDS,
 ];
 

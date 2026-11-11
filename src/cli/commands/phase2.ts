@@ -33,7 +33,6 @@ function planned(command: string, describe: string | false, group?: NoConfigComm
 
 /** Listed in `--help`; `meteor debug` under `meteor --help`. */
 export const PHASE2_COMMANDS: NoConfigCommand[] = [
-  planned('proxy [command..]', 'Reverse proxy commands (planned for phase 2)'),
   planned('mongo [command..]', 'MongoDB commands (planned for phase 2)'),
   planned('ssh [server] [command..]', 'Open a shell on a server (planned for phase 2)'),
   planned('debug', 'Debug the app (planned for phase 2)', 'meteor'),

@@ -262,8 +262,9 @@ async function upstreamScript(conn: SshConnection, c: NormalizedConfig, mode: 'w
 }
 
 /**
- * Writes `upstream/<app>` with `content` and links every domain to it, then reloads nginx; null
- * removes the file and the app's links without a reload (the caller regenerates the config).
+ * Writes `upstream/<app>` with `content` and links every domain to it, then reloads nginx when
+ * the proxy runs; null removes the file and the app's links without a reload (the caller
+ * regenerates the config).
  */
 export function writeUpstreamFile(conn: SshConnection, c: NormalizedConfig, content: string | null, out?: ExecOptions): Promise<void> {
   return upstreamScript(conn, c, content === null ? 'remove' : 'write', content, out);
@@ -280,7 +281,7 @@ async function reloadNginx(conn: SshConnection, out?: ExecOptions): Promise<void
 }
 
 /** MUP setup's certificate steps: cleanup, then (with a custom certificate) upload and links. */
-async function syncCerts(conn: SshConnection, c: NormalizedConfig, basePath: string, out?: ExecOptions): Promise<void> {
+export async function syncCerts(conn: SshConnection, c: NormalizedConfig, basePath: string, out?: ExecOptions): Promise<void> {
   await conn.runScriptOrThrow(await renderSslCleanupSh(c), 'Cleaning Up SSL Certificates', out);
   const files = customCertFiles(c, basePath);
   if (!files) return;
@@ -291,8 +292,13 @@ async function syncCerts(conn: SshConnection, c: NormalizedConfig, basePath: str
   await conn.runScriptOrThrow(await renderSslSetupSh(c), 'Setup SSL Certificates for Domains', out);
 }
 
-/** Removes the load balancing config container and its script (MUP leaves both behind). */
-async function removeConfigContainer(conn: SshConnection, c: NormalizedConfig, out?: ExecOptions): Promise<void> {
+/**
+ * Removes the app's load balancing from one proxy server: the upstream file and links, then the
+ * config container and its script (MUP leaves both behind, and the container's VIRTUAL_HOST
+ * would make nginx route to it). No reload: the caller regenerates the nginx config.
+ */
+export async function removeLoadBalancing(conn: SshConnection, c: NormalizedConfig, out?: ExecOptions): Promise<void> {
+  await writeUpstreamFile(conn, c, null, out);
   const name = shArg(`mup-proxy-configure-${c.app.name}`);
   const script = shArg(`/opt/${c.app.name}/config/proxy-config-container.sh`);
   const r = await conn.exec(`sudo docker rm -f ${name} > /dev/null 2>&1 || true; rm -f ${script}`, out);
@@ -322,8 +328,7 @@ export async function applyProxySync(
         await syncCerts(conn, c, basePath, out);
         break;
       case 'lb-remove':
-        await writeUpstreamFile(conn, c, null, out);
-        await removeConfigContainer(conn, c, out);
+        await removeLoadBalancing(conn, c, out);
         break;
       case 'lb-enable':
         await writeUpstreamFile(conn, c, formatUpstream(c, desiredEntries(c)), out);

@@ -8,7 +8,7 @@ import type { Argv } from 'yargs';
 import type { BaseContext, CommandContext, GlobalArgs } from '../core/context.js';
 
 /** Subcommand groups, as in MUP: `comet-deploy meteor <cmd>`, `comet-deploy docker <cmd>`. */
-export type CommandGroup = 'meteor' | 'docker';
+export type CommandGroup = 'meteor' | 'docker' | 'proxy';
 
 /** What every command module declares, whether it needs the config or not. */
 interface CommandBase {
@@ -52,6 +52,7 @@ export type MakeContext = (argv: GlobalArgs & Record<string, unknown>, needsConf
 const GROUP_DESCRIPTIONS: Record<CommandGroup, string> = {
   meteor: 'Meteor app commands',
   docker: 'Docker commands',
+  proxy: 'Reverse proxy commands',
 };
 
 /**

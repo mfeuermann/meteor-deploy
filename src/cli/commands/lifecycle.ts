@@ -59,9 +59,13 @@ export function buildLogsCommand(appName: string, passthrough: Array<string | nu
  * server that cannot be reached fails, and all such servers are reported together in one
  * `CometError` after the others have finished.
  */
-export async function streamLogs(ctx: CommandContext, passthrough: Array<string | number>): Promise<void> {
-  const cmd = buildLogsCommand(ctx.config.app.name, passthrough);
-  const servers = ctx.appServers();
+export async function streamLogs(
+  ctx: CommandContext,
+  passthrough: Array<string | number>,
+  o: { container?: string; servers?: string[] } = {},
+): Promise<void> {
+  const cmd = buildLogsCommand(o.container ?? ctx.config.app.name, passthrough);
+  const servers = o.servers ?? ctx.appServers();
   const res = await Promise.allSettled(
     servers.map(async (s) => {
       const prefix = `[${ctx.config.servers[s]?.host ?? s}]`;

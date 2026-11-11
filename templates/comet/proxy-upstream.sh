@@ -35,5 +35,8 @@ sudo mv -f $UPSTREAM.tmp $UPSTREAM
 <% domains.forEach(function (domain) { -%>
 sudo ln -sfn ../upstream/$APPNAME <%- q(domain + '_upstream') %>
 <% }) -%>
-sudo docker exec $PROXYNAME nginx -s reload
+# Not running yet during the first proxy setup: its start generates the config with the file.
+if [ "$(sudo docker inspect -f '{{.State.Running}}' $PROXYNAME 2>/dev/null)" = true ]; then
+  sudo docker exec $PROXYNAME nginx -s reload
+fi
 <% } -%>
