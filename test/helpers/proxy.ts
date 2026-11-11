@@ -38,13 +38,14 @@ const describeUpstream = (proxy: string, content: string | null) =>
 
 /**
  * Proxy deps over fixed states (an `Error` makes reading that server fail). Records into `calls`:
- * `sync:<phase>:<proxy>:<steps>`, `upstream:…`, `shared:<proxy>`, and the controller's
+ * `sync:<phase>:<proxy>:<steps>`, `upstream:…`, `shared:<proxy>`, `publishes:<server>` (`o.publishes`
+ * lists the servers whose container publishes a host port), and the controller's
  * `drain:<s>`, `healthy:<s>`, `finalize:<keepDown>` (a real `UpstreamController` without the wait).
  */
 export function fakeProxyDeps(
   states: Record<string, ProxyFileState | Error>,
   calls: string[],
-  o: { failWrite?: string; failAfter?: boolean; drift?: boolean } = {},
+  o: { failWrite?: string; failAfter?: boolean; drift?: boolean; publishes?: string[] } = {},
 ): ProxyRolloutDeps {
   return {
     readProxyFileState: async (conn) => {
@@ -64,6 +65,10 @@ export function fakeProxyDeps(
     sharedSettingsDrift: async (conn) => {
       calls.push(`shared:${conn.name}`);
       return !!o.drift;
+    },
+    publishesHostPort: async (conn) => {
+      calls.push(`publishes:${conn.name}`);
+      return o.publishes?.includes(conn.name) ?? false;
     },
     upstreamController: (c, current, apply) => {
       const real = new UpstreamController(c, current, apply, { waitMs: 0 });

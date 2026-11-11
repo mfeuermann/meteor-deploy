@@ -59,7 +59,7 @@ describe('createProxyRollout', () => {
   });
 
   it('load balancing, canary: drains each server before its restart and returns it after its health check', async () => {
-    const { ctx } = await context(mup(LB));
+    const { ctx, output } = await context(mup(LB));
     const calls: string[] = [];
     const state = await inSyncState(ctx, { lb: 'keep' });
     const r = (await createProxyRollout(ctx, { action: 'deploy', strategy: 'canary' }, fakeProxyDeps({ one: state, two: state }, calls)))!;
@@ -67,6 +67,7 @@ describe('createProxyRollout', () => {
     const results = await roll(r, ['one', 'two'], calls);
     expect(await r.finish(results)).toEqual([]);
     expect(flow(calls)).toEqual(['drain:one', 'run:one:restart', 'healthy:one', 'drain:two', 'run:two:restart', 'healthy:two', 'finalize:']);
+    expect(output()).toMatch(/one\b.*drain.*out of load balancing/);
     // The drain reaches every proxy server before the restart.
     expect(calls.slice(calls.indexOf('drain:one'), calls.indexOf('run:one:restart'))).toEqual([
       'drain:one',
@@ -76,13 +77,14 @@ describe('createProxyRollout', () => {
   });
 
   it('load balancing, parallel: nothing is drained', async () => {
-    const { ctx } = await context(mup(LB));
+    const { ctx, output } = await context(mup(LB));
     const calls: string[] = [];
     const state = await inSyncState(ctx, { lb: 'keep' });
     const r = (await createProxyRollout(ctx, { action: 'deploy', strategy: 'parallel' }, fakeProxyDeps({ one: state, two: state }, calls)))!;
     await r.prepare();
     await r.finish(await roll(r, ['one', 'two'], calls));
     expect(calls.some((c) => c.startsWith('drain:'))).toBe(false);
+    expect(output()).not.toMatch(/drain/);
     expect(calls).toEqual(expect.arrayContaining(['run:one:restart', 'run:two:restart']));
   });
 
@@ -120,6 +122,24 @@ describe('createProxyRollout', () => {
     const warnings = (await r.finish(results)).join('\n');
     expect(warnings).toMatch(/"two"/);
     expect(warnings).toContain('connection refused');
+  });
+
+  it('while load balancing is being enabled the servers switch with zero downtime: nginx still routes to the containers', async () => {
+    const { ctx, output } = await context(mup(LB));
+    const calls: string[] = [];
+    const off = await inSyncState(ctx, { lb: 'off' });
+    const r = (await createProxyRollout(ctx, { action: 'deploy', strategy: 'canary' }, fakeProxyDeps({ one: off, two: off }, calls)))!;
+    await r.prepare();
+    await r.finish(await roll(r, ['one', 'two'], calls));
+    expect(flow(calls)).toEqual(['run:one:zero-downtime', 'run:two:zero-downtime']);
+    expect(output()).not.toContain('Zero-downtime switch not used');
+
+    // An earlier run already switched one to the load-balanced container, which publishes the port.
+    const again: string[] = [];
+    const r2 = (await createProxyRollout(ctx, { action: 'deploy', strategy: 'canary' }, fakeProxyDeps({ one: off, two: off }, again, { publishes: ['one'] })))!;
+    await r2.prepare();
+    await r2.finish(await roll(r2, ['one', 'two'], again));
+    expect(flow(again)).toEqual(['run:one:restart', 'run:two:zero-downtime']);
   });
 
   it('enables load balancing only in finish, and only when every app server deployed', async () => {

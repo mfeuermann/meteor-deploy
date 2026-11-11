@@ -32,13 +32,15 @@ const argsText = (c: NormalizedConfig) => ((c.app.docker.args as unknown[] | und
 
 /**
  * Why the zero-downtime switch cannot be used for this config (one line), or null when it can.
- * It needs the proxy without load balancing (load-balanced servers are drained instead, §4.4),
- * and a container that can run twice at once: no published host port, no host network, no
- * fixed `--name`.
+ * It needs the proxy without active load balancing (load-balanced servers are drained instead,
+ * §4.4), and a container that can run twice at once: no published host port, no host network,
+ * no fixed `--name`. `o.loadBalancingActive: false` is a load-balanced config whose upstream
+ * does not exist on the proxies yet (load balancing is being enabled): nginx still routes to
+ * the containers, and the running one does not publish the port yet.
  */
-export function zeroDowntimeBlocker(c: NormalizedConfig): string | null {
+export function zeroDowntimeBlocker(c: NormalizedConfig, o: { loadBalancingActive?: boolean } = {}): string | null {
   if (!c.proxy) return 'the app is not behind the proxy (no "proxy" section)';
-  if (c.proxy.loadBalancing) return 'proxy.loadBalancing is on (load-balanced servers are drained one by one instead)';
+  if (c.proxy.loadBalancing && o.loadBalancingActive !== false) return 'proxy.loadBalancing is on: the app publishes a host port, which two containers cannot share';
   if (c.cometDeploy.zeroDowntime === false) return 'cometDeploy.zeroDowntime is false';
   if (c.app.ssl) return 'app.ssl starts its own frontend container, which cannot run twice';
   const args = argsText(c);

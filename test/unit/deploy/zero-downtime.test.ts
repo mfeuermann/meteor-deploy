@@ -66,6 +66,11 @@ describe('zeroDowntimeBlocker', () => {
     expect(zeroDowntimeBlocker(load('proxy-le'))).toBeNull();
   });
 
+  it('allows a load-balanced config while its upstream does not exist yet (load balancing being enabled)', () => {
+    expect(zeroDowntimeBlocker(load('proxy-lb'), { loadBalancingActive: false })).toBeNull();
+    expect(zeroDowntimeBlocker(load('proxy-lb'), { loadBalancingActive: true })).toMatch(/loadBalancing/);
+  });
+
   it('names the reason otherwise', () => {
     expect(zeroDowntimeBlocker(load('proxy-lb'))).toMatch(/loadBalancing/);
     expect(zeroDowntimeBlocker(load('proxy-le', (raw) => (raw.app.docker.args = ['-p 9000:9000'])))).toMatch(/publishes a host port/);

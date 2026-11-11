@@ -446,8 +446,11 @@ describe('pipelines behind the proxy', () => {
     const s = await setup({ extra: LB });
     await withProxies(s, 'off');
     await deploy(s);
+    // Until the upstream exists nginx routes to the containers, so the servers switch without a gap.
+    const lastActivation = s.calls.indexOf(`activate:two:${V}:zero-downtime`);
+    expect(lastActivation).toBeGreaterThan(-1);
     const enable = s.calls.indexOf('sync:after:one:lb-enable+service');
-    expect(enable).toBeGreaterThan(s.calls.indexOf(`activate:two:${V}:restart`));
+    expect(enable).toBeGreaterThan(lastActivation);
     expect(enable).toBeLessThan(s.calls.indexOf('release:one'));
 
     const f = await setup({ extra: LB, activate: { two: 'reverted' }, strategy: 'parallel' });

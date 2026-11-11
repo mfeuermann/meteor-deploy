@@ -23,7 +23,9 @@ import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
 import type { ActivationResult } from '../deploy/activate.js';
 import { zeroDowntimeBlocker, type SwitchMode } from '../deploy/zero-downtime.js';
+import { containerName } from '../core/naming.js';
 import { verboseOutput } from '../output/lines.js';
+import { shArg } from '../remote/ops.js';
 import type { SshConnection } from '../ssh/connection.js';
 import { PROXY_NOT_SET_UP, proxyDomains, proxyServers } from './render.js';
 import {
@@ -62,6 +64,14 @@ export interface ProxyRolloutDeps {
   writeUpstreamFile: typeof writeUpstreamFile;
   sharedSettingsDrift: typeof sharedSettingsDrift;
   upstreamController: (c: NormalizedConfig, current: UpstreamEntry[], apply: UpstreamApply) => UpstreamControl;
+  /** Whether the app's running container publishes a host port (false when there is none). */
+  publishesHostPort: (conn: SshConnection, c: NormalizedConfig) => Promise<boolean>;
+}
+
+/** `docker inspect` of the app container's port bindings: any binding means a published host port. */
+async function publishesHostPort(conn: SshConnection, c: NormalizedConfig): Promise<boolean> {
+  const r = await conn.exec(`sudo docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{$p}} {{end}}' ${shArg(containerName(c))} 2>/dev/null`);
+  return r.code === 0 && r.stdout.trim() !== '';
 }
 
 export const PROXY_ROLLOUT_DEPS: ProxyRolloutDeps = {
@@ -70,6 +80,7 @@ export const PROXY_ROLLOUT_DEPS: ProxyRolloutDeps = {
   writeUpstreamFile,
   sharedSettingsDrift,
   upstreamController: (c, current, apply) => new UpstreamController(c, current, apply),
+  publishesHostPort,
 };
 
 /**
@@ -143,8 +154,10 @@ export async function createProxyRollout(
 
 class Rollout implements ProxyRollout {
   private readonly c: NormalizedConfig;
-  /** Why the zero-downtime switch is not used (null: it is), printed once. */
-  private readonly blocker: string | null;
+  /** Why the zero-downtime switch is not used (null: it is), printed once; set again by `prepare`. */
+  private blocker: string | null;
+  /** Load balancing runs on the proxies (an upstream to keep), as opposed to being enabled by this run. */
+  private lbActive: boolean;
   private blockerShown = false;
   /** Whether load-balanced servers are taken out of the upstream while they restart. */
   private readonly drains: boolean;
@@ -161,6 +174,7 @@ class Rollout implements ProxyRollout {
     private readonly s: { desired: DesiredProxyFiles | null; proxies: string[]; domains: string[] },
   ) {
     this.c = ctx.config;
+    this.lbActive = !!this.c.proxy?.loadBalancing;
     this.blocker = zeroDowntimeBlocker(this.c);
     this.drains =
       !!this.c.proxy?.loadBalancing && this.c.cometDeploy.zeroDowntime !== false && o.strategy !== 'parallel' && Object.keys(this.c.app.servers ?? {}).length > 1;
@@ -208,6 +222,10 @@ class Rollout implements ProxyRollout {
       }
     }
     const keep = proxies.filter((p) => this.transition(p, states.get(p)!) === 'keep');
+    // While load balancing is being enabled nginx still routes to the containers, so the servers
+    // can switch without a gap (spec §4.2); the upstream follows in `finish`.
+    this.lbActive = !!c.proxy?.loadBalancing && keep.length > 0;
+    this.blocker = zeroDowntimeBlocker(c, { loadBalancingActive: this.lbActive });
     if (keep.length) {
       // The proxies share one upstream; the first one's is the starting point (setup writes the same file everywhere).
       const current = parseUpstream(states.get(keep[0])!.upstream ?? '');
@@ -236,10 +254,18 @@ class Rollout implements ProxyRollout {
       this.blockerShown = true;
       this.ctx.reporter.info(`Zero-downtime switch not used: ${this.blocker}`);
     }
-    const mode: SwitchMode = this.blocker === null ? { kind: 'zero-downtime' } : { kind: 'restart' };
+    let mode: SwitchMode = this.blocker === null ? { kind: 'zero-downtime' } : { kind: 'restart' };
+    // Load balancing being enabled: a server whose container already runs with it (an earlier
+    // run that did not finish) publishes the port, which a second container cannot bind.
+    if (mode.kind === 'zero-downtime' && this.c.proxy?.loadBalancing && !this.lbActive) {
+      if (await this.d.publishesHostPort(await this.ctx.ssh.get(server), this.c).catch(() => false)) {
+        this.ctx.reporter.info(`[${server}] the running container already publishes the load balancing port: restarting it in place`);
+        mode = { kind: 'restart' };
+      }
+    }
     const ctl = this.controller;
     if (!ctl) return run(mode);
-    if (this.drains) await ctl.drain(server);
+    if (this.drains && (await ctl.drain(server))) this.ctx.reporter.server(server, 'drain', 'ok', 'out of load balancing');
     const result = await run(mode);
     // A reverted server runs its previous version and passed its health check again.
     if (result.status === 'healthy' || result.status === 'reverted') await ctl.healthy(server);
