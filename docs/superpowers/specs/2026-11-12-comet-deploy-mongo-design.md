@@ -70,7 +70,7 @@ Kontejner aplikace se spouští s `--link=mongodb:mongodb`. Docker ho bez běž�
 
 - **Kdy:** config má sekci `mongo` a příkaz vytváří nebo startuje kontejner aplikace: `deploy`, `reconfig`, `restart`, `rollback`, `start` (i jejich varianty `meteor …`).
 - **Co:** na každém serveru aplikace, na kterém příkaz poběží (s `--servers` jen na nich), musí běžet kontejner `mongodb`. U `deploy` je to součást preflightu, takže chyba přijde **před buildem** (stejně jako kontrola proxy, `facts.sh` / `evaluatePreflight`). Ostatní příkazy nemají preflight, kontrola u nich proběhne před prvním zásahem do kontejneru. Builder ji přidá tak, aby nezdržela, například jako jeden `docker inspect` v existujícím spojení.
-- **Chyba:** název serveru a postup. Když `/opt/mongodb/mongo-start-current.sh` existuje, nápověda je `comet-deploy mongo start`, jinak `comet-deploy setup`. Když na serveru neplatí omezení z §4.2, chyba to řekne místo nápovědy ke startu.
+- **Chyba:** název serveru a postup. Když `/opt/mongodb/mongo-start-new.sh` existuje (to je soubor, který `mongo-start.sh` potřebuje), nápověda je `comet-deploy mongo start`, jinak `comet-deploy setup`. Když na serveru neplatí omezení z §4.2, chyba to řekne místo nápovědy ke startu.
 - `stop` a `logs` aplikace kontrolu nedělají.
 
 ### 4.4 Změna `mongo.version` [moje volba]
