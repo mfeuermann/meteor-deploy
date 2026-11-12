@@ -19,10 +19,10 @@
  */
 import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
-import { lockServers, releaseServers, type PipelineDeps } from '../deploy/pipeline.js';
+import { APP_LOCK_DEPS, withAppLock, type AppLockDeps } from '../deploy/app-lock.js';
 import { verboseOutput } from '../output/lines.js';
 import { runOnServers } from '../remote/on-servers.js';
-import { acquireLock, cometScript, readLock, releaseLock } from '../remote/ops.js';
+import { cometScript } from '../remote/ops.js';
 import type { SshConnection } from '../ssh/connection.js';
 import {
   LB_OFF_WITHOUT_BACKEND,
@@ -56,8 +56,8 @@ import {
 import { desiredEntries, formatUpstream, parseUpstream } from './upstream.js';
 
 /** The lock functions the proxy commands use (tests replace them). */
-export type ProxyLockDeps = Pick<PipelineDeps, 'acquireLock' | 'releaseLock' | 'readLock'>;
-const LOCK_DEPS: ProxyLockDeps = { acquireLock, releaseLock, readLock };
+export type ProxyLockDeps = AppLockDeps;
+const LOCK_DEPS: ProxyLockDeps = APP_LOCK_DEPS;
 
 type ServerStep = (conn: SshConnection, server: string) => Promise<string | void>;
 
@@ -65,19 +65,6 @@ type ServerStep = (conn: SshConnection, server: string) => Promise<string | void
 function requireProxy(ctx: CommandContext): Record<string, any> {
   if (!ctx.config.proxy) throw new CometError('The config has no "proxy" section.', { hint: 'Add a "proxy" section to the config (see the MUP docs).' });
   return ctx.config.proxy;
-}
-
-/**
- * Runs `fn` while holding the deploy lock of every app server, whatever `--servers` selects:
- * the proxy is shared by all app servers' traffic (spec §4.6).
- */
-async function withAppLock<T>(ctx: CommandContext, command: string, d: ProxyLockDeps, fn: () => Promise<T>): Promise<T> {
-  const locked = await lockServers(ctx, Object.keys(ctx.config.app.servers ?? {}), command, d, { skipNotSetUp: true });
-  try {
-    return await fn();
-  } finally {
-    await releaseServers(ctx, locked, d);
-  }
 }
 
 /** Like `runOnServers`, but one server after the other, stopping at the first failure (MUP `series: true`). */

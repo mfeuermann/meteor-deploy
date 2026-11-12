@@ -9,6 +9,7 @@ import { verboseOutput } from '../../output/lines.js';
 import { renderMeteorSetup } from '../../remote/app-files.js';
 import { runOnServers } from '../../remote/on-servers.js';
 import { renderTemplate } from '../../remote/render.js';
+import { mongoSetup, mongoStart } from '../../mongo/setup.js';
 import { proxySetup } from '../../proxy/setup.js';
 import type { ConfigCommand } from '../registry.js';
 
@@ -65,28 +66,39 @@ export async function meteorSetup(ctx: CommandContext): Promise<void> {
   });
 }
 
-/** `setup` (MUP `default.setup` → `docker.setup` → `meteor.setup`). */
-export async function setupAll(ctx: CommandContext): Promise<void> {
+/** `setup` (MUP `default.setup` → `docker.setup` → `meteor.setup` → `mongo.*` → `proxy.*`). */
+export async function setupAll(ctx: CommandContext, o: { allowMongoVersionChange?: boolean } = {}): Promise<void> {
   // All keys now, so a hook on a later step does not stop setup after Docker was set up.
+  const mongoKeys = ctx.config.mongo ? ['mongo.setup', 'mongo.start'] : [];
   const proxyKeys = ctx.config.proxy ? ['proxy.setup', 'proxy.start'] : [];
-  ctx.runner.refuseHooks(['default.setup', 'docker.setup', 'meteor.setup', ...proxyKeys]);
+  ctx.runner.refuseHooks(['default.setup', 'docker.setup', 'meteor.setup', ...mongoKeys, ...proxyKeys]);
   await ctx.runner.run('default.setup', async () => {
-    // MUP would also set up Mongo. Only warn, so a MUP config with it still gets Docker, the
-    // app directories and the proxy.
-    if (ctx.config.mongo) ctx.reporter.warn('The "mongo" section is not set up yet: it is planned for phase 2 of comet-deploy.');
     await dockerSetup(ctx);
     await meteorSetup(ctx);
+    // MUP's `post.default.setup` hook of the mongo plugin; it runs before the proxy plugin's.
+    if (ctx.config.mongo) {
+      await mongoSetup(ctx, { allowVersionChange: o.allowMongoVersionChange });
+      await mongoStart(ctx, { allowVersionChange: o.allowMongoVersionChange, fromSetup: true });
+    }
     // MUP's `post.setup` hook of the proxy plugin.
     if (ctx.config.proxy) await proxySetup(ctx);
     ctx.reporter.info('\nNext, deploy the app with: comet-deploy deploy');
   });
 }
 
+/** `--allow-mongo-version-change`, for `setup`, `mongo setup` and `mongo start`. */
+export const allowMongoVersionChange = (y: import('yargs').Argv) =>
+  y.option('allow-mongo-version-change', {
+    type: 'boolean',
+    describe: 'Change mongo.version even when comet-deploy thinks MongoDB cannot open the data (skipped or older release series)',
+  });
+
 /** `setup`: Docker on every machine, then the app directories on the app servers. */
 export const setupCommand: ConfigCommand = {
   command: 'setup',
   describe: 'Install Docker and prepare the servers',
-  run: (ctx) => setupAll(ctx),
+  builder: allowMongoVersionChange,
+  run: (ctx, argv) => setupAll(ctx, { allowMongoVersionChange: argv['allow-mongo-version-change'] === true }),
 };
 
 /** `meteor setup`: only the app directories, no Docker. */

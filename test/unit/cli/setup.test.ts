@@ -86,7 +86,8 @@ describe('setup', () => {
   it('installs docker on unique hosts, then sets up the app on app servers, in parallel, with MUP runner keys', async () => {
     const s = await setup("mongo: { servers: { four: {} } },");
     await setupAll(s.ctx);
-    expect(s.ctx.runner.history).toEqual(['default.setup', 'docker.setup', 'meteor.setup']);
+    // Three app servers: MongoDB is skipped with the reason (the mongo commands still run, as in MUP).
+    expect(s.ctx.runner.history).toEqual(['default.setup', 'docker.setup', 'meteor.setup', 'mongo.setup', 'mongo.start']);
     const docker = s.log.filter((l) => l.endsWith(':docker-setup')).sort();
     expect(docker).toEqual(['four:docker-setup', 'one:docker-setup', 'three:docker-setup']);
     const meteor = s.log.filter((l) => l.endsWith(':meteor-setup')).sort();
@@ -96,7 +97,7 @@ describe('setup', () => {
       s.timeline.map((t) => t.endsWith(':docker-setup')).lastIndexOf(true),
     );
     expect(s.timeline.slice(0, 2).every((t) => t.startsWith('start:'))).toBe(true);
-    expect(s.out()).toMatch(/mongo.*phase 2/i);
+    expect(s.out()).toMatch(/MongoDB is not set up: MUP's built-in MongoDB needs exactly one app server/);
     expect(s.out()).toMatch(/comet-deploy deploy/);
   });
 

@@ -32,7 +32,7 @@ describe('main', () => {
 
 describe('phase-2 commands (M12)', () => {
   it('say they are planned for phase 2 instead of "unknown argument"', async () => {
-    for (const args of [['mongo', 'start'], ['ssh', 'one'], ['meteor', 'debug']]) {
+    for (const args of [['ssh', 'one'], ['meteor', 'debug']]) {
       const c = capture();
       const code = await main(args, c.io);
       expect(code, args.join(' ')).toBe(1);
