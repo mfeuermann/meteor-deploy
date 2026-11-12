@@ -84,9 +84,10 @@ On every server:
 | App set up (`/opt/<name>/config` exists) | error `Server "<name>": the app is not set up on this server yet. Run "comet-deploy setup" first.` |
 | Deploy lock | error if another deploy holds it (skipped with `--force-unlock` or `cometDeploy.lock: false`) |
 | Reverse proxy (with a `proxy` section, on every proxy server) | error `Server "<name>": the reverse proxy is not set up (container mup-nginx-proxy is missing or stopped). Run "comet-deploy proxy setup" first.` |
+| MongoDB (with a `mongo` section; `deploy` only) | error `Server "<name>": MongoDB (container "mongodb") is not running. Start it with: comet-deploy mongo start` (or `Set it up with: comet-deploy setup`). `reconfig`, `restart`, `rollback` and `start` make the same check before they touch the app. |
 | SSH reverse port forwarding | error if `sshd` refuses it (`AllowTcpForwarding no`) |
 
-`meteor build` sends nothing to the servers, so it skips the last three checks. It still connects to every server to read its CPU architecture.
+`meteor build` sends nothing to the servers, so it skips the app setup, lock and port forwarding checks. `meteor build` and `meteor push` start no app, so both skip the proxy and MongoDB checks. It still connects to every server to read its CPU architecture.
 
 Hooks in the config are checked even before preflight: a command refuses a hook on any step it will run before it starts. See [Configuration → Hooks](configuration.md#hooks).
 
@@ -431,6 +432,7 @@ comet-deploy keeps the server layout of MUP 1.5.11 and adds a few files that MUP
 | `/opt/<name>/config/deploy.lock/` | added | Only while a command runs. |
 | `/opt/<name>/config/.prev/` | added | Snapshot of the previous `start.sh` and `env.list`, for the automatic revert. |
 | `/opt/mup-nginx-proxy/` and the containers `mup-nginx-proxy`, `mup-nginx-proxy-letsencrypt` | yes | Written by MUP's proxy scripts, with the same content. |
+| `/opt/mongodb/` (`mongodb.conf`, `mongo-start-new.sh`, `mongo-start-current.sh`), the container `mongodb` and `mongo.dataPath` | yes | Written by MUP's mongo scripts; the start script is byte for byte MUP's, so `mup mongo start` keeps a container that comet-deploy started, and the other way round. |
 | `down` marks in `/opt/mup-nginx-proxy/upstream/<name>` | added | Only for a server that is out of load balancing. nginx and MUP read the file as usual. |
 | Container `<name>-next` | added | Only during a zero-downtime switch; renamed to `<name>` at its end. |
 

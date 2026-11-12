@@ -15,6 +15,7 @@ comet-deploy reads the same config file as Meteor Up (MUP) 1.5.11: `mup.js` or `
   - [`app.docker`](#appdocker)
   - [`app.buildOptions`](#appbuildoptions)
   - [Other `app` options](#other-app-options)
+- [`mongo`](#mongo)
 - [`proxy`](#proxy)
 - [Accepted but ignored](#accepted-but-ignored)
 - [Rejected options](#rejected-options)
@@ -195,7 +196,7 @@ Environment variables for the container. Values can be strings, numbers or boole
 | Key | Description |
 |---|---|
 | `ROOT_URL` | Required. Must start with `http://` or `https://`. |
-| `MONGO_URL` | Your MongoDB connection string. The built-in MongoDB of MUP (the `mongo` section) is [phase 2](#planned-for-phase-2), so point this at an existing database. |
+| `MONGO_URL` | Your MongoDB connection string. With a [`mongo`](#mongo) section it is replaced by the URL of MUP's built-in MongoDB. |
 | `PORT` | The published **host** port (default `80`), as in MUP. Inside the container, `PORT` is always `docker.imagePort`. |
 | anything else | Passed to the app as is. |
 
@@ -250,6 +251,64 @@ comet-deploy also sets `--architecture` per target platform (`os.linux.x86_64` o
 | `enableUploadProgressBar` | Ignored. comet-deploy does not upload a bundle. |
 | `port` | Ignored (MUP ignores it too). |
 | `ssl`, `nginx` | Rejected, see below. |
+
+## `mongo`
+
+MUP's built-in MongoDB: one `mongo:<version>` container named `mongodb` on the app's server, a single-member replica set `meteor`, the data in a host directory. comet-deploy runs it with MUP 1.5.11's own scripts, so `/opt/mongodb`, the container and the data are the same as with MUP, and either tool can take over from the other.
+
+```js
+mongo: {
+  version: '7.0.14',   // set it: MUP's default 3.4.24 is too old for Meteor 3
+  servers: { one: {} },
+  // dbName: 'myapp',          // default: app.name without dots
+  // dataPath: '/var/lib/mongodb',
+},
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `servers` | required | The server MongoDB runs on. MUP uses only the first one; comet-deploy warns when there are more. |
+| `version` | `'3.4.24'` (as MUP) | The tag of the `mongo` image. **Set it.** Meteor 3's MongoDB driver (6.16 in Meteor 3.5) works with MongoDB 4.0 to 8.0, so the default 3.4.24 cannot run a Meteor 3 app. Changing it on a server with data: see [Upgrading MongoDB](#upgrading-mongodb). |
+| `dbName` | `app.name` without dots | The database the app uses (the path of `MONGO_URL`), and the one `mongo shell` opens. |
+| `dataPath` | `/var/lib/mongodb` | The directory on the server that holds the data (mounted at `/data/db`). `mongo stop` and a new version keep it. |
+| `oplog`, `port` | - | Accepted for MUP compatibility; MUP 1.5.11 does not use them either. |
+
+What the section does, as in MUP:
+
+- **`MONGO_URL` is replaced.** The app gets `MONGO_URL=mongodb://mongodb:27017/<dbName>?replicaSet=meteor` and the Docker option `--link=mongodb:mongodb`, whatever `app.env.MONGO_URL` says. `validate` warns when your `MONGO_URL` looks like an external database (`It looks like app.env.MONGO_URL is for an external database. Remove the \`mongo\` object to use external databases.`).
+- **One app server, on the MongoDB server.** The link works only on the same machine, so the app must have exactly one server, and it must be the first `mongo.servers` server (same host and SSH port). Otherwise MUP skips its MongoDB without a word; comet-deploy warns in `validate` and `setup` says why (`MongoDB is not set up: MUP's built-in MongoDB needs exactly one app server (the app has 2). Use an external database: set app.env.MONGO_URL and remove the "mongo" section.`). For more servers, run your own MongoDB and remove the section.
+- **`setup` starts it**, after Docker and the app directories and before the proxy. The [`mongo` commands](commands.md#mongo-commands) run each step on its own.
+
+What comet-deploy adds:
+
+- **The app commands check that MongoDB runs.** The app container cannot start without the `mongodb` container it is linked to, so `deploy` (in preflight, before the build), `reconfig`, `restart`, `rollback` and `start` stop before they touch the app: `Server "one": MongoDB (container "mongodb") is not running. Start it with: comet-deploy mongo start` (or `Set it up with: comet-deploy setup` when `mongo setup` never ran there). `stop` and `logs` do not check.
+- **A version change the data cannot take is refused** before anything is written; see below.
+- **The deploy lock.** `mongo setup`, `mongo start` and `mongo stop` take the app's deploy lock, so they do not run into a deploy.
+
+### Upgrading MongoDB
+
+MongoDB opens data written by the same release series (`7.0.x`) or by the series just before it, and only when that data's featureCompatibilityVersion (FCV) is the older series. The series are 3.0, 3.2, 3.4, 3.6, 4.0, 4.2, 4.4, 5.0, 6.0, 7.0, 8.0 ([MongoDB release notes](https://www.mongodb.com/docs/manual/release-notes/)). A version that skips a series or goes back would leave `mongod` restarting on the existing data. MUP does not check this; comet-deploy does, in `setup`, `mongo setup` and `mongo start`, against the version the container on the server was started with:
+
+| Change | What comet-deploy does |
+|---|---|
+| Same series (`7.0.14` → `7.0.15`) | Recreates the container with the new image; the data stays. |
+| The next series (`6.0.x` → `7.0.x`), FCV `6.0` | Recreates the container, then reminds you to raise the FCV before the next upgrade. |
+| The next series, but the FCV is older or cannot be read (MongoDB stopped) | Refuses, with the command that sets the FCV. |
+| A skipped series (`5.0` → `7.0`) or an older series | Refuses. |
+| A version that is not `major.minor[.patch]` of a known series (`latest`, `7`, `7.3`) | Warns that the change was not checked, and goes on as MUP would. |
+
+To go from 5.0 to 7.0, upgrade one series at a time and raise the FCV after each step:
+
+1. `version: '6.0.13'`, then `comet-deploy setup` (or `mongo setup` + `mongo start`).
+2. `comet-deploy mongo shell`, then `db.adminCommand({ setFeatureCompatibilityVersion: "6.0" })`.
+3. `version: '7.0.14'`, then `comet-deploy setup`.
+4. `comet-deploy mongo shell`, then `db.adminCommand({ setFeatureCompatibilityVersion: "7.0", confirm: true })` (7.0 and later ask for `confirm: true`).
+
+`mongo status` shows the FCV. `--allow-mongo-version-change` on `setup`, `mongo setup` and `mongo start` turns the check into a warning, for when you know better, for example with an empty `dataPath` that a backup will fill.
+
+### Security
+
+MUP's MongoDB has no user or password. Its port is published on `127.0.0.1:27017` only, so it cannot be reached from outside the server, but every process on the server can connect, and so can every container on Docker's default bridge network of that server. Do not use the built-in MongoDB on a server where you run code you do not trust; use your own MongoDB with authentication instead.
 
 ## `proxy`
 
@@ -329,7 +388,6 @@ comet-deploy 0.1.0 is phase 1 of the project. These parts of a MUP config are va
 
 | Section | `setup` | `deploy`, `reconfig`, `rollback`, `meteor push`, `meteor build`, `meteor envconfig` |
 |---|---|---|
-| `mongo` | warns: `The "mongo" section is not set up yet: it is planned for phase 2 of comet-deploy.` | stop: `The "mongo" section is not supported yet (planned for phase 2 of comet-deploy).` |
 | `privateDockerRegistry` | - | stop: `"privateDockerRegistry" is not supported yet (planned for phase 2 of comet-deploy).` |
 | `cometDeploy.transfer: 'registry'` or `'stream'` | - | stop: `cometDeploy.transfer "registry" is not supported yet (planned for phase 2 of comet-deploy).` |
 | `hooks` | see [Hooks](#hooks) | see [Hooks](#hooks) |

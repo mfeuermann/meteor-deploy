@@ -13,7 +13,7 @@ The command names are the same as in Meteor Up (MUP) 1.5.11. Run commands from t
 - [Output](#output)
 - [Overview](#overview)
 - Commands: [`init`](#init) · [`validate`](#validate) · [`setup`](#setup) · [`deploy`](#deploy) · [`reconfig`](#reconfig) · [`restart`](#restart) · [`start`](#start) · [`stop`](#stop) · [`logs`](#logs) · [`rollback`](#rollback) · [`history`](#history) · [`unlock`](#unlock) · [`status`](#status)
-- Groups: [`meteor …`](#meteor-commands) · [`docker …`](#docker-commands) · [`proxy …`](#proxy-commands)
+- Groups: [`meteor …`](#meteor-commands) · [`docker …`](#docker-commands) · [`mongo …`](#mongo-commands) · [`proxy …`](#proxy-commands)
 - [Planned for phase 2](#planned-for-phase-2)
 
 ## Global options
@@ -67,7 +67,7 @@ Other commands (`logs -f`, `status`, `setup`, …) stop immediately on Ctrl+C.
 |---|---|---|---|---|---|
 | [`init`](#init) | Create `mup.js` and `settings.json` | - | - | - | - |
 | [`validate`](#validate) | Check the config | - | - | - | - |
-| [`setup`](#setup) | Install Docker, create app directories, set up the proxy | app (Docker: also `mongo`/`proxy` servers) | with `proxy` | - | - |
+| [`setup`](#setup) | Install Docker, create app directories, set up MongoDB and the proxy | app (Docker: also `mongo`/`proxy` servers) | with `mongo` or `proxy` | - | - |
 | [`deploy`](#deploy) | Build once, distribute, activate | app | yes | yes | yes |
 | [`reconfig`](#reconfig) | Write env and settings, restart | app | yes | yes | yes |
 | [`restart`](#restart) | Stop and start the app | app | yes | yes | yes |
@@ -77,9 +77,10 @@ Other commands (`logs -f`, `status`, `setup`, …) stop immediately on Ctrl+C.
 | [`rollback`](#rollback) | Switch to an older kept version | app | yes | yes | yes |
 | [`history`](#history) | Show who deployed what and when | app | - | - | reads it |
 | [`unlock`](#unlock) | Release a stale deploy lock | app | releases | - | - |
-| [`status`](#status) | Docker, container, version, HTTP, lock | app | - | - | - |
+| [`status`](#status) | Docker, container, version, HTTP, lock; MongoDB and proxy | app | - | - | - |
 | [`meteor destroy`](#meteor-destroy) | Remove the app from the servers | app, one by one | - | - | deletes it |
 | [`docker …`](#docker-commands) | Docker on the servers | see below | - | - | - |
+| [`mongo …`](#mongo-commands) | MUP's built-in MongoDB | `mongo` servers | some | - | - |
 | [`proxy …`](#proxy-commands) | MUP's reverse proxy | `proxy` servers | some | - | - |
 
 ---
@@ -105,7 +106,7 @@ Where the files go follows `mup init`:
 |---|---|
 | `--json` | Write `mup.json` (plain JSON, no comments) instead of `mup.js`. |
 
-The sample contains a `mongo` section and `MONGO_URL: 'mongodb://mongodb/meteor'` for MUP's built-in MongoDB. That is [phase 2](configuration.md#planned-for-phase-2) in comet-deploy: delete the `mongo` section and point `MONGO_URL` at your database before you deploy. See [Getting started](getting-started.md#2-create-the-config).
+The sample contains a `mongo` section for MUP's built-in MongoDB (`version: '4.4.12'`), which `setup` runs on the server. Keep it for an app with one server (a newer `version` such as `'7.0.14'` is a better start for a new app), or delete it and point `MONGO_URL` at your own database. See [Configuration → `mongo`](configuration.md#mongo) and [Getting started](getting-started.md#2-create-the-config).
 
 ## `validate`
 
@@ -132,7 +133,7 @@ What counts as an error and what as a warning: [Configuration → Validation](co
 ## `setup`
 
 ```
-comet-deploy setup [--servers <names>]
+comet-deploy setup [--servers <names>] [--allow-mongo-version-change]
 ```
 
 Prepares the servers, like `mup setup`:
@@ -140,9 +141,10 @@ Prepares the servers, like `mup setup`:
 1. **Docker setup** on every machine of the app servers (and of the `mongo` and `proxy` servers, if those sections exist), in parallel. It runs MUP's `docker-setup.sh`: if Docker is missing or older than 18, it installs it with `get.docker.com` (apt-based systems, Debian or Ubuntu) and adds the SSH user to the `docker` group; otherwise it starts Docker. A machine that appears twice (same host and SSH port) is set up once.
 2. **App setup** on the app servers, in parallel: creates `/opt/<name>/`, `/opt/<name>/config` and `/opt/<name>/tmp` and gives them to the SSH user.
 
-3. **Proxy setup**, if the config has a `proxy` section: the same as [`proxy setup`](#proxy-commands), on the proxy servers. It takes the deploy lock on the app servers while it runs.
+3. **MongoDB**, if the config has a `mongo` section: [`mongo setup`](#mongo-commands), then `mongo start`, as in MUP. A version change that the data cannot take stops `setup` here, before the start script is written (`--allow-mongo-version-change` turns that into a warning; see [Upgrading MongoDB](configuration.md#upgrading-mongodb)). When the config cannot run MUP's MongoDB (the app has more than one server, or not the MongoDB server), `setup` says why and goes on with the proxy.
+4. **Proxy setup**, if the config has a `proxy` section: the same as [`proxy setup`](#proxy-commands), on the proxy servers.
 
-If the config has a `mongo` section, `setup` warns that it is not set up yet (phase 2) and continues with the rest.
+Steps 3 and 4 take the deploy lock on the app servers while they run.
 
 Servers that MUP has already set up do not need `setup` again.
 
@@ -167,6 +169,8 @@ Builds the app once on your machine and deploys it to the app servers:
 6. Write the deploy history, remove old versions on the healthy servers, release the locks.
 
 The full description is in [How it works](how-it-works.md).
+
+**With MUP's MongoDB** (a `mongo` section), preflight also checks that the `mongodb` container runs on every app server, before the build: `Server "one": MongoDB (container "mongodb") is not running. Start it with: comet-deploy mongo start`.
 
 **Behind the proxy** (a `proxy` section):
 
@@ -276,7 +280,7 @@ Behind the proxy it switches like [`deploy`](#deploy), without a gap, or with `l
 comet-deploy start
 ```
 
-Starts the app on all app servers in parallel (MUP's `meteor-start.sh`, which runs `/opt/<name>/config/start.sh`) and runs the health check on each. No lock, no history. Exits `1` if a server does not become healthy.
+Starts the app on all app servers in parallel (MUP's `meteor-start.sh`, which runs `/opt/<name>/config/start.sh`) and runs the health check on each. No lock, no history. Exits `1` if a server does not become healthy. With a `mongo` section it first checks that MongoDB runs, like `reconfig`, `restart` and `rollback`, and starts nothing when it does not.
 
 ## `stop`
 
@@ -407,9 +411,20 @@ two     27.5.1  running  20261111-091502-3f2a1c9  200
 | `HTTP` | HTTP status of `healthCheck.path` on the container, when it runs. |
 | `LOCK` | Who holds the deploy lock, if anyone. |
 
-`--overview` is accepted for MUP compatibility; the output is always this overview.
+With a `mongo` section, the [`mongo status`](#mongo-commands) block follows the table, then with a `proxy` section the [`proxy status`](#proxy-commands) block, as in MUP:
 
-With a `proxy` section, the [`proxy status`](#proxy-commands) block follows the table, as in MUP.
+```
+=> MongoDB status
+ - running on server 192.0.2.10
+ - Restarted 0 times
+ - Running since 2026-11-12T10:00:00.000Z
+ - Version 7.0.14
+ - Connections: 5
+ - Storage Engine: wiredTiger
+ - Feature compatibility: 7.0
+```
+
+`--overview` shortens the MongoDB block to its first line; the app table is always this overview.
 
 ---
 
@@ -461,6 +476,27 @@ comet-deploy docker ps -a
 comet-deploy docker setup --servers three
 ```
 
+## `mongo` commands
+
+The `mongo` group has MUP 1.5.11's mongo commands, in MUP's order. They need a [`mongo`](configuration.md#mongo) section and run on `mongo.servers` (`--servers` filters them); `mongo shell` and `mongo status` use the first one, as in MUP. `mongo setup`, `start` and `stop` take the deploy lock on the app's servers first.
+
+| Command | What it does |
+|---|---|
+| `mongo setup [--allow-mongo-version-change]` | MUP's `mongo-setup.sh` (creates `/opt/mongodb` and `mongodb.conf`), then writes MUP's start script to `/opt/mongodb/mongo-start-new.sh`. It does not start MongoDB, as in MUP (whose help says "Installs and starts"): run `mongo start`, or `setup`, which does both. A version change the data cannot take is refused before the file is written ([Upgrading MongoDB](configuration.md#upgrading-mongodb)). |
+| `mongo logs [options]` | `docker logs` of the `mongodb` container; options pass through (`-f`, `--tail 50`). |
+| `mongo start [--allow-mongo-version-change]` | MUP's `mongo-start.sh`. When `mongo-start-new.sh` is the script the container was started with, it keeps the container (`MongoDB is up to date (container kept)`), or starts it if it does not run (`MongoDB started`). Otherwise it recreates the container from the new script and keeps the data (`MongoDB recreated: the start script changed (7.0.14 → 7.0.15)`). The version change is judged from the scripts on the server, which `mup mongo setup` may have written from another config. Without `mongo-start-new.sh` it stops with `Set it up with: comet-deploy mongo setup`. |
+| `mongo stop` | MUP's `mongo-stop.sh`: shuts `mongod` down and removes the container. The data in `dataPath` stays. The app cannot work until `mongo start`. |
+| `mongo shell` | Opens `mongosh` (`mongo` for MongoDB 5 and older) on the database `dbName` inside the container, over an interactive SSH session; with a terminal it gets a pseudo-terminal, and piped input works too (`echo 'db.items.countDocuments()' \| comet-deploy mongo shell`). The exit code is the shell's. MUP's `mongo shell` opens the `test` database. |
+| `mongo status [--overview]` | MUP's MongoDB status block: the container state, restarts, start time, version, connections and storage engine, plus the featureCompatibilityVersion. `--overview` prints the first line only. |
+
+```bash
+comet-deploy mongo status
+comet-deploy mongo logs --tail 100 -f
+comet-deploy mongo shell
+```
+
+The app commands that start the app container check first that MongoDB runs; see [Configuration → `mongo`](configuration.md#mongo).
+
 ## `proxy` commands
 
 The `proxy` group has MUP 1.5.11's proxy commands. They need a `proxy` section in the config (see [Configuration → `proxy`](configuration.md#proxy)) and run on the proxy servers: `proxy.servers`, or the app servers without it. `--servers` filters that list. `proxy setup`, `reconfig-shared`, `start` and `stop` first take the deploy lock on the app's servers, so they never change the proxy in the middle of a deploy of this app; a server where the app is not set up yet has nothing to lock.
@@ -487,11 +523,10 @@ A restart of the proxy containers (`proxy start`, and `proxy setup` or `reconfig
 
 ## Planned for phase 2
 
-These MUP commands exist so that you get a clear answer instead of "Unknown argument". `mongo` and `ssh` are listed in `--help` with "(planned for phase 2)", `meteor debug` in `meteor --help`. They do not read the config or touch the servers, and exit `1`. The message quotes the words you typed:
+These MUP commands exist so that you get a clear answer instead of "Unknown argument". `ssh` is listed in `--help` with "(planned for phase 2)", `meteor debug` in `meteor --help`. They do not read the config or touch the servers, and exit `1`. The message quotes the words you typed:
 
 | Command | Example message |
 |---|---|
-| `mongo [command…]` | `"mongo shell" is not supported yet: it is planned for phase 2 of comet-deploy.` |
 | `ssh [server] [command…]` | `"ssh one ls" is not supported yet: it is planned for phase 2 of comet-deploy.` |
 | `meteor debug` | `"meteor debug" is not supported yet: it is planned for phase 2 of comet-deploy.` |
 

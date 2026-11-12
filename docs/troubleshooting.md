@@ -55,6 +55,13 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [Nothing to roll back to](#nothing-to-roll-back-to)
 - [Leftover local images and the registry volume](#leftover-local-images-and-the-registry-volume)
 
+**MongoDB**
+
+- [MongoDB is not running](#mongodb-is-not-running)
+- [A MongoDB version change is refused](#a-mongodb-version-change-is-refused)
+- [Before the next MongoDB upgrade](#before-the-next-mongodb-upgrade)
+- [MongoDB version change not checked](#mongodb-version-change-not-checked)
+
 **The reverse proxy**
 
 - [The reverse proxy is not set up](#the-reverse-proxy-is-not-set-up)
@@ -332,10 +339,10 @@ docker: {
 
 ```
 Hook "pre.deploy" is not supported yet (hooks are planned for phase 2 of comet-deploy).
-"mongo shell" is not supported yet: it is planned for phase 2 of comet-deploy.
+"ssh one" is not supported yet: it is planned for phase 2 of comet-deploy.
 ```
 
-The `mongo`, `privateDockerRegistry` and `hooks` parts of a MUP config, and the `mongo`, `ssh` and `meteor debug` commands, are phase 2. Remove the part from the config if you do not need it, or keep using MUP for that app. See [Configuration → Planned for phase 2](configuration.md#planned-for-phase-2) and [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
+The `privateDockerRegistry` and `hooks` parts of a MUP config, and the `ssh` and `meteor debug` commands, are phase 2. Remove the part from the config if you do not need it, or keep using MUP for that app. See [Configuration → Planned for phase 2](configuration.md#planned-for-phase-2) and [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
 
 Hooks are checked before the command does anything: a hook on any step the command will run, for example `pre.meteor.start` for `deploy`, stops it before preflight and the build. Nothing changes on the servers.
 
@@ -592,6 +599,53 @@ docker volume rm comet-deploy-registry-data
 The next deploy creates both again and pushes the full image once. The servers are not affected: they keep their own copies of the layers.
 
 To clear the BuildKit cache (the next build runs `npm install` again): `docker builder prune`.
+
+## MongoDB
+
+### MongoDB is not running
+
+```
+Preflight failed:
+  - Server "one": MongoDB (container "mongodb") is not running. Start it with: comet-deploy mongo start
+```
+
+The config has a `mongo` section, so the app container is linked to the `mongodb` container, and Docker cannot start the app without it. `deploy` stops before the build; `reconfig`, `restart`, `rollback` and `start` stop with the same message before they touch the app.
+
+- `Start it with: comet-deploy mongo start`: MongoDB was set up but is stopped (for example after `mongo stop`). `comet-deploy mongo logs --tail 50` shows why it stopped on its own.
+- `Set it up with: comet-deploy setup`: `/opt/mongodb/mongo-start-new.sh` is missing on the server, so `mongo setup` never ran there.
+- Instead of a hint, the reason the built-in MongoDB cannot run with this config (`MUP's built-in MongoDB needs exactly one app server …`, or `… must run on the app's server …`). Use your own database: set `app.env.MONGO_URL` and remove the `mongo` section.
+
+### A MongoDB version change is refused
+
+```
+Error: mongo setup failed on 1 server(s):
+  - one: MongoDB 5.0.31 → 7.0.14 skips a release series: MongoDB upgrades one release series at a time (5.0 → 6.0 → …), with the featureCompatibilityVersion raised after each step. See https://www.mongodb.com/docs/manual/release-notes/
+To change the version anyway (for example with an empty dataPath), add --allow-mongo-version-change.
+```
+
+`mongo.version` changed in a way the data in `dataPath` cannot follow, and MongoDB would restart forever on it. Nothing was written: the container and `/opt/mongodb` are as before. Upgrade one release series at a time, as in [Configuration → Upgrading MongoDB](configuration.md#upgrading-mongodb). The other refusals:
+
+- `goes to an older release series`: put the old `version` back. A downgrade needs the featureCompatibilityVersion lowered first and is best done from a backup.
+- `the data's featureCompatibilityVersion is 5.0; upgrading to 7.0 needs 6.0`: raise the FCV first, with the command in the message (`comet-deploy mongo shell`, then `db.adminCommand({ setFeatureCompatibilityVersion: "6.0" })`).
+- `could not read the featureCompatibilityVersion of the running MongoDB (is it running?)`: start it with the old version (`comet-deploy mongo start`) and run `setup` again.
+
+`--allow-mongo-version-change` turns the refusal into a warning, for an empty `dataPath` that you fill from a backup afterwards.
+
+### Before the next MongoDB upgrade
+
+```
+[one] Before the next MongoDB upgrade, set the feature compatibility version: comet-deploy mongo shell, then db.adminCommand({ setFeatureCompatibilityVersion: "7.0", confirm: true })
+```
+
+An upgrade to the next release series worked, and the data still has the old series' featureCompatibilityVersion, so MongoDB can still go back to the old version. When the app works with the new one, raise it as shown. `comet-deploy mongo status` shows the current value (`Feature compatibility:`).
+
+### MongoDB version change not checked
+
+```
+Warning: [one] MongoDB 7.0.14 → latest: the version change was not checked (comet-deploy checks only plain versions of the release series it knows). Make sure the new version can open the data.
+```
+
+The version is not `major.minor[.patch]` of a release series comet-deploy knows (for example `latest`, `7` or a rapid release such as `7.3`), so the change goes ahead as with MUP. Prefer a full version such as `7.0.14`, which also keeps the server from moving to a new release on its own.
 
 ## The reverse proxy
 

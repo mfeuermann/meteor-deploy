@@ -11,6 +11,7 @@ comet-deploy is a drop-in replacement for Meteor Up (MUP) 1.5.11. It reads the s
 - [What stays the same](#what-stays-the-same)
 - [What changes](#what-changes)
 - [The reverse proxy](#the-reverse-proxy)
+- [The built-in MongoDB](#the-built-in-mongodb)
 - [MUP and comet-deploy side by side](#mup-and-comet-deploy-side-by-side)
 - [Going back to MUP](#going-back-to-mup)
 - [Differences at a glance](#differences-at-a-glance)
@@ -24,11 +25,10 @@ comet-deploy is a drop-in replacement for Meteor Up (MUP) 1.5.11. It reads the s
 
 ## Check first: what does not work yet
 
-comet-deploy 0.1.0 covers phase 1 and MUP's reverse proxy. If your config uses one of these, keep using MUP for that app for now:
+comet-deploy covers phase 1, MUP's reverse proxy and MUP's built-in MongoDB. If your config uses one of these, keep using MUP for that app for now:
 
 | In your config | What comet-deploy does | What you can do |
 |---|---|---|
-| `mongo` section (MongoDB run by MUP) | stop: `The "mongo" section is not supported yet …` | Point `app.env.MONGO_URL` at a database you run yourself, or keep MUP. |
 | `privateDockerRegistry` | stop: `"privateDockerRegistry" is not supported yet …` | Keep MUP. |
 | `hooks` | A command that has a hook on any of its steps stops before it does anything: `Hook "pre.deploy" is not supported yet …` | Remove the hooks, or keep MUP. See [Configuration → Hooks](configuration.md#hooks). |
 | No `docker.image`, or `kadirahq/meteord`, or `docker.prepareBundle: false` (MUP bundle mode) | The build stops: `The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode).` | Set `docker.image: 'zodern/meteor:root'`. This is also the image in MUP's own `mup init` sample, so the config keeps working with MUP. |
@@ -125,11 +125,12 @@ The commands have the same names and the same options as in MUP.
 | `mup reconfig` | `comet-deploy reconfig` | Now with the lock, the rollout strategy and a history entry. |
 | `mup restart`, `start`, `stop` | `comet-deploy restart`, `start`, `stop` | `restart` follows the rollout strategy. |
 | `mup logs [docker logs options]` | `comet-deploy logs [options]` | Same: the options go to `docker logs`. |
-| `mup status [--overview]` | `comet-deploy status` | A one-line overview per server. MUP's full status report is phase 2. |
+| `mup status [--overview]` | `comet-deploy status [--overview]` | A one-line overview per server, then the MongoDB and proxy blocks. MUP's full status report is phase 2. |
 | `mup meteor deploy`, `push`, `build`, `setup`, `envconfig`, `start`, `stop`, `restart`, `logs`, `status`, `destroy` | the same | Listed by `comet-deploy meteor --help`, not in the top-level help. |
 | `mup docker setup`, `update`, `restart`, `ps`, `status` | the same | |
 | `mup proxy setup`, `reconfig-shared`, `start`, `stop`, `logs`, `logs-le`, `nginx-config`, `status` | the same | `setup` and `reconfig-shared` restart the proxy only when its own files changed. `status` also lists drained servers. `proxy envconfig` fails, as in MUP. |
-| `mup mongo …`, `mup ssh`, `mup meteor debug` | exist, but print `… is not supported yet: it is planned for phase 2 of comet-deploy.` and exit 1 | Use MUP for these meanwhile; it works on the same config and servers. |
+| `mup mongo setup`, `logs`, `start`, `stop`, `shell`, `status` | the same | `shell` opens the app's database (`dbName`). `setup`, `start` refuse a MongoDB version change the data cannot take. |
+| `mup ssh`, `mup meteor debug` | exist, but print `… is not supported yet: it is planned for phase 2 of comet-deploy.` and exit 1 | Use MUP for these meanwhile; it works on the same config and servers. |
 | - | `comet-deploy rollback [--to <version>]` | New. |
 | - | `comet-deploy history` | New. |
 | - | `comet-deploy unlock` | New. |
@@ -195,6 +196,19 @@ Apps deployed by MUP and by comet-deploy can share the proxy on a server: comet-
 
 Details: [How it works → Behind the proxy](how-it-works.md#behind-the-proxy).
 
+## The built-in MongoDB
+
+The `mongo` section works as in MUP: MUP's own scripts, the same `/opt/mongodb` files (byte for byte), the same `mongodb` container, replica set `meteor` and `dataPath`, and the same `MONGO_URL` for the app. A server where MUP runs MongoDB needs no `setup` before `comet-deploy deploy`, and `mup mongo start` after `comet-deploy setup` finds `Same start script` and keeps the container. What changes:
+
+- **The app commands check MongoDB first.** The app is linked to the `mongodb` container and cannot start without it. `deploy` stops in preflight, before the build, and `reconfig`, `restart`, `rollback` and `start` stop before they touch the app, with the command that fixes it. MUP would stop the app and fail to start it again.
+- **A version change the data cannot take is refused.** MongoDB upgrades one release series at a time, with the featureCompatibilityVersion raised in between. MUP starts any `mongo.version`, and `mongod` then restarts forever on data it cannot open. comet-deploy refuses a skipped or an older series in `setup`, `mongo setup` and `mongo start`, before anything is written; `--allow-mongo-version-change` overrides it. See [Configuration → Upgrading MongoDB](configuration.md#upgrading-mongodb).
+- **No silent skip.** When the app does not have exactly one server, on the MongoDB server, MUP's `setup` leaves MongoDB out without a word. comet-deploy warns in `validate` and says why in `setup`.
+- **Restarting MongoDB on existing data works with MongoDB 6 and later.** MUP's start script creates the replica set with `rs.initiate` every time. With the `mongosh` shell of MongoDB 6+, that call fails on data that has the replica set already, so `mup mongo start` after `mongo stop`, or after a version change, reports `Failed connecting to mongo to create replica set` although MongoDB runs. comet-deploy runs the same script (it waits through the script's 20 retries), sees that the replica set `meteor` is up, and reports success.
+- **`mongo shell` opens the app's database** (`dbName`); MUP's opens `test`. It also works with piped input.
+- **`mongo status` adds the featureCompatibilityVersion**, which the next upgrade needs, and `status` shows the MongoDB block like `mup status`.
+- **The deploy lock.** `mongo setup`, `start` and `stop` take the app's lock.
+- `mongo setup` does what MUP's does: it prepares the files and does not start MongoDB (MUP's help says "Installs and starts"). `setup` does both.
+
 ## MUP and comet-deploy side by side
 
 Because the server state is the same, you can use both tools on the same app. The integration tests check this sequence against MUP 1.5.11: `mup setup` and `mup deploy`, then `comet-deploy deploy` without `setup`, then `mup restart` and `mup logs`, then `comet-deploy rollback` back to MUP's version, then `mup deploy` again.
@@ -205,7 +219,8 @@ Things to know:
 - After a `mup deploy`, `comet-deploy status` shows `-` as the version, because `:latest` is not a comet-deploy version. `comet-deploy rollback` then picks the newest kept comet-deploy version.
 - `mup deploy` moves `:latest` to `:previous` as usual. comet-deploy's version tags stay on the server.
 - MUP 1.5.11 reports the `cometDeploy` section as `cometDeploy is an unknown property` and continues. Only `mup validate` exits with code 1 because of it.
-- For the commands that are phase 2 in comet-deploy (`mup mongo`, `mup ssh`, `mup meteor debug`), use MUP on the same config.
+- For the commands that are phase 2 in comet-deploy (`mup ssh`, `mup meteor debug`), use MUP on the same config.
+- With the `mongo` section, both tools write the same MongoDB start script, so neither recreates the container the other one started. Mind the version: `mup setup` starts whatever `mongo.version` says, without comet-deploy's check.
 - Behind the proxy, `mup proxy setup` clears the `down` marks of drained servers; see [The reverse proxy](#the-reverse-proxy).
 
 ## Going back to MUP
@@ -257,5 +272,6 @@ On your machine, you can remove the local images `mup-myapp:<version>` and the l
 | The app's proxy files | written by `setup` and `proxy setup` | also brought up to date by every `deploy` and `reconfig` |
 | Proxy restart in `setup`, `proxy setup` | always | only when the proxy's own files changed |
 | App restart behind the proxy | a gap while the container is recreated | no gap; with load balancing the server leaves the upstream first |
-| `mongo`, hooks, private registry, bundle mode | supported | phase 2 |
+| Built-in MongoDB (`mongo`) | supported | supported, with MUP's scripts; checked before the app commands, version changes guarded |
+| Hooks, private registry, bundle mode | supported | phase 2 |
 | Docker Swarm, MUP plugins | supported | not planned |

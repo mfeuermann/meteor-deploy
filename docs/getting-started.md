@@ -59,7 +59,7 @@ A quick check from your machine (replace user and address):
 ssh root@192.0.2.10 'uname -m; sudo -n true && echo "sudo ok"'
 ```
 
-You also need a MongoDB that the server can reach (for example a managed MongoDB or your own replica set). MUP's built-in MongoDB (`mongo` section) is planned for phase 2.
+You also need a MongoDB: MUP's built-in one, which `setup` runs on the app's server (the `mongo` section, for an app with one server), or your own database that the server can reach (for example a managed MongoDB or your own replica set).
 
 ## 1. Install comet-deploy
 
@@ -98,9 +98,10 @@ Open `.deploy/mup.js` and change it:
 1. **`servers.one`**: your server's `host`, `username`, and one of `pem` (path to the private key), `password`, or nothing (ssh agent).
 2. **`app.name`**: a name without spaces. It names the container, `/opt/<name>` and the image on the server.
 3. **`app.env.ROOT_URL`**: the URL of your app.
-4. **`app.env.MONGO_URL`**: your database. Delete `MONGO_OPLOG_URL`, or point it at your database's `local` database if you use oplog tailing.
-5. **Delete the `mongo` section.** It sets up MUP's built-in MongoDB, which comet-deploy does not run yet; `deploy` refuses a config that has it.
-6. Keep `docker.image: 'zodern/meteor:root'`. comet-deploy needs an image that can build an app image (`zodern/meteor` or `abernix/meteord`).
+4. **MongoDB**, one of:
+   - **MUP's built-in MongoDB:** keep the `mongo` section. Its `version` must be a MongoDB that Meteor 3 can use, 4.0 to 8.0: the sample's `'4.4.12'` works, a newer one such as `'7.0.14'` is a better start (without `version`, MUP's default `3.4.24` is too old). `setup` starts it on the server, and the app's `MONGO_URL` is set for you. See [Configuration → `mongo`](configuration.md#mongo), also for upgrading it later.
+   - **Your own database:** delete the `mongo` section and set `app.env.MONGO_URL` to it. Delete `MONGO_OPLOG_URL`, or point it at your database's `local` database if you use oplog tailing.
+5. Keep `docker.image: 'zodern/meteor:root'`. comet-deploy needs an image that can build an app image (`zodern/meteor` or `abernix/meteord`).
 
 The result looks like this:
 

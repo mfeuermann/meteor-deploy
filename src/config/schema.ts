@@ -91,7 +91,7 @@ export const appSchema = Joi.object({
   dockerImageFrontendServer: Joi.string(),
 });
 
-/** MUP's built-in MongoDB section. Normalized like MUP but not run yet (phase 2). */
+/** MUP's built-in MongoDB section (run by src/mongo/). */
 export const mongoSchema = Joi.object({
   oplog: Joi.bool(),
   port: Joi.number(),
