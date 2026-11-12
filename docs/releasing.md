@@ -15,7 +15,7 @@ comet-deploy is published to npm as [`comet-deploy`](https://www.npmjs.com/packa
 3. The Release workflow:
    - fails when the tag is not `v` followed by the version in `package.json`;
    - packs the package, installs it and runs the installed command (`npm run test:package`);
-   - runs `npm publish`, which first runs lint, typecheck and the unit tests (`prepublishOnly`) and builds `dist/` (`prepack`).
+   - runs `npm publish`, which first runs lint, typecheck and the unit tests (`prepublishOnly`) and builds `dist/` (`prepack`). A version that is already on npm is skipped, so a re-run does no harm.
 
    A version with a prerelease part (`0.3.0-beta.1`) is published under the `next` dist-tag, so `npm install -g comet-deploy` keeps installing the last stable version.
 
@@ -48,7 +48,8 @@ npm configures trusted publishing per package, so the package must exist before 
 ```bash
 npm login
 git checkout main && git pull
-npm publish            # runs the checks and the build first
+npm publish                                # runs the checks and the build first
+git tag v0.1.0 && git push origin v0.1.0   # the workflow sees the version on npm and skips it
 ```
 
 Then add the trusted publisher as above. From the next version on, releases go through the workflow.

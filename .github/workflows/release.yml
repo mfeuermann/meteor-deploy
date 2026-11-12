@@ -33,10 +33,15 @@ jobs:
       - run: npm ci
       - run: npm run test:package
       # prepublishOnly runs lint, typecheck and the unit tests; prepack builds dist/.
-      # A prerelease version (1.2.0-beta.1) goes to the `next` dist-tag, not `latest`.
+      # A prerelease version (1.2.0-beta.1) goes to the `next` dist-tag, not `latest`. A version
+      # already on npm (the first one is published by hand, or a re-run) is left alone.
       - name: Publish
         run: |
           version="$(node -p "require('./package.json').version")"
+          if npm view "comet-deploy@$version" version > /dev/null 2>&1; then
+            echo "comet-deploy@$version is already on npm; nothing to publish."
+            exit 0
+          fi
           case "$version" in
             *-*) npm publish --tag next ;;
             *) npm publish ;;
