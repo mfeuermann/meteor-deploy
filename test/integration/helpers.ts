@@ -3,7 +3,7 @@
  * mup.js pointing at fake servers, and in-process runs of our CLI and MUP's.
  */
 import { execFile, execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -71,10 +71,20 @@ export function writeTestConfig(
   return path;
 }
 
-/** Runs our CLI in-process; stdout and stderr interleaved in `output`. */
+/**
+ * Runs our CLI in-process; stdout and stderr interleaved in `output`. With `COMET_TEST_LOG` set
+ * to a file path, the output is also appended there as it comes, so a test that times out
+ * still shows how far the command got.
+ */
 export async function cli(args: string[], cwd: string): Promise<{ code: number; output: string }> {
   const out: string[] = [];
-  const io = { stdout: (s: string) => void out.push(s), stderr: (s: string) => void out.push(s) };
+  const log = process.env.COMET_TEST_LOG;
+  if (log) appendFileSync(log, `\n$ comet-deploy ${args.join(' ')}\n`);
+  const push = (s: string) => {
+    out.push(s);
+    if (log) appendFileSync(log, s);
+  };
+  const io = { stdout: push, stderr: push };
   const code = await main(args, io, { cwd });
   return { code, output: out.join('') };
 }

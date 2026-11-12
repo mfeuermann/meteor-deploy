@@ -12,14 +12,31 @@ import { withAbortOnSignals } from '../signals.js';
 
 /**
  * Options of all four deploy commands. In MUP they all accept `--cached-build`; the other
- * options are comet-deploy's own.
+ * options are comet-deploy's own. `--cache-from` / `--cache-to` go to `docker buildx build`
+ * unchanged and can be repeated (an array option would also take the words that follow it).
  */
-const deployOptions = (y: Argv) =>
+export const deployOptions = (y: Argv) =>
   rolloutOptions(
     y
       .option('cached-build', { type: 'boolean', describe: 'Use the previous build even if the app changed' })
-      .option('force-build', { type: 'boolean', describe: 'Build even when nothing changed' }),
+      .option('force-build', { type: 'boolean', describe: 'Build even when nothing changed' })
+      .option('cache-from', { type: 'string', describe: 'BuildKit cache to import for the image build, as for docker buildx (repeatable)' })
+      .option('cache-to', { type: 'string', describe: 'BuildKit cache to export after the image build, as for docker buildx (repeatable)' }),
   ).conflicts('cached-build', 'force-build');
+
+/** A string option given once, several times or not at all, as a list. */
+const list = (v: unknown): string[] => (v === undefined ? [] : Array.isArray(v) ? v.map(String) : [String(v)]);
+
+/** The pipeline options from the parsed deploy options. */
+export function deployArgs(argv: Record<string, unknown>) {
+  return {
+    cachedBuild: !!argv['cached-build'],
+    forceBuild: !!argv['force-build'],
+    cacheFrom: list(argv['cache-from']),
+    cacheTo: list(argv['cache-to']),
+    ...rolloutArgs(argv),
+  };
+}
 
 /**
  * Runs the deploy pipeline with the parsed options; `stopAfter` ends it after the build or
@@ -30,12 +47,7 @@ async function runDeploy(ctx: CommandContext, argv: Record<string, unknown>, sto
   const outcome = await withAbortOnSignals(ctx.reporter, (signal) =>
     deployPipeline(
       ctx,
-      {
-        cachedBuild: !!argv['cached-build'],
-        forceBuild: !!argv['force-build'],
-        ...rolloutArgs(argv),
-        stopAfter,
-      },
+      { ...deployArgs(argv), stopAfter },
       { signal },
     ),
   );

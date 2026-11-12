@@ -38,9 +38,12 @@ export function parseBuildxPlatforms(stdout: string): string[] {
 /**
  * Platforms the current buildx builder can build for (from `docker buildx inspect`); empty when
  * buildx is missing or fails. A foreign platform appears here only when emulation is set up.
+ * `--bootstrap` starts a builder that is not running yet (a new `docker buildx create` builder,
+ * or one whose container stopped): an inactive builder lists no platforms at all. For the
+ * default `docker` driver it does nothing.
  */
 export async function buildxPlatforms(): Promise<string[]> {
-  const r = await run('docker', ['buildx', 'inspect']);
+  const r = await run('docker', ['buildx', 'inspect', '--bootstrap']);
   return r.code === 0 ? parseBuildxPlatforms(r.stdout) : [];
 }
 
@@ -64,32 +67,47 @@ export async function pullImage(image: string, platform: string, onLine?: (l: st
   return r.code === 0;
 }
 
+/** What `buildImage` builds; also the input of `buildxArgs`. */
+export interface ImageBuild {
+  contextDir: string;
+  platform: string;
+  tag: string;
+  buildArgs: Record<string, string>;
+  labels?: Record<string, string>;
+  /** `--cache-from` values, passed through unchanged (e.g. `type=gha,scope=myapp`). */
+  cacheFrom?: string[];
+  /** `--cache-to` values, passed through unchanged (e.g. `type=gha,mode=max,scope=myapp`). */
+  cacheTo?: string[];
+}
+
+/** The arguments of `docker buildx build` for `buildImage`; the build context comes last. */
+export function buildxArgs(o: ImageBuild): string[] {
+  const args = ['buildx', 'build', '--load', '--progress', 'plain', '--platform', o.platform, '-t', o.tag, '-f', '-'];
+  for (const [k, v] of Object.entries(o.buildArgs)) args.push('--build-arg', `${k}=${v}`);
+  for (const [k, v] of Object.entries(o.labels ?? {})) args.push('--label', `${k}=${v}`);
+  for (const c of o.cacheFrom ?? []) args.push('--cache-from', c);
+  for (const c of o.cacheTo ?? []) args.push('--cache-to', c);
+  args.push(o.contextDir);
+  return args;
+}
+
 /**
  * `docker buildx build --load` with the Dockerfile on stdin (`-f -`), so no Dockerfile is written
  * into the build context. `--load` puts the result into the local image store, where the
  * registry push takes it from (a buildx builder with a non-default driver would otherwise keep
  * it only in its own cache). `--progress plain` gives line-based output for the verbose log.
+ * `--cache-from` / `--cache-to` let a machine without the earlier builds' BuildKit cache, such as
+ * a fresh CI runner, reuse the layers of an earlier build: a cache hit gives the same layer, so
+ * the servers do not get it again.
  *
  * Returns the image id of the new tag and the full build log.
  *
  * @throws CometError when the build fails (with the last 60 log lines) or the tag is missing
  *   afterwards.
  */
-export async function buildImage(o: {
-  contextDir: string;
-  dockerfile: string;
-  platform: string;
-  tag: string;
-  buildArgs: Record<string, string>;
-  labels?: Record<string, string>;
-  onLine?: (l: string) => void;
-}): Promise<{ imageId: string; log: string }> {
-  const args = ['buildx', 'build', '--load', '--progress', 'plain', '--platform', o.platform, '-t', o.tag, '-f', '-'];
-  for (const [k, v] of Object.entries(o.buildArgs)) args.push('--build-arg', `${k}=${v}`);
-  for (const [k, v] of Object.entries(o.labels ?? {})) args.push('--label', `${k}=${v}`);
-  args.push(o.contextDir);
+export async function buildImage(o: ImageBuild & { dockerfile: string; onLine?: (l: string) => void }): Promise<{ imageId: string; log: string }> {
   const log: string[] = [];
-  const r = await run('docker', args, {
+  const r = await run('docker', buildxArgs(o), {
     input: o.dockerfile,
     onLine: (l) => {
       log.push(l);

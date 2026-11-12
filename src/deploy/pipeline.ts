@@ -351,7 +351,15 @@ export function summaryRows(
  */
 export async function deployPipeline(
   ctx: CommandContext,
-  o: { cachedBuild: boolean; forceBuild: boolean; strategy?: CometOptions['strategy']; stopAfter?: 'build' | 'push'; forceUnlock?: boolean },
+  o: {
+    cachedBuild: boolean;
+    forceBuild: boolean;
+    cacheFrom?: string[];
+    cacheTo?: string[];
+    strategy?: CometOptions['strategy'];
+    stopAfter?: 'build' | 'push';
+    forceUnlock?: boolean;
+  },
   deps: Partial<PipelineDeps> = {},
 ): Promise<DeployOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
@@ -409,7 +417,9 @@ export async function deployPipeline(
     // `meteor.prepareBundle` is entered after the lock; the keys still run in MUP's order.
     await step('meteor.push', async () => {
       built = await step('meteor.build', () =>
-        r.phase('Build', () => d.buildApp(ctx, { platforms: pre.platforms, version, cachedBuild: o.cachedBuild, forceBuild: o.forceBuild })),
+        r.phase('Build', () =>
+          d.buildApp(ctx, { platforms: pre.platforms, version, cachedBuild: o.cachedBuild, forceBuild: o.forceBuild, cacheFrom: o.cacheFrom, cacheTo: o.cacheTo }),
+        ),
       );
     });
     // A build-cache hit reuses the image of an earlier build, which keeps that build's version

@@ -83,6 +83,17 @@ export function hashExclusions(appPath: string, basePath: string, buildLocation:
 /** Suffix that keeps the local tags and build directories of a multi-platform build apart. */
 const archSuffix = (p: Platform) => (p === 'linux/arm64' ? 'arm64' : 'amd64');
 
+/** Options of `buildApp`. */
+export interface BuildAppOptions {
+  platforms: Platform[];
+  version: string;
+  cachedBuild: boolean;
+  forceBuild: boolean;
+  /** BuildKit cache imports and exports for `docker buildx build` (`--cache-from` / `--cache-to`). */
+  cacheFrom?: string[];
+  cacheTo?: string[];
+}
+
 /**
  * Builds (or reuses) one local image per target platform, one platform after the other.
  *
@@ -97,7 +108,7 @@ const archSuffix = (p: Platform) => (p === 'linux/arm64' ? 'arm64' : 'amd64');
  */
 export async function buildApp(
   ctx: CommandContext,
-  o: { platforms: Platform[]; version: string; cachedBuild: boolean; forceBuild: boolean },
+  o: BuildAppOptions,
 ): Promise<BuiltImage[]> {
   const { app } = ctx.config;
   const r = ctx.reporter;
@@ -172,6 +183,8 @@ export async function buildApp(
         tag: localTag,
         buildArgs,
         labels: { 'comet-deploy.deps-hash': depsHash, 'comet-deploy.version': o.version },
+        cacheFrom: o.cacheFrom,
+        cacheTo: o.cacheTo,
         onLine: (l) => r.verboseLine(null, l),
       }),
     );

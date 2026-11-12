@@ -95,6 +95,18 @@ async function setup(o: { extra?: string; activate?: Record<string, ActivationRe
 }
 
 describe('deployPipeline', () => {
+  it('hands the build cache import and export to the build', async () => {
+    const s = await setup();
+    const build = s.deps.buildApp!;
+    let got: unknown;
+    s.deps.buildApp = async (c, o) => {
+      got = o;
+      return build(c, o);
+    };
+    await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false, cacheFrom: ['type=local,src=/c'], cacheTo: ['type=local,dest=/c'] }, s.deps);
+    expect(got).toMatchObject({ cacheFrom: ['type=local,src=/c'], cacheTo: ['type=local,dest=/c'] });
+  });
+
   it('runs every phase in order', async () => {
     const s = await setup();
     const out = await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps);
