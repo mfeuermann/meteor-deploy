@@ -25,6 +25,8 @@ if [ "$(sudo docker inspect -f '{{.State.Running}}' mongodb 2>/dev/null)" = "tru
   FCV=$($T sudo docker exec mongodb $SHELL_CMD --quiet --eval 'JSON.stringify(db.adminCommand({getParameter: 1, featureCompatibilityVersion: 1}))' 2>/dev/null \
     | sed -n 's/.*"featureCompatibilityVersion":{\{0,1\}\("version":\)\{0,1\}"\([0-9.]*\)".*/\2/p' | head -n 1)
   echo "fcv=$FCV"
+  # The replica set MUP's start script creates ("meteor"); empty when there is none yet.
+  echo "replica_set=$($T sudo docker exec mongodb $SHELL_CMD --quiet --eval 'rs.status().set' 2>/dev/null | tail -n 1)"
 else
   echo "running=0"
 fi

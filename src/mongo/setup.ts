@@ -9,6 +9,7 @@ import { CometError } from '../core/errors.js';
 import { APP_LOCK_DEPS, withAppLock, type AppLockDeps } from '../deploy/app-lock.js';
 import { verboseOutput } from '../output/lines.js';
 import { runOnServers } from '../remote/on-servers.js';
+import { formatFailureOutput, type ExecResult } from '../ssh/connection.js';
 import { MONGO_START_NEW, mongoServers, renderMongoAsset, renderMongoStartScript } from './render.js';
 import { builtInMongoProblem, judgeVersionChange, setFcvCommand, type VersionVerdict } from './rules.js';
 import { readMongoState, type MongoState } from './state.js';
@@ -85,6 +86,17 @@ export async function mongoSetup(ctx: CommandContext, o: MongoOptions = {}): Pro
   });
 }
 
+/**
+ * Whether a failed `mongo-start.sh` failed only in its last step, on data that has MUP's
+ * replica set already. The step calls `rs.initiate` again; the old `mongo` shell printed
+ * "already initialized" and exited 0, but `mongosh` (MongoDB 6 and later) exits 1, so the
+ * script gives up after 20 tries with "Failed connecting to mongo to create replica set"
+ * although MongoDB runs. MUP's own `mongo start` fails the same way there.
+ */
+function replicaSetAlreadyThere(r: ExecResult, after: MongoState): boolean {
+  return after.running && after.replicaSet === 'meteor' && /Failed connecting to mongo to create replica set/.test(r.stderr);
+}
+
 /** One line on what `mongo-start.sh` did, from its output and the state before and after. */
 function startResult(before: MongoState, after: MongoState, stdout: string): string {
   if (/^Same start script$/m.test(stdout)) return before.running ? 'MongoDB is up to date (container kept)' : 'MongoDB started';
@@ -115,8 +127,11 @@ export async function mongoStart(ctx: CommandContext, o: MongoOptions = {}): Pro
           }
           const verdict = judgeVersionChange(before.currentVersion, before.newVersion, before.fcv);
           applyVerdict(ctx, s, verdict, o.allowVersionChange);
-          const r = await conn.runScriptOrThrow(startSh, 'Starting MongoDB', verboseOutput(ctx.reporter, s));
+          const r = await conn.runScript(startSh, verboseOutput(ctx.reporter, s));
           const after = await readMongoState(conn);
+          if (r.code !== 0 && !replicaSetAlreadyThere(r, after)) {
+            throw new CometError(`[${s}] Starting MongoDB failed (exit code ${r.code}):\n${formatFailureOutput(r)}`);
+          }
           if (verdict.kind === 'upgrade') {
             hints.push(`[${s}] Before the next MongoDB upgrade, set the feature compatibility version: comet-deploy mongo shell, then ${setFcvCommand(verdict.to)}`);
           }

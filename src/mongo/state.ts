@@ -16,6 +16,8 @@ export interface MongoState {
   containerId: string | null;
   /** The running MongoDB's featureCompatibilityVersion; null when not running or not readable. */
   fcv: string | null;
+  /** The name of the running MongoDB's replica set (MUP's is `meteor`); null when there is none. */
+  replicaSet: string | null;
 }
 
 /** Parses the key=value lines of mongo-state.sh; unknown lines are ignored, empty values are null. */
@@ -33,6 +35,7 @@ export function parseMongoState(stdout: string): MongoState {
     running: kv.get('running') === '1',
     containerId: value('container'),
     fcv: value('fcv'),
+    replicaSet: value('replica_set'),
   };
 }
 

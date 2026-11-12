@@ -29,6 +29,8 @@ const MUP = (o: Opts) => `module.exports = {
 interface World {
   states?: string[];
   startOutput?: string;
+  /** Exit code and stderr of mongo-start.sh (default 0). */
+  startFails?: { code: number; stderr: string };
 }
 
 const label = (s: string): string => {
@@ -58,6 +60,7 @@ async function setup(o: Opts = {}, world: World = {}) {
       const l = label(s);
       log.push(`${name}:${l}`);
       let stdout = '';
+      if (l === 'mongo-start.sh' && world.startFails) return { code: world.startFails.code, stdout: world.startOutput ?? '', stderr: world.startFails.stderr };
       if (l === 'state') {
         const list = world.states ?? ['set_up=0\nrunning=0'];
         stdout = list[Math.min(stateCalls++, list.length - 1)];
@@ -151,6 +154,21 @@ describe('mongo start', () => {
     await mongoStart(s.ctx);
     expect(s.out()).toContain('MongoDB recreated: the start script changed (6.0.13 → 7.0.14)');
     expect(s.out()).toContain('setFeatureCompatibilityVersion: "7.0", confirm: true');
+  });
+
+  it("accepts MUP's replica set step failing on data that has the replica set already", async () => {
+    // mongosh (MongoDB 6+) throws "already initialized" where the old mongo shell printed it,
+    // so MUP's start script exits 1 after 20 tries although MongoDB runs fine.
+    const before = RUNNING_6.replace('running=1', 'running=0');
+    const after = `${RUNNING_6}\nreplica_set=meteor`;
+    const s = await setup({}, { states: [before, after], startOutput: 'Same start script\nCreating replica set\n', startFails: { code: 1, stderr: 'Failed connecting to mongo to create replica set\n' } });
+    await mongoStart(s.ctx);
+    expect(s.out()).toContain('MongoDB started');
+  });
+
+  it('a start script that fails otherwise still fails', async () => {
+    const s = await setup({}, { states: [RUNNING_6.replace('running=1', 'running=0'), 'set_up=1\nrunning=0'], startOutput: 'Same start script\n', startFails: { code: 1, stderr: 'docker: Error response from daemon\n' } });
+    await expect(mongoStart(s.ctx)).rejects.toThrow(/Starting MongoDB failed \(exit code 1\)[\s\S]*Error response from daemon/);
   });
 
   it('says how to set MongoDB up when the server has no start script', async () => {
