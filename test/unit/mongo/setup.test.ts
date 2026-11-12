@@ -37,6 +37,7 @@ const label = (s: string): string => {
   if (s.includes('# mongo-state.sh')) return 'state';
   if (s.includes('sudo mkdir -p /opt/mongodb')) return 'mongo-setup.sh';
   if (s.includes('Please run "mup mongo setup"')) return 'mongo-start.sh';
+  if (s.includes('bash /opt/mongodb/mongo-start-current.sh')) return 'start-current';
   if (s.includes('docker exec mongodb mongod --shutdown') && !s.includes('docker run')) return 'mongo-stop.sh';
   if (s.includes('echo "acquired"')) return 'lock';
   if (s.includes('deploy.lock') || s.includes('LOCK_DIR')) return 'unlock';
@@ -60,7 +61,7 @@ async function setup(o: Opts = {}, world: World = {}) {
       const l = label(s);
       log.push(`${name}:${l}`);
       let stdout = '';
-      if (l === 'mongo-start.sh' && world.startFails) return { code: world.startFails.code, stdout: world.startOutput ?? '', stderr: world.startFails.stderr };
+      if ((l === 'mongo-start.sh' || l === 'start-current') && world.startFails) return { code: world.startFails.code, stdout: world.startOutput ?? '', stderr: world.startFails.stderr };
       if (l === 'state') {
         const list = world.states ?? ['set_up=0\nrunning=0'];
         stdout = list[Math.min(stateCalls++, list.length - 1)];
@@ -134,17 +135,28 @@ describe('mongo start', () => {
     expect(s.steps('one')).not.toContain('mongo-start.sh');
   });
 
-  it('reports a kept container', async () => {
-    const s = await setup({}, { states: [RUNNING_6], startOutput: 'Same start script\n' });
+  it("keeps a running container whose start script did not change without running MUP's script", async () => {
+    // MUP's script would do nothing here, unless its "docker ps" (without sudo) fails for an
+    // SSH user outside the docker group: then it recreates the container every time.
+    const s = await setup({}, { states: [`${RUNNING_6}\nsame_script=1`] });
     await mongoStart(s.ctx);
-    expect(s.steps('one')).toEqual(['lock', 'state', 'mongo-start.sh', 'state', 'unlock']);
+    expect(s.steps('one')).toEqual(['lock', 'state', 'unlock']);
     expect(s.out()).toContain('MongoDB is up to date (container kept)');
   });
 
-  it('reports a stopped container that was started again', async () => {
-    const s = await setup({}, { states: [RUNNING_6.replace('running=1', 'running=0').replace('fcv=6.0', ''), RUNNING_6], startOutput: 'Same start script\n' });
+  it('starts a stopped container with the unchanged start script itself', async () => {
+    // MUP's script decides with "docker ps -f name=mongodb", which also matches other
+    // containers such as "mongodb-backup", and then starts nothing.
+    const before = `${RUNNING_6.replace('running=1', 'running=0').replace('fcv=6.0', '')}\nsame_script=1`;
+    const s = await setup({}, { states: [before, RUNNING_6] });
     await mongoStart(s.ctx);
+    expect(s.steps('one')).toEqual(['lock', 'state', 'start-current', 'state', 'unlock']);
     expect(s.out()).toContain('MongoDB started');
+  });
+
+  it('fails when MongoDB does not run after the start script', async () => {
+    const s = await setup({}, { states: ['set_up=1\nnew_version=6.0.13\nrunning=0', 'set_up=1\nnew_version=6.0.13\ncurrent_version=6.0.13\nrunning=0'] });
+    await expect(mongoStart(s.ctx)).rejects.toThrow(/MongoDB is not running after the start script/);
   });
 
   it('reports a recreated container and how to raise the FCV after an upgrade', async () => {
@@ -159,7 +171,7 @@ describe('mongo start', () => {
   it("accepts MUP's replica set step failing on data that has the replica set already", async () => {
     // mongosh (MongoDB 6+) throws "already initialized" where the old mongo shell printed it,
     // so MUP's start script exits 1 after 20 tries although MongoDB runs fine.
-    const before = RUNNING_6.replace('running=1', 'running=0');
+    const before = `${RUNNING_6.replace('running=1', 'running=0')}\nsame_script=1`;
     const after = `${RUNNING_6}\nreplica_set=meteor`;
     const s = await setup({}, { states: [before, after], startOutput: 'Same start script\nCreating replica set\n', startFails: { code: 1, stderr: 'Failed connecting to mongo to create replica set\n' } });
     await mongoStart(s.ctx);

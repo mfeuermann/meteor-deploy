@@ -106,6 +106,8 @@ export function judgeVersionChange(current: string | null, next: string, fcv: st
   if (nextSeries(from) !== to) {
     return { kind: 'refuse', reason: `${change} skips a release series: MongoDB upgrades one release series at a time (${from} → ${nextSeries(from) ?? '?'} → …), with the featureCompatibilityVersion raised after each step. See ${UPGRADE_DOCS}` };
   }
+  // The featureCompatibilityVersion exists from 3.4 on; 3.2 data has none to check.
+  if (order(from) < order('3.4')) return { kind: 'upgrade', from, to };
   if (fcv === null) {
     return { kind: 'refuse', reason: `${change}: could not read the featureCompatibilityVersion of the running MongoDB (is it running?). Upgrading to ${to} needs it to be ${from}.` };
   }

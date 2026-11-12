@@ -97,19 +97,28 @@ function replicaSetAlreadyThere(r: ExecResult, after: MongoState): boolean {
   return after.running && after.replicaSet === 'meteor' && /Failed connecting to mongo to create replica set/.test(r.stderr);
 }
 
-/** One line on what `mongo-start.sh` did, from its output and the state before and after. */
-function startResult(before: MongoState, after: MongoState, stdout: string): string {
-  if (/^Same start script$/m.test(stdout)) return before.running ? 'MongoDB is up to date (container kept)' : 'MongoDB started';
-  if (!before.containerId && !before.currentVersion) return 'MongoDB started';
+/** One line on what the start did, from the state before and after. */
+function startResult(before: MongoState, after: MongoState): string {
+  if (before.running && after.containerId === before.containerId) return 'MongoDB is up to date (container kept)';
+  if (before.sameScript || (!before.containerId && !before.currentVersion)) return 'MongoDB started';
   const versions = before.currentVersion && after.currentVersion && before.currentVersion !== after.currentVersion ? ` (${before.currentVersion} → ${after.currentVersion})` : '';
   return `MongoDB recreated: the start script changed${versions}`;
 }
 
 /**
- * `mongo.start`: MUP's `mongo-start.sh`, which starts a stopped container when the start script
- * did not change, and recreates the container (keeping the data) when it did. The version
- * change it would make is judged from the scripts on the server, which `mup mongo setup` may
- * have written with another version than this config.
+ * Runs the current start script directly: what `mongo-start.sh` does for an unchanged script
+ * and a container that does not run. MUP's script decides that with `docker ps -f name=mongodb`
+ * without sudo, which also matches other containers (`mongodb-backup`) and fails for an SSH
+ * user outside the docker group, so the decision is made here with exact checks.
+ */
+const START_CURRENT = 'bash /opt/mongodb/mongo-start-current.sh\n';
+
+/**
+ * `mongo.start`: MUP's `mongo-start.sh`, which recreates the container (keeping the data) when
+ * the start script changed, and starts it when it does not run. With an unchanged script and a
+ * running container nothing is run, which is what MUP's script means to do. The version
+ * change is judged from the scripts on the server, which `mup mongo setup` may have written
+ * with another version than this config. MongoDB must run afterwards.
  */
 export async function mongoStart(ctx: CommandContext, o: MongoOptions = {}): Promise<void> {
   await ctx.runner.run('mongo.start', async () => {
@@ -127,15 +136,19 @@ export async function mongoStart(ctx: CommandContext, o: MongoOptions = {}): Pro
           }
           const verdict = judgeVersionChange(before.currentVersion, before.newVersion, before.fcv);
           applyVerdict(ctx, s, verdict, o.allowVersionChange);
-          const r = await conn.runScript(startSh, verboseOutput(ctx.reporter, s));
+          if (before.sameScript && before.running) return startResult(before, before);
+          const r = await conn.runScript(before.sameScript ? START_CURRENT : startSh, verboseOutput(ctx.reporter, s));
           const after = await readMongoState(conn);
           if (r.code !== 0 && !replicaSetAlreadyThere(r, after)) {
             throw new CometError(`[${s}] Starting MongoDB failed (exit code ${r.code}):\n${formatFailureOutput(r)}`);
           }
+          if (!after.running) {
+            throw new CometError(`[${s}] MongoDB is not running after the start script. See: comet-deploy mongo logs\n${formatFailureOutput(r)}`);
+          }
           if (verdict.kind === 'upgrade') {
             hints.push(`[${s}] Before the next MongoDB upgrade, set the feature compatibility version: comet-deploy mongo shell, then ${setFcvCommand(verdict.to)}`);
           }
-          return startResult(before, after, r.stdout);
+          return startResult(before, after);
         }),
       ),
     );

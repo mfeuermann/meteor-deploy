@@ -267,7 +267,7 @@ mongo: {
 
 | Key | Default | Description |
 |---|---|---|
-| `servers` | required | The server MongoDB runs on. MUP uses only the first one; comet-deploy warns when there are more. |
+| `servers` | required | The server MongoDB runs on. As in MUP, MongoDB is set up on every server listed, but the app uses only the first one; comet-deploy warns when there are more. |
 | `version` | `'3.4.24'` (as MUP) | The tag of the `mongo` image. **Set it.** Meteor 3's MongoDB driver (6.16 in Meteor 3.5) works with MongoDB 4.0 to 8.0, so the default 3.4.24 cannot run a Meteor 3 app. Changing it on a server with data: see [Upgrading MongoDB](#upgrading-mongodb). |
 | `dbName` | `app.name` without dots | The database the app uses (the path of `MONGO_URL`), and the one `mongo shell` opens. |
 | `dataPath` | `/var/lib/mongodb` | The directory on the server that holds the data (mounted at `/data/db`). `mongo stop` and a new version keep it. |
@@ -293,7 +293,8 @@ MongoDB opens data written by the same release series (`7.0.x`) or by the series
 |---|---|
 | Same series (`7.0.14` → `7.0.15`) | Recreates the container with the new image; the data stays. |
 | The next series (`6.0.x` → `7.0.x`), FCV `6.0` | Recreates the container, then reminds you to raise the FCV before the next upgrade. |
-| The next series, but the FCV is older or cannot be read (MongoDB stopped) | Refuses, with the command that sets the FCV. |
+| The next series, but the FCV is older or cannot be read (MongoDB stopped) | Refuses. For an older FCV the message has the command that sets it; when it cannot be read, start MongoDB with the old version first. |
+| `3.2` → `3.4` | Recreates the container (3.2 has no FCV to check). |
 | A skipped series (`5.0` → `7.0`) or an older series | Refuses. |
 | A version that is not `major.minor[.patch]` of a known series (`latest`, `7`, `7.3`) | Warns that the change was not checked, and goes on as MUP would. |
 

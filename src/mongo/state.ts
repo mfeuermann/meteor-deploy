@@ -10,6 +10,8 @@ export interface MongoState {
   newVersion: string | null;
   /** `MONGO_VERSION` of the current start script (what the container was created from). */
   currentVersion: string | null;
+  /** The new and the current start script are the same file: `mongo start` changes nothing but a stopped container. */
+  sameScript: boolean;
   /** The `mongodb` container runs. */
   running: boolean;
   /** The `mongodb` container's id; null when there is none. */
@@ -32,6 +34,7 @@ export function parseMongoState(stdout: string): MongoState {
     setUp: kv.get('set_up') === '1',
     newVersion: value('new_version'),
     currentVersion: value('current_version'),
+    sameScript: kv.get('same_script') === '1',
     running: kv.get('running') === '1',
     containerId: value('container'),
     fcv: value('fcv'),

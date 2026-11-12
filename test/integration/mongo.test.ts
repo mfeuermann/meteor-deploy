@@ -124,6 +124,8 @@ describe('the built-in MongoDB', () => {
     expect(status.code, status.output).toBe(0);
     expect(status.output).toContain('running on server');
     expect(status.output).toContain(`Version ${MONGO_PATCH}`);
+    // Read from the running MongoDB (the version guard uses the same read).
+    expect(status.output).toContain('Feature compatibility: 7.0');
     const all = await cli(['status', ...config()], p.root);
     expect(all.output).toContain('=> MongoDB status');
   });

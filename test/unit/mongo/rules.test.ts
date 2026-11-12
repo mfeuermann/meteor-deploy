@@ -76,6 +76,10 @@ describe('judgeVersionChange', () => {
     expect((v as { reason: string }).reason).toMatch(/featureCompatibilityVersion is 5\.0/);
   });
 
+  it('3.2 to 3.4 needs no FCV, which exists only from 3.4 on', () => {
+    expect(judgeVersionChange('3.2.22', '3.4.24', null)).toEqual({ kind: 'upgrade', from: '3.2', to: '3.4' });
+  });
+
   it('refuses one series up when the FCV could not be read', () => {
     const v = judgeVersionChange('6.0.13', '7.0.14', null);
     expect(v.kind).toBe('refuse');

@@ -147,7 +147,7 @@ export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[
     }
     // MUP skips its MongoDB for such a config without an error; comet-deploy says so up front.
     const mongoServerNames = Object.keys(config.mongo.servers ?? {});
-    if (mongoServerNames.length > 1) warn('mongo.servers', `has ${mongoServerNames.length} servers; MUP uses only the first one ("${mongoServerNames[0]}")`);
+    if (mongoServerNames.length > 1) warn('mongo.servers', `has ${mongoServerNames.length} servers; MongoDB is set up on each of them, but the app uses only the first one ("${mongoServerNames[0]}")`);
     const problem = builtInMongoProblem(config);
     if (problem) warn('mongo', problem);
   }

@@ -148,7 +148,7 @@ describe('validateConfig', () => {
       expect(hasFatal(issues)).toBe(false);
     });
 
-    it('warns that MUP uses only the first of several mongo.servers', () => {
+    it('warns that the app uses only the first of several mongo.servers', () => {
       const issues = check((c) => {
         withMongo(c);
         c.servers.two = { host: '192.0.2.2', username: 'root', password: 'pw' };
@@ -156,7 +156,7 @@ describe('validateConfig', () => {
       });
       const issue = find(issues, 'mongo.servers');
       expect(issue?.severity).toBe('warning');
-      expect(issue?.message).toBe('has 2 servers; MUP uses only the first one ("one")');
+      expect(issue?.message).toBe('has 2 servers; MongoDB is set up on each of them, but the app uses only the first one ("one")');
     });
   });
 

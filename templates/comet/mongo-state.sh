@@ -11,6 +11,8 @@ if sudo test -f $DIR/mongo-start-new.sh; then echo "set_up=1"; else echo "set_up
 CURRENT=$(version_of $DIR/mongo-start-current.sh)
 echo "new_version=$(version_of $DIR/mongo-start-new.sh)"
 echo "current_version=$CURRENT"
+# Whether mongo start would run the current start script unchanged (MUP compares the two files).
+if sudo cmp -s $DIR/mongo-start-new.sh $DIR/mongo-start-current.sh 2>/dev/null; then echo "same_script=1"; else echo "same_script=0"; fi
 echo "container=$(sudo docker inspect -f '{{.Id}}' mongodb 2>/dev/null)"
 
 if [ "$(sudo docker inspect -f '{{.State.Running}}' mongodb 2>/dev/null)" = "true" ]; then
