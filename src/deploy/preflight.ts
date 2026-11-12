@@ -14,6 +14,9 @@ import { run } from '../local/exec.js';
 import { readLock, serverFacts, type LockInfo, type ServerFacts } from '../remote/ops.js';
 import { probeForwarding } from '../transfer/tunnel.js';
 import { PROXY_NAME, PROXY_NOT_SET_UP } from '../proxy/render.js';
+import { mongoNotRunningMessage } from '../mongo/check.js';
+import { MONGO_CONTAINER } from '../mongo/render.js';
+import { builtInMongoProblem } from '../mongo/rules.js';
 
 export type { Platform };
 
@@ -47,6 +50,11 @@ export interface PreflightInput {
    * `mup-nginx-proxy` runs there, or `error` when that could not be read. Absent without a proxy.
    */
   proxyServers?: Record<string, { proxyRunning?: boolean; error?: string }>;
+  /**
+   * Set when the `mongodb` container must run on every app server (a deploy with a `mongo`
+   * section); `problem` is why the config cannot run MUP's built-in MongoDB, if it cannot.
+   */
+  mongo?: { problem: string | null };
   /** `cometDeploy.platform`: `auto` (from `uname -m`) or a fixed platform for every server. */
   override: CometOptions['platform'];
   /** Whether this command builds locally; the local checks only matter then. */
@@ -100,6 +108,7 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
     const f = s.facts;
     if (!f.hasBash) errors.push(`Server "${name}": bash is required on the server.`);
     if (i.distributes && f.appSetup === false) errors.push(`Server "${name}": the app is not set up on this server yet. Run "comet-deploy setup" first.`);
+    if (i.mongo && f.mongoRunning === false) errors.push(mongoNotRunningMessage(name, f.mongoSetUp === true, i.mongo.problem));
     if (i.distributes && s.forwardingError) {
       errors.push(
         `Server "${name}": SSH reverse port forwarding does not work (${s.forwardingError}). ` +
@@ -174,7 +183,7 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
 export async function runPreflight(
   ctx: CommandContext,
   servers: string[],
-  o: { needsBuild: boolean; checkLocks: boolean; distributes: boolean; proxyServers?: string[] },
+  o: { needsBuild: boolean; checkLocks: boolean; distributes: boolean; proxyServers?: string[]; mongo?: boolean },
 ): Promise<PreflightResult> {
   const appName = ctx.config.app.name;
   const proxyServers = o.proxyServers ?? [];
@@ -188,7 +197,7 @@ export async function runPreflight(
   const serverResults = await Promise.allSettled(
     servers.map(async (name) => {
       const conn = await ctx.ssh.get(name);
-      const facts = await serverFacts(conn, o.distributes ? appName : undefined, { proxyName: proxyName(name) });
+      const facts = await serverFacts(conn, o.distributes ? appName : undefined, { proxyName: proxyName(name), mongoName: o.mongo ? MONGO_CONTAINER : undefined });
       const lock = o.checkLocks ? await readLock(conn, appName) : null;
       // The image reaches the servers through a reverse tunnel; `meteor build` sends nothing.
       const forwardingError = o.distributes ? await probeForwarding(conn) : null;
@@ -218,6 +227,7 @@ export async function runPreflight(
       }),
     ),
     ...(proxyServers.length ? { proxyServers: Object.fromEntries(proxyServers.map((s) => [s, proxyFacts(s)])) } : {}),
+    ...(o.mongo ? { mongo: { problem: builtInMongoProblem(ctx.config) } } : {}),
     override: ctx.config.cometDeploy.platform,
     needsBuild: o.needsBuild,
     checkLocks: o.checkLocks,

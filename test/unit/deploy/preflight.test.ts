@@ -184,3 +184,18 @@ describe('evaluatePreflight: proxy servers', () => {
     expect(both.errors).toEqual(['Server "one": connect ETIMEDOUT']);
   });
 });
+
+describe('evaluatePreflight: MongoDB', () => {
+  it('stops before the build when MongoDB does not run on an app server', () => {
+    const r = evaluatePreflight(input({ mongo: { problem: null }, servers: { one: { facts: facts({ mongoRunning: false, mongoSetUp: true }), lock: null } } }));
+    expect(r.errors).toEqual(['Server "one": MongoDB (container "mongodb") is not running. Start it with: comet-deploy mongo start']);
+  });
+
+  it('does not check MongoDB without a mongo section', () => {
+    expect(evaluatePreflight(input({ servers: { one: { facts: facts({ mongoRunning: false, mongoSetUp: false }), lock: null } } })).errors).toEqual([]);
+  });
+
+  it('an unreachable app server is reported once', () => {
+    expect(evaluatePreflight(input({ mongo: { problem: null }, servers: { one: { error: 'connect ETIMEDOUT' } } })).errors).toEqual(['Server "one": connect ETIMEDOUT']);
+  });
+});

@@ -79,7 +79,7 @@ const envIsObject = (app: RawConfig) => app.env === undefined || app.env === nul
 /**
  * MUP's built-in MongoDB: `MONGO_URL` is always replaced with the local `mongodb` container
  * (validate.ts warns when the user's URL looks external) and the app is linked to it.
- * comet-deploy does not run the `mongo` section yet, but normalizes it for parity.
+ * `setup` and the `mongo` commands run that MongoDB (src/mongo/).
  */
 function prepareMongo(config: RawConfig): RawConfig {
   if (!config.app || !config.mongo || !envIsObject(config.app)) return config;

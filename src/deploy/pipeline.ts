@@ -63,6 +63,7 @@ import { ensureLocalRegistry, pushToLocalRegistry, stopLocalRegistry } from '../
 import { activateServer, startServer, type ActivationResult } from './activate.js';
 import { deployerName, makeHistoryEntry, versionOutcomes } from './history.js';
 import { runPreflight } from './preflight.js';
+import { assertMongoRunning } from '../mongo/check.js';
 import { chooseRollbackTarget, type RollbackTarget } from './rollback.js';
 import { runStrategy } from './strategy.js';
 import type { SwitchMode } from './zero-downtime.js';
@@ -91,6 +92,8 @@ export interface PipelineDeps {
   readGitInfo: typeof readGitInfo;
   /** The proxy part of the rollouts (null without a `proxy` section). */
   createProxyRollout: typeof createProxyRollout;
+  /** Refuses to go on when the app is linked to a `mongodb` container that does not run. */
+  checkMongo: typeof assertMongoRunning;
   /**
    * Aborted by the CLI on the first Ctrl+C / SIGTERM: the running step finishes, no further
    * server is started, the locks are released and the command exits with code 130.
@@ -132,17 +135,17 @@ const DEFAULT_DEPS: PipelineDeps = {
   readHistory,
   readGitInfo,
   createProxyRollout,
+  checkMongo: assertMongoRunning,
 };
 
 /**
- * Refuses the config sections this release cannot run yet (`mongo`, `privateDockerRegistry`, the
+ * Refuses the config sections this release cannot run yet (`privateDockerRegistry`, the
  * `registry` / `stream` transfers) with a `CometError`. Called before anything else, so such a
  * config fails up front instead of halfway through a deploy.
  */
 export function assertPhase1Supported(ctx: CommandContext): void {
   const c = ctx.config;
   const phase2 = (what: string) => new CometError(`${what} is not supported yet (planned for phase 2 of comet-deploy).`);
-  if (c.mongo) throw phase2('The "mongo" section');
   if (c.privateDockerRegistry) throw phase2('"privateDockerRegistry"');
   if (c.cometDeploy.transfer === 'registry' || c.cometDeploy.transfer === 'stream') throw phase2(`cometDeploy.transfer "${c.cometDeploy.transfer}"`);
 }
@@ -399,6 +402,8 @@ export async function deployPipeline(
         checkLocks: c.cometDeploy.lock && o.stopAfter !== 'build' && !o.forceUnlock,
         distributes: o.stopAfter !== 'build',
         ...(proxied ? { proxyServers: rolloutProxies(ctx) } : {}),
+        // `meteor build` and `meteor push` do not start the app, so MongoDB does not matter.
+        mongo: !!c.mongo && !o.stopAfter,
       }),
     );
     // Loaded before the build, as MUP's deploy does first: a missing or invalid settings file
@@ -614,7 +619,9 @@ async function lockedRollout(
   const servers = ctx.appServers();
   if (servers.length === 0) throw new CometError('No app servers selected.');
   const strategy = o.strategy ?? ctx.config.cometDeploy.strategy;
-  // Before the lock: a proxy file that cannot be read or a proxy that does not run fails now.
+  // Before the lock: a proxy file that cannot be read, a proxy or a MongoDB that does not run
+  // fails now.
+  await d.checkMongo(ctx, servers);
   const rollout = await d.createProxyRollout(ctx, { action: o.action, strategy });
   const startedAt = new Date();
   const locked = await ctx.reporter.phase('Lock', () => lockServers(ctx, rollout ? lockTargets(ctx) : servers, o.action, d, { force: o.forceUnlock }));
@@ -729,13 +736,16 @@ export async function stopAll(ctx: CommandContext): Promise<void> {
 
 /**
  * `start` (MUP `meteor.start`): `meteor-start.sh` + health check on all app servers in parallel,
- * without lock or strategy, as in MUP. Never throws: a server that cannot be reached becomes a
- * failed result, and the caller turns failed results into the exit code.
+ * without lock or strategy, as in MUP. Throws only when the app is linked to a MongoDB that does
+ * not run (nothing is started then); otherwise a server that cannot be reached becomes a failed
+ * result, and the caller turns failed results into the exit code.
  */
-export async function startAll(ctx: CommandContext, deps: Partial<Pick<PipelineDeps, 'startServer'>> = {}): Promise<ActivationResult[]> {
+export async function startAll(ctx: CommandContext, deps: Partial<Pick<PipelineDeps, 'startServer' | 'checkMongo'>> = {}): Promise<ActivationResult[]> {
   const start = deps.startServer ?? startServer;
+  const servers = ctx.appServers();
+  await (deps.checkMongo ?? assertMongoRunning)(ctx, servers);
   const results = await Promise.all(
-    ctx.appServers().map(async (s) => {
+    servers.map(async (s) => {
       const t = Date.now();
       try {
         return await start({ conn: await ctx.ssh.get(s), config: ctx.config, serverName: s, reporter: ctx.reporter });

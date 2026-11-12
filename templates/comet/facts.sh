@@ -37,3 +37,9 @@ if [ -d <%- q(configDir) %> ]; then echo "app_setup=1"; else echo "app_setup=0";
 # Only asked for on the servers the reverse proxy runs on.
 if [ "$(sudo docker inspect -f '{{.State.Running}}' <%- q(proxyName) %> 2>/dev/null)" = "true" ]; then echo "proxy_running=1"; else echo "proxy_running=0"; fi
 <% } %>
+<% if (mongoName) { %>
+# Only asked for when the config has a "mongo" section: the app is linked to this container.
+if [ "$(sudo docker inspect -f '{{.State.Running}}' <%- q(mongoName) %> 2>/dev/null)" = "true" ]; then echo "mongo_running=1"; else echo "mongo_running=0"; fi
+# The file "mongo start" needs, written by "mongo setup".
+if sudo test -f /opt/mongodb/mongo-start-new.sh; then echo "mongo_set_up=1"; else echo "mongo_set_up=0"; fi
+<% } %>

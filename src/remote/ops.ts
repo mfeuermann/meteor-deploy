@@ -86,6 +86,10 @@ export interface ServerFacts {
   appSetup?: boolean;
   /** Whether the reverse proxy container `mup-nginx-proxy` runs; undefined when it was not asked for. */
   proxyRunning?: boolean;
+  /** Whether the `mongodb` container runs; undefined when it was not asked for. */
+  mongoRunning?: boolean;
+  /** Whether `/opt/mongodb/mongo-start-new.sh` exists (`mongo setup` ran); undefined when not asked for. */
+  mongoSetUp?: boolean;
 }
 
 /**
@@ -109,6 +113,7 @@ export function parseFacts(stdout: string): ServerFacts {
     sudo: kv.get('sudo') === 'password' ? 'password' : kv.get('sudo') === 'missing' ? 'missing' : 'ok',
     ...(kv.has('app_setup') ? { appSetup: kv.get('app_setup') === '1' } : {}),
     ...(kv.has('proxy_running') ? { proxyRunning: kv.get('proxy_running') === '1' } : {}),
+    ...(kv.has('mongo_running') ? { mongoRunning: kv.get('mongo_running') === '1', mongoSetUp: kv.get('mongo_set_up') === '1' } : {}),
   };
 }
 
@@ -116,9 +121,9 @@ export function parseFacts(stdout: string): ServerFacts {
  * Reads the facts of one server; with `appName` also whether the app was set up there, with
  * `o.proxyName` whether that proxy container runs. Throws CometError when the script itself fails.
  */
-export async function serverFacts(conn: SshConnection, appName?: string, o: { proxyName?: string } = {}): Promise<ServerFacts> {
+export async function serverFacts(conn: SshConnection, appName?: string, o: { proxyName?: string; mongoName?: string } = {}): Promise<ServerFacts> {
   // `sh -s`: works even where bash is missing, which is one of the facts.
-  const vars = { configDir: appName === undefined ? null : configDir(appName), proxyName: o.proxyName ?? null };
+  const vars = { configDir: appName === undefined ? null : configDir(appName), proxyName: o.proxyName ?? null, mongoName: o.mongoName ?? null };
   const r = await conn.exec('sh -s', { stdin: await comet('facts.sh', vars) });
   if (r.code !== 0) throw new CometError(`[${conn.name}] Cannot read server facts: ${r.stderr.trim() || `exit ${r.code}`}`);
   return parseFacts(r.stdout);

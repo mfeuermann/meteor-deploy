@@ -137,12 +137,6 @@ describe('deployPipeline', () => {
     expect(s.history.one[0]).toMatchObject({ action: 'deploy', result: 'success', version: '20261107-183005', servers: ['one', 'two'] });
   });
 
-  it('refuses mongo configs (phase 2)', async () => {
-    const m = await setup({ extra: 'mongo: { servers: { one: {} } },' });
-    await expect(deployPipeline(m.ctx, { cachedBuild: false, forceBuild: false }, m.deps)).rejects.toThrow(/phase 2/);
-    expect(m.calls).toEqual([]);
-  });
-
   it('stops before activation when aborted, releasing locks and the registry (Review Focus 2)', async () => {
     const s = await setup();
     const ac = new AbortController();

@@ -70,6 +70,11 @@ describe('parseFacts', () => {
     });
   });
 
+  it('reports whether MongoDB runs and is set up, when it was asked for', () => {
+    expect(parseFacts('arch=x86_64\nmongo_running=1\nmongo_set_up=0')).toMatchObject({ mongoRunning: true, mongoSetUp: false });
+    expect(parseFacts('arch=x86_64').mongoRunning).toBeUndefined();
+  });
+
   it('reports whether the app directory exists, when it was asked for', () => {
     expect(parseFacts('arch=x86_64\napp_setup=1').appSetup).toBe(true);
     expect(parseFacts('arch=x86_64\napp_setup=0').appSetup).toBe(false);
