@@ -126,7 +126,9 @@ export async function requestLoop(
     `cat > ${id}.sh <<'EOF'
 : > ${id}.log
 while [ ! -f ${id}.stop ]; do
-  curl -s -o /dev/null -w '%{http_code}\\n' --max-time 10 -H 'Host: ${host}' http://localhost${path} >> ${id}.log
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H 'Host: ${host}' http://localhost${path}); rc=$?
+  # A failed request also records curl's exit code (7 refused, 28 timeout, 52/56 dropped).
+  if [ "$code" = 200 ]; then echo 200; else echo "$code/curl$rc"; fi >> ${id}.log
   sleep 0.05
 done
 touch ${id}.done

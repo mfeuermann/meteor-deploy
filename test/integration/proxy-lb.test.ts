@@ -79,15 +79,26 @@ describe('proxy load balancing on two servers', () => {
   it('3. an interrupted deploy leaves its server drained; setup keeps it so, restart brings it back', async () => {
     change();
     const deploy = cli(['deploy', ...config()], p.root);
-    // s2's drain is written to both proxies before s2 restarts: cut the deploy's SSH sessions to
-    // s2 within the drain wait (the listener stays, later commands can connect again).
+    // s2's drain is written to both proxies before s2 restarts. Within the drain wait, s2 becomes
+    // unreachable over SSH: new connections are refused and the deploy's sessions end (ending
+    // only the sessions is not enough, the deploy connects again). The fake server's own
+    // commands run through `docker exec`, and the proxies reach the apps on other ports.
     const s2Down = new RegExp(`server ${s2.ip.replace(/\./g, '\\.')}:\\d+ down;`);
-    const drained = await waitFor(async () => s2Down.test(await upstream(s1)), 900_000, 200);
+    const drained = await waitFor(async () => s2Down.test(await upstream(s1)) && s2Down.test(await upstream(s2)), 900_000, 200);
     expect(drained, 's2 was never drained').toBe(true);
-    await s2.exec(`pkill -f 'sshd: root' || true`);
-    const r = await deploy;
+    const block = 'INPUT -p tcp --dport 22 -j REJECT --reject-with tcp-reset';
+    await s2.exec(`iptables -I ${block} && (pkill -f 'sshd: root' || true)`);
+    let r: Awaited<ReturnType<typeof cli>>;
+    try {
+      r = await deploy;
+    } finally {
+      await s2.exec(`iptables -D ${block}`);
+    }
     expect(r.code, r.output).toBe(1);
     expect(r.output).toContain('comet-deploy restart --servers s2');
+    // The deploy could not release its lock on s2.
+    const unlock = await cli(['unlock', ...config()], p.root);
+    expect(unlock.code, unlock.output).toBe(0);
 
     const status = async () => (await cli(['status', ...config()], p.root)).output;
     expect(await status()).toContain('Drained: s2');

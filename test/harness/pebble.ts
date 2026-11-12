@@ -24,8 +24,8 @@ const ACME_URI = 'https://localhost:14000/dir';
 const CA_PATH = `/etc/nginx/certs/${CA_FILE}`;
 
 /** The `proxy.shared.envLetsEncrypt` that points the companion at Pebble. */
-export function pebbleEnv(): Record<string, string> {
-  return { ACME_CA_URI: ACME_URI, REQUESTS_CA_BUNDLE: CA_PATH, DEBUG: 'true' };
+export function pebbleEnv(): Record<string, string | boolean> {
+  return { ACME_CA_URI: ACME_URI, REQUESTS_CA_BUNDLE: CA_PATH, DEBUG: true };
 }
 
 /**
