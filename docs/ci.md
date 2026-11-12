@@ -42,6 +42,7 @@ Things to know:
 - **Exporting needs a buildx builder that supports it.** The default `docker` driver supports cache exports only with Docker's containerd image store. Otherwise create a builder with the `docker-container` driver first (`docker buildx create --use`; in GitHub Actions, `docker/setup-buildx-action`). Without one, the build fails with `Cache export is not supported for the docker driver`.
 - **One cache per app and per CPU architecture.** A new export replaces the old one with the same name (the `scope` of `gha`, the `ref` of `registry`). If the servers have different CPU architectures, a deploy builds one image per architecture with the same `--cache-to`, and the last one wins. Deploy each architecture in its own job with `--servers` and a cache name of its own.
 - **A `local` cache directory only grows.** Export into a new directory (`dest=.buildcache-new`) and replace the old one after the deploy, as in [Docker's guide](https://docs.docker.com/build/cache/backends/local/).
+- **A failed export fails the build.** Add `ignore-error=true` to `--cache-to` (`type=gha,mode=max,scope=myapp,ignore-error=true`), so an outage of the cache service does not stop the deploy. A missing cache on `--cache-from` is only a warning.
 - Without `--cache-from` the deploy still works; it is only slower and ships the dependencies again.
 
 comet-deploy also skips the build when nothing in the app changed since an earlier build (`No changes since …`). That check uses local state in `~/.cache/comet-deploy`, so on a fresh runner every deploy builds. The build cache makes that build fast.
@@ -141,7 +142,7 @@ jobs:
         run: >-
           comet-deploy deploy
           --cache-from type=gha,scope=myapp
-          --cache-to type=gha,mode=max,scope=myapp
+          --cache-to type=gha,mode=max,scope=myapp,ignore-error=true
 ```
 
 Notes:

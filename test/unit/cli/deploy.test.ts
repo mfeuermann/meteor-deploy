@@ -10,6 +10,10 @@ describe('deploy options', () => {
     expect(deployArgs(argv)).toMatchObject({ cacheFrom: ['type=gha,scope=a', 'type=local,src=/c'], cacheTo: ['type=gha,mode=max,scope=a'] });
   });
 
+  it('drops empty values, as from an unset CI variable, instead of passing them to buildx', () => {
+    expect(deployArgs(parse(['--cache-from', '', '--cache-to=']))).toMatchObject({ cacheFrom: [], cacheTo: [] });
+  });
+
   it('has no build cache import or export by default', () => {
     expect(deployArgs(parse([]))).toMatchObject({ cachedBuild: false, forceBuild: false, cacheFrom: [], cacheTo: [] });
   });

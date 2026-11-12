@@ -6,7 +6,7 @@
  * be a cache hit, and the server must already have it.
  */
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, mkdtempSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -60,6 +60,7 @@ describe('e2e: deploy from a fresh build machine with an exported build cache', 
   afterAll(async () => {
     removeBuilder(BUILDER_A);
     removeBuilder(BUILDER_B);
+    rmSync(cacheDir, { recursive: true, force: true });
     await Promise.all(servers.map((s) => s.stop()));
   });
 
@@ -86,6 +87,9 @@ describe('e2e: deploy from a fresh build machine with an exported build cache', 
     expect(step, 'npm install step not found in the build output').not.toBeNull();
     expect(r.output).toMatch(new RegExp(`#${step![1]} CACHED`));
     const appLayers = Number(step![3]) - Number(step![2]);
+    // The generated Dockerfile has only COPY steps after npm install, one layer each; with none,
+    // the comparisons below would compare nothing.
+    expect(appLayers).toBeGreaterThan(0);
 
     // Every layer up to the dependency layer is the same in both versions on the server...
     const [s] = servers;

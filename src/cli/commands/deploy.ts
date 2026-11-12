@@ -24,8 +24,11 @@ export const deployOptions = (y: Argv) =>
       .option('cache-to', { type: 'string', describe: 'BuildKit cache to export after the image build, as for docker buildx (repeatable)' }),
   ).conflicts('cached-build', 'force-build');
 
-/** A string option given once, several times or not at all, as a list. */
-const list = (v: unknown): string[] => (v === undefined ? [] : Array.isArray(v) ? v.map(String) : [String(v)]);
+/**
+ * A string option given once, several times or not at all, as a list. Empty values (an unset
+ * variable in a CI script: `--cache-from "$CACHE"`) are dropped, so the build runs without them.
+ */
+const list = (v: unknown): string[] => (v === undefined ? [] : Array.isArray(v) ? v : [v]).map(String).filter((s) => s.trim() !== '');
 
 /** The pipeline options from the parsed deploy options. */
 export function deployArgs(argv: Record<string, unknown>) {
