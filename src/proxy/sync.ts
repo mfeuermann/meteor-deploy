@@ -282,6 +282,20 @@ async function reloadNginx(conn: SshConnection, out?: ExecOptions): Promise<void
   await conn.runScriptOrThrow(await cometScript('proxy-reload.sh', {}), 'Reloading nginx', out);
 }
 
+/**
+ * MUP setup's `sudo chown ${USER} /opt/mup-nginx-proxy -R`, before comet-deploy writes into the
+ * proxy directory as the SSH user outside of setup. `start.sh` runs with sudo and creates
+ * `nginx-default.conf` as root when it is missing, and the Let's Encrypt companion writes its
+ * certificates as root, so a non-root SSH user could not replace those files (`ssl-setup.sh`
+ * copies certificates without sudo). MUP gets the same effect because it runs `mup setup` first.
+ *
+ * @throws CometError when the command fails.
+ */
+export async function takeProxyDir(conn: SshConnection, out?: ExecOptions): Promise<void> {
+  const r = await conn.exec(`sudo chown "$USER" ${PROXY_DIR} -R`, out);
+  if (r.code !== 0) throw new CometError(`[${conn.name}] Handing ${PROXY_DIR} to the SSH user failed (exit code ${r.code}): ${r.stderr.trim()}`);
+}
+
 /** MUP setup's certificate steps: cleanup, then (with a custom certificate) upload and links. */
 export async function syncCerts(conn: SshConnection, c: NormalizedConfig, basePath: string, out?: ExecOptions): Promise<void> {
   await conn.runScriptOrThrow(await renderSslCleanupSh(c), 'Cleaning Up SSL Certificates', out);
@@ -321,6 +335,7 @@ export async function applyProxySync(
 ): Promise<void> {
   const steps: Array<BeforeStep | AfterStep> = phase === 'before' ? plan.before : plan.after;
   if (steps.length === 0) return;
+  await takeProxyDir(conn, out);
   for (const step of steps) {
     switch (step) {
       case 'vhost':

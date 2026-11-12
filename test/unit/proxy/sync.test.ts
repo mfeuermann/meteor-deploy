@@ -268,6 +268,16 @@ describe('applyProxySync', () => {
     expect(scripts.at(-1)).toContain('docker-gen');
   });
 
+  it('hands the proxy directory to the SSH user before it writes there, as MUP setup does', async () => {
+    // start.sh (run with sudo) and the Let's Encrypt companion create root-owned files there; a
+    // non-root SSH user could not replace them (ssl-setup.sh copies certificates without sudo).
+    const { c, dir } = load('proxy-certs');
+    const { conn, calls } = fakeConn();
+    const plan = planProxySync(await desiredProxyFiles(c, dir), { ...matching(DESIRED, proxyDomains(c)), cert: { crt: null, key: null, linkedDomains: [] } }, proxyDomains(c));
+    await applyProxySync(conn, c, dir, plan, 'before');
+    expect(calls[0]).toMatchObject({ kind: 'exec', text: 'sudo chown "$USER" /opt/mup-nginx-proxy -R' });
+  });
+
   it('only reloads nginx after rewriting an existing vhost file', async () => {
     const { c, dir } = load('proxy-certs', (raw) => {
       delete raw.proxy.ssl;

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createContext, type CommandContext } from '../../../src/core/context.js';
 import { createReporter } from '../../../src/output/reporter.js';
-import { formatProxyStatus, proxySetup, proxyStart } from '../../../src/proxy/setup.js';
+import { formatProxyStatus, proxyReconfigShared, proxySetup, proxyStart } from '../../../src/proxy/setup.js';
 import { readNginxTmpl, renderNginxConfigSh, renderProxyStartSh, renderServiceConfigureSh } from '../../../src/proxy/render.js';
 import { desiredEntries, formatUpstream, parseUpstream } from '../../../src/proxy/upstream.js';
 import type { ExecOptions, ExecResult, SshConnection } from '../../../src/ssh/connection.js';
@@ -25,6 +25,7 @@ function label(s: string): string {
   if (s.includes('docker rm -f mup-proxy-configure-')) return 'remove-config-container';
   if (s.includes('docker-gen')) return 'regenerate';
   if (s.includes('base64 -w0') && s.includes('/opt/mup-nginx-proxy/upstream/')) return 'read-upstream';
+  if (s === 'sudo chown "$USER" /opt/mup-nginx-proxy -R') return 'take-proxy-dir';
   if (s.includes('echo "acquired"')) return 'lock';
   if (s.includes('LOCK_DIR') || s.includes('deploy.lock')) return 'unlock';
   return s.trim().split('\n')[0].slice(0, 40);
@@ -199,6 +200,18 @@ describe('proxyStart', () => {
     await proxyStart(s.ctx, { force: true });
     expect(s.steps('one')).toContain('proxy-start.sh');
     expect(s.ctx.runner.history).toEqual(['proxy.start']);
+  });
+});
+
+describe('proxyReconfigShared', () => {
+  it('hands the proxy directory to the SSH user before it writes the shared files', async () => {
+    // start.sh (run with sudo) creates nginx-default.conf as root when it is missing.
+    const s = await setup('proxy-certs');
+    await proxyReconfigShared(s.ctx);
+    const steps = s.steps('one');
+    const own = steps.indexOf('take-proxy-dir');
+    expect(own).toBeGreaterThanOrEqual(0);
+    expect(own).toBeLessThan(steps.indexOf('write /opt/mup-nginx-proxy/config/shared-config.sh'));
   });
 });
 

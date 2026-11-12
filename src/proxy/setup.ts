@@ -50,6 +50,7 @@ import {
   removeLoadBalancing,
   startedNginxDefault,
   syncCerts,
+  takeProxyDir,
   writeUpstreamFile,
 } from './sync.js';
 import { desiredEntries, formatUpstream, parseUpstream } from './upstream.js';
@@ -254,6 +255,7 @@ export async function proxyReconfigShared(ctx: CommandContext, d: ProxyLockDeps 
       await runSerially(ctx, servers, 'proxy reconfig-shared', async (conn, s) => {
         const out = verboseOutput(ctx.reporter, s);
         before[s] = await proxyInputsDigest(conn);
+        await takeProxyDir(conn, out);
         const keepConf =
           (await readRemote(conn, `${dir}/shared-config.sh`)) === f.sharedConfigSh &&
           (await readRemote(conn, `${dir}/nginx-default.conf`)) === startedNginxDefault(f.nginxDefaultConf, shared.clientUploadLimit);
