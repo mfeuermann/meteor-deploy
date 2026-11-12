@@ -375,7 +375,9 @@ Without load balancing, the app publishes no port on the host (MUP uses `--expos
 1. Start `<app>-next` from the server's `config/start.sh`: the same container, under another name, without the step that removes the running one.
 2. Run the health check on `<app>-next`.
 3. Wait until nginx routes to it (docker-gen adds it to the config; up to 15 s).
-4. Stop the old container (`docker stop`, 10 s for the requests in flight), remove it, and rename `<app>-next` to `<app>`.
+4. Make nginx route only to `<app>-next`: a file `vhost.d/<domain>_upstream` with its address, which MUP's nginx template uses instead of the containers (the mechanism of MUP's load balancing). Without it, any regeneration of the nginx config, for example by the Let's Encrypt companion, would list the old container again, and a request nginx sends to it after it stopped would hang until a timeout: the stopped container's address no longer exists.
+5. Stop the old container (`docker stop`, 10 s for the requests in flight), remove it, and rename `<app>-next` to `<app>`.
+6. Remove the `_upstream` files again and regenerate the nginx config, which then lists the renamed container as before. The files are removed also when the step fails or the SSH connection drops; a file left by a killed process is recognized by its first line (`# comet-deploy zero-downtime switch`) and replaced by the next switch.
 
 The result looks exactly like a container that `start.sh` created. If the health check fails, `<app>-next` is removed, the tags and the config go back as in a normal [revert](#automatic-revert), and the old container, which never stopped, keeps serving: the server ends `reverted` without a gap.
 

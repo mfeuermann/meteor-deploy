@@ -172,7 +172,7 @@ The full description is in [How it works](how-it-works.md).
 
 - Preflight also checks that the proxy runs on every proxy server, before the build.
 - The app's proxy files (`vhost.d`, your own certificates, the load balancing upstream) are brought up to date: only what differs is written, and the proxy containers are not restarted. MUP does this only in `setup`.
-- Without `loadBalancing`, each server switches without a gap: the new container starts beside the old one, and the old one stops only after the new one is healthy and nginx routes to it.
+- Without `loadBalancing`, each server switches without a gap: the new container starts beside the old one, and the old one stops only after the new one is healthy and nginx routes only to it.
 - With `loadBalancing`, each server is taken out of the upstream on every proxy before its restart (`[<server>] drain ✓ out of load balancing`), gets 5 s for the requests in flight, and goes back in after its health check. A server that does not end healthy stays out, and the deploy says so. Load balancing also makes the lock cover every app server, even with `--servers`.
 - `cometDeploy.zeroDowntime: false` turns the last two off.
 

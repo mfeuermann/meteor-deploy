@@ -106,6 +106,8 @@ function label(s: string): string {
 function zdConn(o: { health: string[]; routed: boolean; startSh: string }) {
   const answers = [...o.health];
   const calls: string[] = [];
+  /** The last text sent under each label. */
+  const texts: Record<string, string> = {};
   const res = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: '' });
   const answer = (l: string): string => {
     switch (l) {
@@ -136,10 +138,11 @@ function zdConn(o: { health: string[]; routed: boolean; startSh: string }) {
   const run = async (s: string) => {
     const l = label(s);
     calls.push(l);
+    texts[l] = s;
     return res(answer(l));
   };
   const conn = { name: 'one', host: '192.0.2.1', runScript: run, runScriptOrThrow: run, exec: run, writeFile: async (p: string) => void calls.push(`write ${p}`) };
-  return { conn: conn as unknown as SshConnection, calls };
+  return { conn: conn as unknown as SshConnection, calls, texts };
 }
 
 const zdConfig = load('proxy-le', (raw) => {
@@ -176,6 +179,23 @@ describe('activateServer with the zero-downtime switch', () => {
       'default.conf',
       'zd-finish',
     ]);
+  });
+
+  it('routes nginx only to the next container before the old one stops, and back to docker-gen after the rename', async () => {
+    // The old container's IP disappears the moment it stops; a request nginx still sends there
+    // hangs until a timeout. Any regeneration until then (also the Let's Encrypt companion's)
+    // would list the old container again, so an upstream file holds the route instead.
+    const m = zdConn({ health: ['COMET_HEALTH ok 200 4\n'], routed: true, startSh: await renderStartSh(zdConfig, 'one') });
+    await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy', switch: ZD, pickupTimeoutMs: 0 });
+    const finish = m.texts['zd-finish'];
+    const at = (s: string) => finish.indexOf(s);
+    for (const domain of ['a.com', 'www.a.com']) expect(finish).toContain(`${domain}_upstream`);
+    expect(at('server 172.17.0.9:3000;')).toBeGreaterThan(-1);
+    expect(at('server 172.17.0.9:3000;')).toBeLessThan(at('docker stop -t 10'));
+    expect(at('docker-gen')).toBeLessThan(at('docker stop -t 10'));
+    // Removed again after the rename, and also when the script ends early.
+    expect(finish.lastIndexOf('unroute')).toBeGreaterThan(at('docker rename'));
+    expect(finish).toMatch(/trap unroute EXIT/);
   });
 
   it('a failed health check keeps the old container: logs of next, rm next, restore, no start.sh', async () => {
