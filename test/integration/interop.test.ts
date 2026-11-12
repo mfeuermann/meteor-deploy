@@ -5,7 +5,7 @@
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startFakeServers, type FakeServer } from '../harness/fake-servers.js';
-import { APP_NAME, cli, curlApp, curlVia, imageId, mup, sampleProject, waitFor, writeTestConfig } from './helpers.js';
+import { APP_NAME, cli, containerId, curlApp, curlVia, imageId, mup, sampleProject, waitFor, writeTestConfig } from './helpers.js';
 
 describe('interop with MUP 1.5.11', () => {
   let server: FakeServer;
@@ -129,5 +129,60 @@ describe('interop with MUP 1.5.11 behind the proxy', () => {
     expect(ours.code, ours.output).toBe(0);
     expect(await answers()).toBe(true);
     expect(await proxyFiles()).toBe(mupFiles);
+  });
+});
+
+/**
+ * The same with MUP's built-in MongoDB (mongo plan Task 8): both tools write the same
+ * /opt/mongodb files, so neither one recreates the other's MongoDB container.
+ */
+describe('interop with MUP 1.5.11 and the mongo section', () => {
+  let server: FakeServer;
+  let p: ReturnType<typeof sampleProject>;
+  const config = () => ['--config', join(p.deployDir, 'mup.js')];
+  const mongoId = () => containerId(server, 'mongodb');
+  const read = async () => (await curlApp(server, '/mongo/read')).trim();
+
+  beforeAll(async () => {
+    [server] = await startFakeServers(1);
+    p = sampleProject({ mongo: true });
+    // useBuildKit: see the first describe.
+    writeTestConfig(p.deployDir, [server], { docker: { useBuildKit: true }, mongo: { version: '7.0.14', servers: { [server.name]: {} } } });
+  });
+
+  afterAll(async () => {
+    await server?.stop();
+  });
+
+  it('mup setup + mup deploy, then our deploy reads and writes the same data', async () => {
+    const setup = await mup(['setup', ...config()], p.root);
+    expect(setup.code, setup.output).toBe(0);
+    const deploy = await mup(['deploy', ...config()], p.root);
+    expect(deploy.code, deploy.output).toBe(0);
+    expect(await curlApp(server, '/mongo/write?v=mup')).toBe('ok');
+    const ours = await cli(['deploy', ...config()], p.root);
+    expect(ours.code, ours.output).toBe(0);
+    expect(await curlApp(server, '/mongo/write?v=comet')).toBe('ok');
+    expect(await read()).toBe('["comet","mup"]');
+  });
+
+  it('our setup keeps the MongoDB of MUP, and mup mongo start finds the same start script', async () => {
+    const before = await mongoId();
+    const setup = await cli(['setup', ...config()], p.root);
+    expect(setup.code, setup.output).toBe(0);
+    expect(setup.output).toContain('MongoDB is up to date (container kept)');
+    expect(await mongoId()).toBe(before);
+    const start = await mup(['mongo', 'start', '--verbose', ...config()], p.root);
+    expect(start.code, start.output).toBe(0);
+    expect(start.output).toContain('Same start script');
+    expect(await mongoId()).toBe(before);
+  });
+
+  it('mup setup after our setup keeps the container', async () => {
+    const before = await mongoId();
+    const setup = await mup(['setup', ...config()], p.root);
+    expect(setup.code, setup.output).toBe(0);
+    expect(await mongoId()).toBe(before);
+    expect(await read()).toBe('["comet","mup"]');
   });
 });

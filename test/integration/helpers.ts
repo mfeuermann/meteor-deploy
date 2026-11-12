@@ -16,13 +16,44 @@ const require = createRequire(import.meta.url);
 export const SAMPLE_APP = join(here, '../fixtures/sample-app');
 export const APP_NAME = 'sampleapp';
 
-/** Temp project: `<root>/app` (copy of the sample app incl. node_modules) and `<root>/.deploy`. */
-export function sampleProject(): { root: string; appDir: string; deployDir: string } {
+/**
+ * The sample app's MongoDB routes (with `sampleProject({ mongo: true })`): `/mongo/write?v=<x>`
+ * inserts `{ v }` into the collection `items`, `/mongo/read` answers the JSON list of all `v`.
+ */
+const MONGO_ROUTES = `import { Mongo } from 'meteor/mongo';
+import { WebApp } from 'meteor/webapp';
+
+const Items = new Mongo.Collection('items');
+
+WebApp.handlers.get('/mongo/write', async (req, res) => {
+  await Items.insertAsync({ v: String(req.query.v) });
+  res.end('ok');
+});
+
+WebApp.handlers.get('/mongo/read', async (req, res) => {
+  const items = await Items.find({}, { sort: { v: 1 } }).fetchAsync();
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(items.map((i) => i.v)));
+});
+`;
+
+/**
+ * Temp project: `<root>/app` (copy of the sample app incl. node_modules) and `<root>/.deploy`.
+ * `mongo: true` adds Meteor's `mongo` package and the routes above; the build resolves the
+ * package versions from the local Meteor catalog.
+ */
+export function sampleProject(o: { mongo?: boolean } = {}): { root: string; appDir: string; deployDir: string } {
   const root = mkdtempSync(join(tmpdir(), 'comet-e2e-'));
   const appDir = join(root, 'app');
   cpSync(SAMPLE_APP, appDir, { recursive: true, filter: (src) => !src.includes(join('.meteor', 'local')) });
   // node_modules is not committed: install from the lockfile on a fresh clone.
   if (!existsSync(join(appDir, 'node_modules'))) execFileSync('meteor', ['npm', 'ci'], { cwd: appDir, stdio: 'inherit' });
+  if (o.mongo) {
+    appendFileSync(join(appDir, '.meteor', 'packages'), 'mongo\n');
+    writeFileSync(join(appDir, 'server', 'mongo.js'), MONGO_ROUTES);
+    // package.json sets meteor.mainModule, so only server/main.js is loaded eagerly.
+    appendFileSync(join(appDir, 'server', 'main.js'), "\nimport './mongo.js';\n");
+  }
   const deployDir = join(root, '.deploy');
   mkdirSync(deployDir);
   return { root, appDir, deployDir };
@@ -48,6 +79,8 @@ export function writeTestConfig(
     name?: string;
     /** Sets each server's `privateIp` to its container IP (the load balancing upstream). */
     privateIp?: boolean;
+    /** The `mongo` section, written as given. */
+    mongo?: Record<string, unknown>;
   } = {},
 ): string {
   const serversConfig = fakeServersConfig(servers, o.auth ?? 'password');
@@ -63,6 +96,7 @@ export function writeTestConfig(
       deployCheckWaitTime: 120,
     },
     ...(o.proxy ? { proxy: o.proxy } : {}),
+    ...(o.mongo ? { mongo: o.mongo } : {}),
     ...(o.strategy || o.cometDeploy ? { cometDeploy: { ...o.cometDeploy, ...(o.strategy ? { strategy: o.strategy } : {}) } } : {}),
   };
   const path = join(dir, 'mup.js');
@@ -157,6 +191,11 @@ setsid nohup bash ${id}.sh > /dev/null 2>&1 &`,
       return { total: codes.length, failed: failed.length, codes: [...new Set(failed)] };
     },
   };
+}
+
+/** The id of container `name` on a fake server ('' when there is none). */
+export async function containerId(server: FakeServer, name: string): Promise<string> {
+  return (await server.exec(`docker inspect -f '{{.Id}}' ${name} 2>/dev/null`)).stdout.trim();
 }
 
 /** Image id behind `mup-<app>:<tag>` on a fake server ('' when missing). */
