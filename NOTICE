@@ -28,7 +28,7 @@ This project includes files derived from Meteor Up (mup) 1.5.11
 
 Files derived from Meteor Up:
 
-(copied unchanged from mup 1.5.11 lib/plugins/{meteor,docker,proxy}/assets and lib/plugins/default/template)
+(copied unchanged from mup 1.5.11 lib/plugins/{meteor,docker,mongo,proxy}/assets and lib/plugins/default/template)
   templates/mup/default/mup.js.sample
   templates/mup/default/settings.json
   templates/mup/docker/docker-restart.sh
@@ -42,6 +42,10 @@ Files derived from Meteor Up:
   templates/mup/meteor/meteor-stop.sh
   templates/mup/meteor/templates/env.list
   templates/mup/meteor/templates/start.sh
+  templates/mup/mongo/mongo-setup.sh
+  templates/mup/mongo/mongo-start.sh
+  templates/mup/mongo/mongo-stop.sh
+  templates/mup/mongo/templates/start.sh
   templates/mup/proxy/cleanup-template.sh
   templates/mup/proxy/nginx-config.sh
   templates/mup/proxy/nginx.tmpl
