@@ -6,13 +6,26 @@ import { SshConnection } from '../../../src/ssh/connection.js';
 const { Server, utils } = ssh2;
 
 /**
+ * An ed25519 host key that ssh2 can read. ssh2's generateKeyPairSync now and then returns a key
+ * its own parser rejects ("Malformed OpenSSH private key", about one in a hundred, with any
+ * Node version), so such a key is replaced by a new one.
+ */
+function hostKey(): string {
+  for (let i = 0; i < 20; i++) {
+    const key = utils.generateKeyPairSync('ed25519').private;
+    if (!(utils.parseKey(key) instanceof Error)) return key;
+  }
+  throw new Error('ssh2 could not generate a readable ed25519 host key in 20 attempts');
+}
+
+/**
  * An in-process SSH server on loopback that accepts any password and opens SFTP sessions but
  * never answers a file request, so a request stays in flight until the connection drops.
  */
 async function startServer() {
   const sockets: { destroy(): void }[] = [];
   const stats = { sftpSessions: 0 };
-  const srv = new Server({ hostKeys: [utils.generateKeyPairSync('ed25519').private] }, (client) => {
+  const srv = new Server({ hostKeys: [hostKey()] }, (client) => {
     sockets.push((client as unknown as { _sock: { destroy(): void } })._sock);
     client.on('authentication', (ctx) => ctx.accept());
     // A listener without a reply keeps ssh2 from answering OPEN with "Operation unsupported".

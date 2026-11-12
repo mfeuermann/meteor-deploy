@@ -144,6 +144,10 @@ describe('evaluatePreflight', () => {
   });
 });
 
+// runPreflight runs the real local checks (docker, docker buildx, the meteor command). Their
+// first run on a fresh CI machine took 3 to 5 s, more than vitest's default 5 s limit allows for.
+const LOCAL_CHECKS_TIMEOUT = 30_000;
+
 describe('runPreflight', () => {
   it('checks buildOptions.executable instead of always "meteor" (M4)', async () => {
     const dir = tempDir({
@@ -151,7 +155,7 @@ describe('runPreflight', () => {
     });
     const ctx = await createContext({ config: '.deploy/mup.js' }, { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }) });
     await expect(runPreflight(ctx, [], { needsBuild: true, checkLocks: false, distributes: true })).rejects.toThrow(/"comet-test-no-such-meteor"/);
-  });
+  }, LOCAL_CHECKS_TIMEOUT);
 
   it('runs a relative buildOptions.executable from the app directory, as the build does', async () => {
     const dir = tempDir({
@@ -162,7 +166,7 @@ describe('runPreflight', () => {
     const ctx = await createContext({ config: '.deploy/mup.js' }, { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }) });
     const err = await runPreflight(ctx, [], { needsBuild: true, checkLocks: false, distributes: true }).catch((e: Error) => e);
     expect(String(err instanceof Error ? err.message : '')).not.toMatch(/tools\/meteor/);
-  });
+  }, LOCAL_CHECKS_TIMEOUT);
 });
 
 describe('evaluatePreflight: proxy servers', () => {
