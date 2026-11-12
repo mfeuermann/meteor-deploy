@@ -51,13 +51,21 @@ async function servedFingerprint(s: FakeServer): Promise<string> {
   return fingerprint(r.stdout);
 }
 
-/** Runs `args` while requests go through the proxy; returns the CLI result and the request counts. */
+/**
+ * Runs `args` while requests go through the proxy; returns the CLI result, the request counts and
+ * the server's Docker events meanwhile (to tell when a failed request happened).
+ */
 async function underLoad(s: FakeServer, args: string[], cwd: string) {
+  const events = `/tmp/comet-events-${Date.now()}.log`;
+  await s.exec(`setsid nohup docker events --format '{{.TimeNano}} {{.Type}} {{.Action}} {{.Actor.Attributes.name}}' > ${events} 2>&1 &`);
   const loop = await requestLoop(s, DOMAIN);
   const r = await cli(args, cwd);
   // A few more requests after the command, while the old container is gone for good.
   await new Promise((res) => setTimeout(res, 2000));
-  return { ...r, requests: await loop.stop() };
+  const requests = await loop.stop();
+  await s.exec(`pkill -f 'docker events --format' || true`);
+  const log = (await s.exec(`grep -vE ' (exec_create|exec_die) ' ${events} | cut -c1-140`)).stdout;
+  return { ...r, requests: { ...requests, codes: requests.failed ? [...requests.codes, `\nDocker events:\n${log}`] : requests.codes } };
 }
 
 /**
