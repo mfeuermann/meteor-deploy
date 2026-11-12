@@ -63,30 +63,12 @@ You also need a MongoDB that the server can reach (for example a managed MongoDB
 
 ## 1. Install comet-deploy
 
-comet-deploy is not on npm yet. Install it from source:
-
-```bash
-git clone https://github.com/mfeuermann/meteor-deploy.git
-cd meteor-deploy
-npm ci
-npm run build
-npm link
-```
-
-`npm link` puts the `comet-deploy` command on your `PATH` (it points to `dist/cli/main.js` in the clone). Check it:
-
-```bash
-comet-deploy --version
-# 0.1.0
-```
-
-After a `git pull`, run `npm ci && npm run build` again.
-
-Once the package is published, this will be:
-
 ```bash
 npm install -g comet-deploy
+comet-deploy --version
 ```
+
+The [README](../README.md#install) shows how to install the code from `main` from source.
 
 ## 2. Create the config
 

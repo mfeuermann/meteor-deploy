@@ -4,7 +4,7 @@ Fast deploys for Meteor apps, compatible with Meteor Up (MUP) 1.5.11.
 
 comet-deploy builds the Docker image of your app **once, on your machine**, and sends each server **only the image layers it does not have yet**, to all servers in parallel. It reads your existing `mup.js`, has the same commands, and leaves the servers in the same state as MUP. You can switch an app from MUP to comet-deploy and back without touching the servers.
 
-**Status:** version 0.1.0: phase 1 of the [roadmap](#roadmap) and the first part of the next phase, MUP's reverse proxy. Not on npm yet: [install from source](#install). Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
+**Status:** version 0.1.0: phase 1 of the [roadmap](#roadmap) and the first part of the next phase, MUP's reverse proxy. Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
 
 > **Important: comet-deploy needs Docker on your machine**, with BuildKit and buildx: Docker Desktop, OrbStack, or Docker Engine on Linux. This is new compared to MUP, which builds the image on each server. To build for `x86_64` servers on an Apple Silicon Mac, amd64 emulation must be on. See [Requirements](#requirements).
 
@@ -158,7 +158,13 @@ You also need a MongoDB that the servers can reach. MUP's built-in MongoDB (`mon
 
 ## Install
 
-comet-deploy is not published to npm yet. Install it from source:
+```bash
+npm install -g comet-deploy
+comet-deploy --version
+comet-deploy --help
+```
+
+To run the code from `main` before it is released, install from source:
 
 ```bash
 git clone https://github.com/mfeuermann/meteor-deploy.git
@@ -169,13 +175,6 @@ npm link
 ```
 
 `npm link` makes the `comet-deploy` command available everywhere. It runs `dist/cli/main.js` from your clone, so after a `git pull` run `npm ci && npm run build` again.
-
-```bash
-comet-deploy --version
-comet-deploy --help
-```
-
-Once it is published, the install will be `npm install -g comet-deploy`.
 
 ## Quick start
 
@@ -333,7 +332,6 @@ Other limits of this release:
 - The local registry volume (`comet-deploy-registry-data`) is never cleaned up and grows with every deploy; remove it by hand when needed. Local images are limited to the last 20 builds per app. See [Troubleshooting](docs/troubleshooting.md#leftover-local-images-and-the-registry-volume).
 - SSH host keys are not verified, the same as with MUP.
 - The proxy's Let's Encrypt part is tested against a local ACME test server (Pebble), not against Let's Encrypt itself.
-- Not published to npm yet.
 
 ## Roadmap
 
@@ -348,7 +346,10 @@ Other limits of this release:
 - MUP's bundle mode (`kadirahq/meteord`).
 - `meteor debug`, `ssh`, the full `status` report, and a command to prune the local build cache.
 
-**Phase 3.** Publish to npm. Documentation and examples for deploying from CI.
+**Phase 3: in progress.**
+
+- Done: the npm package, CI on GitHub Actions, releases from a version tag.
+- Documentation and examples for deploying from CI.
 
 **Not planned.** Docker Swarm. Third-party MUP plugins.
 
@@ -417,7 +418,10 @@ npm test                   # unit tests (vitest)
 npm run lint               # eslint
 npm run typecheck          # tsc --noEmit
 npm run test:integration   # integration and end-to-end tests (heavy, see below)
+npm run test:package       # pack the npm package, install it and run it (needs the npm registry)
 ```
+
+Releases: [docs/releasing.md](docs/releasing.md).
 
 Source layout:
 
