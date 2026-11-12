@@ -6,6 +6,7 @@
  */
 import type Joi from 'joi';
 import { appSchema, cometSchema, KNOWN_TOP_LEVEL_KEYS, mongoSchema, proxySchema, registrySchema, serversSchema } from './schema.js';
+import { builtInMongoProblem } from '../mongo/rules.js';
 import type { NormalizedConfig, RawConfig } from './types.js';
 
 /** One validation problem, printed as `<path> <message>`. */
@@ -144,6 +145,11 @@ export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[
     if (typeof rawMongoUrl === 'string' && (rawMongoUrl.includes('.') || rawMongoUrl.includes('@'))) {
       warn('mongo', 'It looks like app.env.MONGO_URL is for an external database. Remove the `mongo` object to use external databases.');
     }
+    // MUP skips its MongoDB for such a config without an error; comet-deploy says so up front.
+    const mongoServerNames = Object.keys(config.mongo.servers ?? {});
+    if (mongoServerNames.length > 1) warn('mongo.servers', `has ${mongoServerNames.length} servers; MUP uses only the first one ("${mongoServerNames[0]}")`);
+    const problem = builtInMongoProblem(config);
+    if (problem) warn('mongo', problem);
   }
 
   // proxy

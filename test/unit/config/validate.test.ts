@@ -126,6 +126,40 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('the built-in MongoDB', () => {
+    const withMongo = (c: RawConfig) => {
+      c.mongo = { version: '7.0.14', servers: { one: {} } };
+      c.app.env.MONGO_URL = 'mongodb://mongodb/app';
+    };
+
+    it('accepts one app server that also runs MongoDB', () => {
+      expect(check(withMongo).filter((i) => i.path.startsWith('mongo'))).toEqual([]);
+    });
+
+    it('warns, without failing, when the app has two servers', () => {
+      const issues = check((c) => {
+        withMongo(c);
+        c.servers.two = { host: '192.0.2.2', username: 'root', password: 'pw' };
+        c.app.servers.two = {};
+      });
+      const issue = issues.find((i) => i.path === 'mongo' && /exactly one app server/.test(i.message));
+      expect(issue, JSON.stringify(issues)).toBeDefined();
+      expect(issue!.severity).toBe('warning');
+      expect(hasFatal(issues)).toBe(false);
+    });
+
+    it('warns that MUP uses only the first of several mongo.servers', () => {
+      const issues = check((c) => {
+        withMongo(c);
+        c.servers.two = { host: '192.0.2.2', username: 'root', password: 'pw' };
+        c.mongo.servers.two = {};
+      });
+      const issue = find(issues, 'mongo.servers');
+      expect(issue?.severity).toBe('warning');
+      expect(issue?.message).toBe('has 2 servers; MUP uses only the first one ("one")');
+    });
+  });
+
   it('prefixes paths with meteor. when the raw config uses the meteor key', () => {
     const raw = base();
     raw.meteor = cloneDeep(raw.app);
