@@ -35,6 +35,16 @@ export interface ExecOptions {
   collect?: boolean;
 }
 
+export interface InteractiveOptions {
+  /** A pseudo-terminal of this size and terminal type; without it the command gets plain pipes. */
+  pty?: { rows: number; cols: number; term: string };
+  stdin: NodeJS.ReadableStream;
+  stdout: NodeJS.WritableStream;
+  stderr: NodeJS.WritableStream;
+  /** Called once the session is open, with a function that sends a new window size (pty only). */
+  onChannel?: (resize: (rows: number, cols: number) => void) => void;
+}
+
 /** Same as MUP: errors show the last 4200 characters of each stream. */
 const OUTPUT_TAIL = 4200;
 
@@ -187,6 +197,32 @@ export class SshConnection {
         if (typeof o.stdin === 'string') stream.end(o.stdin);
         else if (o.stdin) o.stdin.pipe(stream);
         else stream.end();
+      }), reject);
+    });
+  }
+
+  /**
+   * Runs `command` with the local streams attached, as `ssh host command` in a terminal does:
+   * `stdin` is piped to the command (its end sends EOF), the command's output goes to `stdout`
+   * and `stderr`. With `pty` the server allocates a pseudo-terminal of that size (then all
+   * output arrives on `stdout`), and `onChannel` receives a function that passes a new window
+   * size on. Resolves with the exit status (128 for a signal); rejects with a CometError when
+   * no channel can be opened or the connection drops.
+   */
+  interactive(command: string, o: InteractiveOptions): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const opts = o.pty ? { pty: { rows: o.pty.rows, cols: o.pty.cols, term: o.pty.term } } : {};
+      this.call('cannot open an interactive session', () => this.client.exec(command, opts, (err, stream: ClientChannel) => {
+        if (err) return reject(this.dropped ? this.closedError('cannot open an interactive session', err) : new CometError(`[${this.name}] Cannot run a command: ${err.message}`, { cause: err }));
+        o.onChannel?.((rows, cols) => stream.setWindow(rows, cols, 0, 0));
+        stream.pipe(o.stdout, { end: false });
+        stream.stderr.pipe(o.stderr, { end: false });
+        o.stdin.pipe(stream);
+        stream.on('close', (code: number | null, signal?: string) => {
+          o.stdin.unpipe(stream);
+          if (code === null && !signal && this.dropped) return reject(this.closedError('the session was interrupted'));
+          resolve(code ?? (signal ? 128 : 1));
+        });
       }), reject);
     });
   }

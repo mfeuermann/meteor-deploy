@@ -3,6 +3,7 @@
  * is in `src/mongo/`.
  */
 import { mongoSetup, mongoStart, mongoStop } from '../../mongo/setup.js';
+import { mongoShell } from '../../mongo/shell.js';
 import type { CommandModule } from '../registry.js';
 import { allowMongoVersionChange } from './setup.js';
 
@@ -18,4 +19,5 @@ export const MONGO_COMMANDS: CommandModule[] = [
   },
   { command: 'start', describe: 'Start MongoDB', group: 'mongo', builder: allowMongoVersionChange, run: (ctx, argv) => mongoStart(ctx, { allowVersionChange: allow(argv) }) },
   { command: 'stop', describe: 'Stop MongoDB (the data is kept)', group: 'mongo', run: (ctx) => mongoStop(ctx) },
+  { command: 'shell', describe: 'Open the MongoDB shell on the server (database dbName)', group: 'mongo', run: (ctx) => mongoShell(ctx) },
 ];

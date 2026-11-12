@@ -27,7 +27,7 @@ export interface MongoOptions {
 const ALLOW_HINT = 'To change the version anyway (for example with an empty dataPath), add --allow-mongo-version-change.';
 
 /** The `mongo` section, or an error when there is none. */
-function requireMongo(ctx: CommandContext): Record<string, any> {
+export function requireMongo(ctx: CommandContext): Record<string, any> {
   if (!ctx.config.mongo) throw new CometError('The config has no "mongo" section.', { hint: "Add MUP's \"mongo\" section to the config to run MongoDB on the app's server." });
   return ctx.config.mongo;
 }
