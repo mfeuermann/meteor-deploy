@@ -9,6 +9,19 @@
     "type": "git",
     "url": "git+https://github.com/mfeuermann/meteor-deploy.git"
   },
+  "homepage": "https://github.com/mfeuermann/meteor-deploy#readme",
+  "bugs": {
+    "url": "https://github.com/mfeuermann/meteor-deploy/issues"
+  },
+  "keywords": [
+    "meteor",
+    "deploy",
+    "deployment",
+    "mup",
+    "meteor-up",
+    "docker",
+    "cli"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -25,8 +38,11 @@
     "build": "tsup",
     "test": "vitest run",
     "test:integration": "vitest run -c vitest.integration.config.ts",
+    "test:package": "vitest run -c vitest.integration.config.ts test/package",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm test"
   },
   "dependencies": {
     "@zodern/ejs": "2.7.5",

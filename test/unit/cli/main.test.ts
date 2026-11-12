@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { main } from '../../../src/cli/main.js';
 import { CometError } from '../../../src/core/errors.js';
+
+const VERSION: string = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).version;
 
 function capture() {
   const out: string[] = [];
@@ -17,7 +20,7 @@ describe('main', () => {
     const c = capture();
     const code = await main(['--version'], c.io);
     expect(code).toBe(0);
-    expect(c.out.join('')).toContain('0.1.0');
+    expect(c.out.join('').trim()).toBe(VERSION);
   });
 
   it('exits non-zero for an unknown command', async () => {

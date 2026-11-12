@@ -3,7 +3,7 @@
  * dist/cli/main.js (C1: the entry check must resolve symlinks).
  */
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdtempSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const run = promisify(execFile);
+const version: string = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
 
 describe('installed bin', () => {
   beforeAll(() => {
@@ -22,7 +23,7 @@ describe('installed bin', () => {
     const bin = join(mkdtempSync(join(tmpdir(), 'comet-bin-')), 'comet-deploy');
     symlinkSync(join(root, 'dist/cli/main.js'), bin);
     const { stdout } = await run(process.execPath, [bin, '--version']);
-    expect(stdout.trim()).toBe('0.1.0');
+    expect(stdout.trim()).toBe(version);
     const help = await run(process.execPath, [bin, '--help']);
     expect(help.stdout).toContain('deploy');
   });
