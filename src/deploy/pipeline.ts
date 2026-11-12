@@ -227,15 +227,29 @@ export async function lockServers(
   if (!ctx.config.cometDeploy.lock) return [];
   if (o.force) await forceUnlock(ctx, servers, d);
   const info = lockInfo(command);
-  const results = await Promise.allSettled(servers.map(async (s) => ({ s, r: await d.acquireLock(await ctx.ssh.get(s), ctx.config.app.name, info) })));
-  const locked = results.flatMap((x) => (x.status === 'fulfilled' && x.value.r.ok ? [x.value.s] : []));
+  // One server at a time, in the same order for every command, stopping at a lock someone holds:
+  // of two commands that want the same servers, the one that locks the first of them gets them
+  // all. Locking in parallel could give each command one server, and both would fail.
+  const order = [...servers].sort();
+  const results: Array<PromiseSettledResult<{ s: string; r: Awaited<ReturnType<PipelineDeps['acquireLock']>> }>> = [];
+  for (const s of order) {
+    try {
+      const r = await d.acquireLock(await ctx.ssh.get(s), ctx.config.app.name, info);
+      results.push({ status: 'fulfilled', value: { s, r } });
+      if (!r.ok) break;
+    } catch (reason) {
+      results.push({ status: 'rejected', reason });
+    }
+  }
+  const acquired = new Set(results.flatMap((x) => (x.status === 'fulfilled' && x.value.r.ok ? [x.value.s] : [])));
+  const locked = servers.filter((s) => acquired.has(s));
   // A server without the app's config directory has no deploy running on it: nothing to lock.
   const skipped = (x: PromiseSettledResult<unknown>) => !!o.skipNotSetUp && x.status === 'rejected' && x.reason instanceof SetupMissingError;
   const problems = results.flatMap((x, i) => {
     if (skipped(x)) return [];
-    if (x.status === 'rejected') return [`Server "${servers[i]}": ${(x.reason as Error)?.message ?? x.reason}`];
+    if (x.status === 'rejected') return [`Server "${order[i]}": ${(x.reason as Error)?.message ?? x.reason}`];
     if (!x.value.r.ok) {
-      return [`Server "${servers[i]}" is locked by ${describeHolder(x.value.r.holder)}`];
+      return [`Server "${order[i]}" is locked by ${describeHolder(x.value.r.holder)}`];
     }
     return [];
   });

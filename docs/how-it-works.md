@@ -286,6 +286,7 @@ There is no automatic rollback of the servers that succeeded. When the result is
 
 - The lock is a directory, `/opt/<name>/config/deploy.lock/`, created with `mkdir`, which succeeds for exactly one process. Inside is `info.json` with the user (git `user.name` or the OS user), the machine, the PID, the start time, the command and the comet-deploy version.
 - A second deploy fails in preflight (or at the lock step) with the name of the holder.
+- The servers are locked one at a time, in the order of their names, and the lock step stops at the first server that is already locked. Of two deploys that start at the same moment and want the same servers, the one that locks the first of them gets all of them; the other one stops.
 - Locks are released at the end, also on errors and on Ctrl+C.
 - Locks do not expire. A lock left behind (killed process, second Ctrl+C, lost connection) is released with `comet-deploy unlock`, or with `--force-unlock` on the next command. Both print who held it.
 - `cometDeploy.lock: false` turns locking off.

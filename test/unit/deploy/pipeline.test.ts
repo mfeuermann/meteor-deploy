@@ -293,6 +293,28 @@ describe('deployPipeline', () => {
     expect(p.calls).toEqual(expect.arrayContaining(['release:one', 'release:two', 'stop-registry']));
   });
 
+  it('lockServers: of two commands that lock the same servers at once, exactly one gets them', async () => {
+    const s = await setup();
+    const deps = s.deps as PipelineDeps;
+    const held = new Map<string, string>();
+    // "a" is slow on "two" and "b" on "one": locking in parallel, each would get one server first.
+    const slow = new Set(['a:two', 'b:one']);
+    deps.acquireLock = async (conn, _app, info) => {
+      await new Promise((r) => setTimeout(r, slow.has(`${info.command}:${conn.name}`) ? 30 : 1));
+      const holder = held.get(conn.name);
+      if (holder) return { ok: false, holder: { ...info, command: holder } };
+      held.set(conn.name, info.command);
+      return { ok: true };
+    };
+    // Releasing is a round trip to the server too.
+    deps.releaseLock = async (conn) => {
+      await new Promise((r) => setTimeout(r, 50));
+      held.delete(conn.name);
+    };
+    const results = await Promise.allSettled([lockServers(s.ctx, ['one', 'two'], 'a', deps), lockServers(s.ctx, ['two', 'one'], 'b', deps)]);
+    expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+  });
+
   it('lockServers with skipNotSetUp skips a server that is not set up and still reports other errors', async () => {
     const s = await setup();
     const deps = s.deps as PipelineDeps;
