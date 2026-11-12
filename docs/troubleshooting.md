@@ -41,6 +41,7 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [It builds every time](#it-builds-every-time)
 - [npm install runs again](#npm-install-runs-again)
 - [--cached-build: no cached image found](#--cached-build-no-cached-image-found)
+- [Cache export is not supported for the docker driver](#cache-export-is-not-supported-for-the-docker-driver)
 - [Docker Hub rate limits](#docker-hub-rate-limits)
 
 **Deploy and after**
@@ -107,7 +108,7 @@ docker buildx inspect | grep Platforms
 Docker buildx is not available locally ("docker buildx inspect" failed). Install the buildx plugin; Docker Desktop and OrbStack include it.
 ```
 
-Docker runs, but the buildx builder lists no platforms. Usually the buildx plugin is missing (common with Docker Engine on Linux, where it is a separate package such as `docker-buildx-plugin`). Check with `docker buildx version` and `docker buildx inspect`.
+Docker runs, but the buildx builder lists no platforms. Usually the buildx plugin is missing (common with Docker Engine on Linux, where it is a separate package such as `docker-buildx-plugin`). Check with `docker buildx version` and `docker buildx inspect --bootstrap`. comet-deploy starts a builder that is not running yet; if the current builder (`docker buildx ls`, marked `*`) cannot start, switch to a working one with `docker buildx use <name>`.
 
 ### Building on an arm64 Mac for amd64 servers
 
@@ -412,10 +413,27 @@ The `npm install` layer is reused when the files it reads are byte-identical. It
 
 - the app's npm dependencies changed (`package.json`, `package-lock.json`), or Meteor was updated (it changes `programs/server/package.json` and the shrinkwrap in the bundle);
 - `docker.image` or `docker.buildInstructions` changed (they come before the layer);
-- it is the first build for a platform on this machine;
-- the local build cache was cleared (`docker builder prune`, or Docker's automatic cache cleanup).
+- it is the first build for a platform on this machine, or on this builder (`docker buildx ls`);
+- the local build cache was cleared (`docker builder prune`, or Docker's automatic cache cleanup);
+- the build runs on a fresh CI runner without `--cache-from`. See [Deploying from CI](ci.md#the-build-cache-between-runs).
 
 Run with `--verbose` and look for `CACHED` on the `npm install` step.
+
+### Cache export is not supported for the docker driver
+
+```
+docker buildx build failed for linux/amd64 (exit code 1):
+...
+ERROR: Cache export is not supported for the docker driver.
+```
+
+`--cache-to` needs a buildx builder that can export a build cache. The default `docker` driver can do that only with Docker's containerd image store. Create a builder with the `docker-container` driver and make it the current one:
+
+```bash
+docker buildx create --use --name comet
+```
+
+In GitHub Actions, `docker/setup-buildx-action` does this. See [Deploying from CI](ci.md#the-build-cache-between-runs).
 
 ### --cached-build: no cached image found
 

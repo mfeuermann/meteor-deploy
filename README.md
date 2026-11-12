@@ -346,10 +346,7 @@ Other limits of this release:
 - MUP's bundle mode (`kadirahq/meteord`).
 - `meteor debug`, `ssh`, the full `status` report, and a command to prune the local build cache.
 
-**Phase 3: in progress.**
-
-- Done: the npm package, CI on GitHub Actions, releases from a version tag.
-- Documentation and examples for deploying from CI.
+**Phase 3: done.** The npm package, CI on GitHub Actions, releases from a version tag, and [deploying from CI](docs/ci.md) with a build cache that survives between runs (`--cache-from` / `--cache-to`).
 
 **Not planned.** Docker Swarm. Third-party MUP plugins.
 
@@ -395,7 +392,7 @@ No. `comet-deploy reconfig` writes the new `env.list`, restarts and checks the a
 Env values (except public ones such as `ROOT_URL` and `PORT`), passwords, the key passphrase and the settings are replaced by `***` in all output. Env values do not go into the image (except keys that your `buildInstructions` reference, with a warning). `env.list` on the server has mode `600`.
 
 **Does it work in CI?**
-It does not prompt, and without a terminal the output is plain text. A CI setup is not documented or tested yet (phase 3).
+Yes. It does not prompt, and without a terminal the output is plain text. [Deploying from CI](docs/ci.md) lists what the job needs and has a GitHub Actions workflow. Give the deploy a build cache that survives between runs (`--cache-from` / `--cache-to`), or a fresh runner sends all dependencies to the servers on every deploy.
 
 **Why is the first deploy not much faster than MUP?**
 The first build runs the full `npm install`, and a new server gets the whole image once. The gain comes with the following deploys.
@@ -408,6 +405,7 @@ The first build runs the full `npm install`, and a new server gets the whole ima
 - [How it works](docs/how-it-works.md): build, distribution, activation, health check, revert, locks, history.
 - [Migrating from MUP](docs/migrating-from-mup.md): what stays, what changes, how to go back.
 - [Troubleshooting](docs/troubleshooting.md): common errors and fixes.
+- [Deploying from CI](docs/ci.md): what the job needs, the build cache between runs, a GitHub Actions workflow.
 
 ## Development
 

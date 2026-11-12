@@ -154,7 +154,7 @@ comet-deploy setup --servers two
 ## `deploy`
 
 ```
-comet-deploy deploy [--strategy canary|rolling|parallel] [--cached-build | --force-build] [--force-unlock]
+comet-deploy deploy [--strategy canary|rolling|parallel] [--cached-build | --force-build] [--cache-from <spec>] [--cache-to <spec>] [--force-unlock]
 ```
 
 Builds the app once on your machine and deploys it to the app servers:
@@ -183,6 +183,8 @@ Details: [How it works → Behind the proxy](how-it-works.md#behind-the-proxy).
 | `--strategy <s>` | `canary`, `rolling` or `parallel`. Default: `cometDeploy.strategy` (`canary`). |
 | `--cached-build` | Reuse the newest local build for each platform, even if the app changed. Fails with `Unable to use previous build for <platform>: no cached image found.` if there is none. |
 | `--force-build` | Build even if nothing changed. |
+| `--cache-from <spec>` | Import a BuildKit cache before the image build, as `docker buildx build --cache-from` (for example `type=gha,scope=myapp`). Repeatable. For a build machine without the cache of earlier builds, such as a CI runner: see [Deploying from CI](ci.md#the-build-cache-between-runs). |
+| `--cache-to <spec>` | Export the build cache after the image build, as `docker buildx build --cache-to` (for example `type=gha,mode=max,scope=myapp`). Repeatable. Needs a builder that can export a cache. |
 | `--force-unlock` | Release existing deploy locks first (prints who held them), then lock. |
 
 `--cached-build` and `--force-build` cannot be used together.
