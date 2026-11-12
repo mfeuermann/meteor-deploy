@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Lint, typecheck, unit tests, package (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      # Packs the package from this checkout, installs it and runs the installed command.
+      - run: npm run test:package
+
+  # Deploys to disposable fake servers (Docker containers with sshd and Docker inside), so
+  # it needs Docker and the Meteor tool on the runner, Docker Hub for the images, and about
+  # an hour. It runs on main and by hand, not for every pull request.
+  integration:
+    name: Integration and e2e tests
+    needs: check
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # The sample app pins its Meteor release; meteor fetches that release on first use.
+      - name: Install Meteor
+        run: |
+          curl -fsSL https://install.meteor.com/ | sh
+          echo "$HOME/.meteor" >> "$GITHUB_PATH"
+      - run: npm run test:integration
