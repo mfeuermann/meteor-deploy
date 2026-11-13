@@ -16,7 +16,7 @@ Cíl je, aby config MUP s `privateDockerRegistry` fungoval v comet-deploy beze z
 2. **Registry je jen cesta přenosu.** Po distribuci má server přesně tag `mup-<lc app>:<verze>`, stejně jako po tunelu nebo `stream`. Aktivace, canary, automatický revert, `rollback` (i `--servers` a `--to`), `restart`, `reconfig`, historie, pročištění verzí, `status` a `destroy` fungují stejně jako bez registry a nepotřebují k registry přístup.
 3. **Spolupráce s MUP i s registry:**
    - po úspěšném `deploy` ukazuje `<imagePrefix>/mup-<lc>:latest` v registry na nasazenou verzi, takže `mup reconfig` (start.sh MUP stahuje `:latest` z registry) spustí stejnou verzi;
-   - po přechodu z MUP s registry funguje `comet-deploy rollback` zpět na verzi, kterou nasadil MUP, jako je to dnes bez registry. Platí to i tehdy, když se nástroje střídají (comet → MUP s registry → comet), viz §4.5.
+   - po přechodu z MUP s registry funguje `comet-deploy rollback` zpět na verzi, kterou nasadil MUP, jako je to dnes bez registry: verze MUP je `:previous`. Platí to i tehdy, když se nástroje střídají (comet → MUP s registry → comet), viz §4.5. Automatická volba rollbacku se nemění: jako bez registry dá přednost starší verzi comet-deploy, pokud na serveru nějaká je.
 4. **Selhání registry nikdy nezmění běžící aplikaci.** Přihlášení, push i pull jsou před aktivací; chyba zastaví deploy a žádný server se nezmění.
 5. **Jasné chyby** pro tři místa, kde to v praxi selhává: přihlášení na počítači, push (oprávnění, dostupnost) a pull na serveru (server není přihlášený).
 
@@ -167,7 +167,7 @@ Všechny jsou `CometError` a žádná nevypíše heslo.
   - Testy nesmějí změnit `~/.docker/config.json` vývojáře: `DOCKER_CONFIG` do dočasného adresáře. Pozor: s ním se ztratí aktuální docker context (zde OrbStack; nastavit `DOCKER_HOST`) a CLI pluginy z `~/.docker/cli-plugins` (buildx; symlink).
   - Deploy ukázkové aplikace přes registry na dva servery přihlášené přes `comet-deploy docker setup`: oba běží novou verzi, na serverech je jen `mup-<lc>:<verze>`/`:latest`/`:previous` (žádný prefixovaný tag), v registry je verze i `:latest`; druhý deploy a `rollback --servers` jednoho serveru fungují.
   - Server bez přihlášení: chyba distribuce s radou `docker setup`, nic se nezměnilo.
-  - Interop s MUP 1.5.11: (a) comet `deploy` přes registry, pak `mup reconfig` → běží stejná verze; (b) `mup setup` + `mup deploy` s registry, pak comet `deploy` a `rollback` → běží verze MUP; (c) střídání: comet `deploy`, `mup deploy` s registry, comet `rollback` → chyba bez změny, comet `reconfig` → běží verze MUP, comet `deploy` a `rollback` → běží verze MUP.
+  - Interop s MUP 1.5.11: (a) comet `deploy` přes registry, pak `mup reconfig` → běží stejná verze; (b) `mup setup` + `mup deploy` s registry, pak comet `deploy` a `rollback` → běží verze MUP; (c) střídání: comet `deploy`, `mup reconfig`, comet `rollback` → chyba bez změny, comet `reconfig` a `rollback` → běží verze MUP; pak `mup deploy` s registry a comet `deploy` → `:previous` je nová verze MUP.
 
 Akceptace na reálném serveru do „hotovo“ nepatří [moje volba]; žádný z reálných serverů uživatele registry nepoužívá.
 

@@ -83,6 +83,8 @@ export function writeTestConfig(
     mongo?: Record<string, unknown>;
     /** The `hooks` section as JavaScript source (an object literal), so functions survive. */
     hooks?: string;
+    /** The `privateDockerRegistry` section, written as given. */
+    privateDockerRegistry?: Record<string, unknown>;
   } = {},
 ): string {
   const serversConfig = fakeServersConfig(servers, o.auth ?? 'password');
@@ -99,6 +101,7 @@ export function writeTestConfig(
     },
     ...(o.proxy ? { proxy: o.proxy } : {}),
     ...(o.mongo ? { mongo: o.mongo } : {}),
+    ...(o.privateDockerRegistry ? { privateDockerRegistry: o.privateDockerRegistry } : {}),
     ...(o.strategy || o.cometDeploy ? { cometDeploy: { ...o.cometDeploy, ...(o.strategy ? { strategy: o.strategy } : {}) } } : {}),
   };
   const path = join(dir, 'mup.js');
