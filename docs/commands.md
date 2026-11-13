@@ -138,7 +138,7 @@ comet-deploy setup [--servers <names>] [--allow-mongo-version-change]
 
 Prepares the servers, like `mup setup`:
 
-1. **Docker setup** on every machine of the app servers (and of the `mongo` and `proxy` servers, if those sections exist), in parallel. It runs MUP's `docker-setup.sh`: if Docker is missing or older than 18, it installs it with `get.docker.com` (apt-based systems, Debian or Ubuntu) and adds the SSH user to the `docker` group; otherwise it starts Docker. A machine that appears twice (same host and SSH port) is set up once.
+1. **Docker setup** on every machine of the app servers (and of the `mongo` and `proxy` servers, if those sections exist), in parallel. It runs MUP's `docker-setup.sh`: if Docker is missing or older than 18, it installs it with `get.docker.com` (apt-based systems, Debian or Ubuntu) and adds the SSH user to the `docker` group; otherwise it starts Docker. With `privateDockerRegistry.username` and `password`, it then runs `docker login` to the registry. A machine that appears twice (same host and SSH port) is set up once.
 2. **App setup** on the app servers, in parallel: creates `/opt/<name>/`, `/opt/<name>/config` and `/opt/<name>/tmp` and gives them to the SSH user.
 
 3. **MongoDB**, if the config has a `mongo` section: [`mongo setup`](#mongo-commands), then `mongo start`, as in MUP. A version change that the data cannot take stops `setup` here, before the start script is written (`--allow-mongo-version-change` turns that into a warning; see [Upgrading MongoDB](configuration.md#upgrading-mongodb)). When the config cannot run MUP's MongoDB (the app has more than one server, or not the MongoDB server), `setup` says why and goes on with the proxy.
@@ -161,12 +161,12 @@ comet-deploy deploy [--strategy canary|rolling|parallel] [--cached-build | --for
 
 Builds the app once on your machine and deploys it to the app servers:
 
-1. **Preflight**, local and on every server in parallel: local Docker, buildx and its platforms, the Meteor command; per server SSH, passwordless sudo, bash, Docker (version 18 or newer, running), CPU architecture, free disk space for Docker, the app directories from `setup` (`/opt/<name>/config`), SSH reverse port forwarding (a server without it gets the whole image over SSH; see [`cometDeploy.transfer`](configuration.md#cometdeploy)), and the deploy lock. All problems are reported at once, before anything is built.
+1. **Preflight**, local and on every server in parallel: local Docker, buildx and its platforms, the Meteor command; per server SSH, passwordless sudo, bash, Docker (version 18 or newer, running), CPU architecture, free disk space for Docker, the app directories from `setup` (`/opt/<name>/config`), SSH reverse port forwarding (a server without it gets the whole image over SSH; see [`cometDeploy.transfer`](configuration.md#cometdeploy); not checked with `privateDockerRegistry`), and the deploy lock. All problems are reported at once, before anything is built.
 2. **Build**, once per target platform: `meteor build`, then `docker buildx build` into `mup-<name>:<version>`. Skipped when nothing changed since a previous build (`No changes since <version>: reusing mup-<name>:<version>`).
 3. **Lock** every target server.
-4. **Distribute**: push to a local registry, then every server pulls only the layers it does not have, through an SSH reverse tunnel, in parallel. A server without SSH forwarding gets the whole image as a `docker save` archive over SSH instead, unless it has this version already. The running app is not touched. If any server fails here, the deploy stops and no server is changed.
+4. **Distribute**: push to a local registry, then every server pulls only the layers it does not have, through an SSH reverse tunnel, in parallel. A server without SSH forwarding gets the whole image as a `docker save` archive over SSH instead, unless it has this version already. With [`privateDockerRegistry`](configuration.md#privatedockerregistry), comet-deploy logs in to the registry before the build, pushes the version there, and every server pulls it (`(from <registry>)`). The running app is not touched. If any server fails here, the deploy stops and no server is changed.
 5. **Activate** by strategy: per server, save the current `start.sh` and `env.list`, retag the image, write the new files, restart the container and run the health check. A server that fails is reverted to its previous image and config.
-6. Write the deploy history, remove old versions on the healthy servers, release the locks.
+6. Write the deploy history, remove old versions on the healthy servers, release the locks. With a private registry, a deploy that ended healthy on every app server then pushes `<imagePrefix>/mup-<name>:latest` for MUP.
 
 Hooks run around these steps under MUP's keys (`pre.deploy`, `pre.meteor.build`, `post.meteor.start`, …); see [Configuration → Hooks](configuration.md#keys-and-nesting) for where each one lands.
 
@@ -328,6 +328,8 @@ Which version each server rolls back to:
 | no kept version qualifies | `:previous` (for example on a server deployed only by MUP), by swapping `:latest` and `:previous`. |
 | nothing at all | The server fails with `Nothing to roll back to: no older version and no :previous image on this server`. |
 
+A server where MUP's registry `start.sh` is (the last `mup deploy` or `mup reconfig` with `privateDockerRegistry`) is refused before anything changes: that `start.sh` pulls `:latest` from the registry, so a rollback would not change the version. Run `comet-deploy reconfig` first.
+
 If the health check fails, the server goes back to the image that ran before the rollback. Running `rollback` again goes one more version back. Version names are listed by [`history`](#history).
 
 Behind the proxy it switches like [`deploy`](#deploy), without a gap, or with `loadBalancing` out of load balancing while the server restarts. It does not change the proxy files: the upstream keeps each server's address and port.
@@ -464,7 +466,7 @@ Docker itself and other apps stay.
 
 | Command | What it does | Servers |
 |---|---|---|
-| `docker setup` | MUP's `docker-setup.sh`: install Docker if it is missing or older than 18, otherwise start it. | Unique machines of the app, `mongo` and `proxy` servers, in parallel |
+| `docker setup` | MUP's `docker-setup.sh`: install Docker if it is missing or older than 18, otherwise start it. With `privateDockerRegistry.username` and `password`, it also logs Docker in to the registry. | Unique machines of the app, `mongo` and `proxy` servers, in parallel |
 | `docker update` | MUP's `docker-update.sh`: reinstall Docker with `get.docker.com`. | same |
 | `docker restart` | `service docker restart`: restarts the Docker daemon, and with it every container on the machine. | same |
 | `docker ps [options]` | `docker ps` with your options (for example `-a`), one machine after another; output prefixed `[<host>]`. | same |

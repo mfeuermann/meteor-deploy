@@ -25,11 +25,12 @@ comet-deploy is a drop-in replacement for Meteor Up (MUP) 1.5.11. It reads the s
 
 ## Check first: what does not work yet
 
-comet-deploy covers phase 1, MUP's reverse proxy and MUP's built-in MongoDB. If your config uses one of these, keep using MUP for that app for now:
+comet-deploy covers phase 1, MUP's reverse proxy, MUP's built-in MongoDB, the hooks and MUP's private registry. If your config uses one of these, keep using MUP for that app for now:
 
 | In your config | What comet-deploy does | What you can do |
 |---|---|---|
-| `privateDockerRegistry` | stop: `"privateDockerRegistry" is not supported yet …` | Keep MUP. |
+| `privateDockerRegistry` without `imagePrefix`, or with an `imagePrefix` that does not start with the registry in `host` (MUP would push to Docker Hub) | `deploy` stops before preflight: `privateDockerRegistry.imagePrefix is required …` or `… would push to docker.io, not to the registry …` | Set `imagePrefix` to `<host>/<path>`, for example `registry.example.com/team`. MUP uses the same prefix. |
+| `privateDockerRegistry` with `cometDeploy.transfer: 'tunnel'` or `'stream'` | Config error | Remove `transfer` or set it to `'registry'`. |
 | No `docker.image`, or `kadirahq/meteord`, or `docker.prepareBundle: false` (MUP bundle mode) | The build stops: `The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode).` | Set `docker.image: 'zodern/meteor:root'`. This is also the image in MUP's own `mup init` sample, so the config keeps working with MUP. |
 | `swarm.enabled: true` | Error: `swarm.enabled Docker Swarm is not supported by comet-deploy` | Keep MUP. Swarm is not planned. |
 | `app.ssl`, `app.nginx`, `app.docker.imageFrontendServer` (deprecated since MUP 1.4) | Error, for example `app.ssl is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section: move the domain and certificate settings there, or keep deploying this app with MUP.` | Move the settings to the [`proxy`](configuration.md#proxy) section, which MUP uses too, or keep MUP. |
@@ -174,6 +175,8 @@ Global options are the same: `--config`, `--settings`, `--servers`, `--verbose`,
 
 **New files on the servers.** Version tags `mup-<name>:<version>`, `/opt/<name>/config/deploy-history.jsonl`, `/opt/<name>/config/.prev/` and, while a command runs, `/opt/<name>/config/deploy.lock/`. MUP ignores all of them. See [How it works → What is on the servers](how-it-works.md#what-is-on-the-servers).
 
+**A private registry is only the way the image travels.** With `privateDockerRegistry`, MUP builds and pushes `<imagePrefix>/mup-<name>:latest` and every server pulls it in `start.sh`, on every start. comet-deploy pushes `<imagePrefix>/mup-<name>:<version>`, each server pulls it once and keeps it as `mup-<name>:<version>`, and `start.sh` (MUP's template without the registry) runs the server's `mup-<name>:latest`. So canary, the automatic revert and `rollback` work server by server, and a restart does not need the registry. After a healthy deploy to all app servers, comet-deploy also pushes `:latest`, for MUP. `imagePrefix` must start with the registry from `host`, and `setup` and `docker setup` log the servers in only when both `username` and `password` are set. See [Configuration → privateDockerRegistry](configuration.md#privatedockerregistry).
+
 **New local state.** Local images `mup-<name>:<version>` (the last 20 builds per app; older ones are removed), a stopped `comet-deploy-registry` container with a volume that is never cleaned up, and the build cache state in `~/.cache/comet-deploy/`.
 
 ## The reverse proxy
@@ -222,6 +225,13 @@ Things to know:
 - For the commands that are phase 2 in comet-deploy (`mup ssh`, `mup meteor debug`), use MUP on the same config.
 - With the `mongo` section, both tools write the same MongoDB start script, so neither recreates the container the other one started. Mind the version: `mup setup` starts whatever `mongo.version` says, without comet-deploy's check.
 - Behind the proxy, `mup proxy setup` clears the `down` marks of drained servers; see [The reverse proxy](#the-reverse-proxy).
+- **With `privateDockerRegistry`**, `mup deploy` and `mup reconfig` write MUP's `start.sh`, which pulls `<imagePrefix>/mup-<name>:latest` from the registry on every start. On such a server:
+  - `comet-deploy deploy` and `reconfig` first tag `mup-<name>:latest` to the image the app runs, so `:previous` and a later rollback know MUP's version, then they write comet-deploy's `start.sh`.
+  - `comet-deploy rollback` refuses the server (`… was last deployed by MUP with privateDockerRegistry …`): MUP's `start.sh` would pull `:latest` again and run the same version. Run `comet-deploy reconfig` first.
+  - `comet-deploy restart`, `start` and `stop` run the `start.sh` that is there, so they pull `:latest`, as MUP does.
+  - `mup reconfig` after a comet-deploy deploy runs comet-deploy's version, because comet-deploy pushes `:latest` after every healthy deploy to all app servers.
+
+  The integration tests check this too: `mup deploy`, `comet-deploy deploy`, `mup reconfig`, `comet-deploy rollback` (refused), `comet-deploy reconfig` and `rollback`, then `mup deploy` and `comet-deploy deploy` again.
 
 ## Going back to MUP
 
@@ -244,6 +254,8 @@ sudo rm -rf /opt/myapp/config/.prev /opt/myapp/config/deploy-history.jsonl /opt/
 
 `docker rmi` on a tag only removes the tag when `:latest` or `:previous` points to the same image.
 
+With `privateDockerRegistry`, `mup deploy` writes MUP's `start.sh` again, which pulls `:latest` from the registry. Until then, `mup restart` runs comet-deploy's `start.sh`, which starts the server's own `mup-<name>:latest`.
+
 On your machine, you can remove the local images `mup-myapp:<version>` and the local registry (see [Troubleshooting → Leftover local images](troubleshooting.md#leftover-local-images-and-the-registry-volume)).
 
 ## Differences at a glance
@@ -254,7 +266,7 @@ On your machine, you can remove the local images `mup-myapp:<version>` and the l
 | Docker on your machine | not needed | required, with buildx |
 | Where the image is built | on each server | once, on your machine |
 | `npm install` | on every server, every deploy | cached; runs again only when the dependencies change |
-| What is sent to a server | the whole bundle, with SFTP | only the missing image layers, through an SSH reverse tunnel |
+| What is sent to a server | the whole bundle, with SFTP | only the missing image layers, through an SSH reverse tunnel (or the private registry) |
 | Order of servers | one after another | distribution in parallel; activation by strategy (`canary`, `rolling`, `parallel`) |
 | App during the build | stopped by default | keeps running |
 | Health check passes on | any HTTP answer | HTTP status ≤ 499 (configurable) |
@@ -274,5 +286,6 @@ On your machine, you can remove the local images `mup-myapp:<version>` and the l
 | App restart behind the proxy | a gap while the container is recreated | no gap; with load balancing the server leaves the upstream first |
 | Built-in MongoDB (`mongo`) | supported | supported, with MUP's scripts; checked before the app commands, version changes guarded |
 | Hooks (`hooks`) | supported | supported, the same names; `remoteCommand` failures only warn in both; the api object without nodemiral sessions |
-| Private registry, bundle mode | supported | phase 2 |
+| Private registry (`privateDockerRegistry`) | images as `<imagePrefix>/mup-<name>:latest`; `start.sh` pulls on every start | pushed per version, pulled once per server and kept as `mup-<name>:<version>`; `start.sh` never pulls; `:latest` pushed for MUP |
+| Bundle mode | supported | phase 2 |
 | Docker Swarm, MUP plugins | supported | not planned |

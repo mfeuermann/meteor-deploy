@@ -30,6 +30,7 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [validate exits with code 1](#validate-exits-with-code-1)
 - [The docker image cannot build an app image](#the-docker-image-cannot-build-an-app-image)
 - [Not supported yet (phase 2)](#not-supported-yet-phase-2)
+- [imagePrefix does not point to the registry](#imageprefix-does-not-point-to-the-registry)
 - [app.ssl is a deprecated MUP option](#appssl-is-a-deprecated-mup-option)
 - [env.list line over 64 KiB](#envlist-line-over-64-kib)
 
@@ -50,6 +51,12 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [Image distribution failed](#image-distribution-failed)
 - [Saving the image for the transfer over SSH failed](#saving-the-image-for-the-transfer-over-ssh-failed)
 - [Timed out waiting for the registry lock](#timed-out-waiting-for-the-registry-lock)
+- [Logging in to the private registry failed](#logging-in-to-the-private-registry-failed)
+- [Pushing to the private registry failed](#pushing-to-the-private-registry-failed)
+- [A server cannot pull from the private registry](#a-server-cannot-pull-from-the-private-registry)
+- [The private registry's certificate is not trusted](#the-private-registrys-certificate-is-not-trusted)
+- [:latest in the private registry was not updated](#latest-in-the-private-registry-was-not-updated)
+- [Rollback refused after a MUP deploy with a registry](#rollback-refused-after-a-mup-deploy-with-a-registry)
 - [Health check failed and the server was reverted](#health-check-failed-and-the-server-was-reverted)
 - [The restored version is not healthy either](#the-restored-version-is-not-healthy-either)
 - [Mixed versions after a partial failure](#mixed-versions-after-a-partial-failure)
@@ -360,7 +367,16 @@ docker: {
 "ssh one" is not supported yet: it is planned for phase 2 of comet-deploy.
 ```
 
-The `privateDockerRegistry` part of a MUP config, and the `ssh` and `meteor debug` commands, are phase 2. Remove the part from the config if you do not need it, or keep using MUP for that app. See [Configuration → Planned for phase 2](configuration.md#planned-for-phase-2) and [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
+The `ssh` and `meteor debug` commands, and MUP's bundle mode, are phase 2. Use MUP for them meanwhile; it works on the same config and servers. See [Configuration → Planned for phase 2](configuration.md#planned-for-phase-2) and [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
+
+### imagePrefix does not point to the registry
+
+```
+privateDockerRegistry.imagePrefix is required: it is where comet-deploy pushes the image, for example "registry.example.com/myteam".
+privateDockerRegistry.imagePrefix "team" would push to docker.io, not to the registry "registry.example.com" in privateDockerRegistry.host. Start it with the registry host, for example "registry.example.com/team".
+```
+
+Docker sends an image to the registry in the first part of its name (a part with a `.` or a `:`, or `localhost`), and to Docker Hub otherwise. The image holds your app's bundle, so comet-deploy stops before preflight rather than push it somewhere else than `host`. Start `imagePrefix` with the registry from `host`. MUP uses the same prefix, so the config keeps working there. See [Configuration → privateDockerRegistry](configuration.md#privatedockerregistry).
 
 ### app.ssl is a deprecated MUP option
 
@@ -532,6 +548,62 @@ Hint: Another comet-deploy is starting or stopping the local registry. If none i
 ```
 
 All deploys on your machine share one local registry. A short lock file makes starting and stopping it safe when several deploys run at once. A lock left by a process that no longer runs is taken over automatically; this error comes only after 120 seconds of waiting for a live process. If no other comet-deploy is running, delete the file and deploy again.
+
+### Logging in to the private registry failed
+
+```
+Logging in to the registry "registry.example.com" failed: Error response from daemon: Get "https://registry.example.com/v2/": unauthorized
+Hint: Check privateDockerRegistry.username and password. Nothing was built or pushed, and no server was changed.
+```
+
+comet-deploy runs `docker login --username <username> --password-stdin <host>` on your machine after preflight. The password is never printed. Check the credentials with `docker login registry.example.com` by hand. A login that fails with `x509` or `server gave HTTP response to HTTPS client` is about trust; see [The private registry's certificate is not trusted](#the-private-registrys-certificate-is-not-trusted).
+
+### Pushing to the private registry failed
+
+```
+Pushing registry.example.com/team/mup-myapp:20261107-183005 to the registry failed: denied: requested access to the resource is denied
+Hint: Check that the registry account may push to "registry.example.com/team". No server was changed.
+```
+
+The push runs before anything reaches the servers. `denied` or `unauthorized`: the account may not push to that path (check `imagePrefix` and the account's rights); without `username` and `password` in the config, log in first with `docker login <host>`. Any other error (`connection refused`, `no such host`, a timeout): your machine cannot reach the registry. The local tag made for the push is removed in both cases.
+
+### A server cannot pull from the private registry
+
+```
+Image distribution failed:
+  - two: [two] Pulling registry.example.com/team/mup-myapp:20261107-183005 failed (exit code 1):
+    Error response from daemon: … no basic auth credentials
+    The server is not logged in to the registry: run "comet-deploy docker setup", which runs docker login on the servers.
+Hint: No server was changed.
+```
+
+Each server pulls with its own Docker, which needs its own login. `comet-deploy docker setup` (and `setup`) run MUP's `docker login` on the servers when the config has `username` and `password`; without them, run `sudo docker login <host>` on the server. Other pull errors are the server's network or DNS, or the registry's certificate (below). No server was changed, because activation starts only after every server has the image.
+
+### The private registry's certificate is not trusted
+
+```
+x509: certificate signed by unknown authority
+http: server gave HTTP response to HTTPS client
+```
+
+Docker talks HTTPS to a registry and checks its certificate, on your machine and on every server. comet-deploy changes neither. Either give the registry a certificate the machines trust (for a private CA: `/etc/docker/certs.d/<host>/ca.crt` on each server, and your system's or Docker Desktop's trust store locally), or, for a registry without TLS in a trusted network, add it to `insecure-registries` in `/etc/docker/daemon.json` (Docker Desktop: Settings → Docker Engine) and restart Docker. Docker allows `127.0.0.0/8` without TLS on its own.
+
+### :latest in the private registry was not updated
+
+```
+registry: registry.example.com/team/mup-myapp:latest not updated (the deploy did not include every app server).
+Pushing registry.example.com/team/mup-myapp:latest to the registry failed: … The deploy itself succeeded; only MUP reads this tag ("mup reconfig" would run the previous version).
+```
+
+comet-deploy never reads `:latest` in the registry; it is there for MUP, whose `start.sh` pulls it. It is moved only after a deploy that ended healthy on every app server with one CPU architecture. The first line is information: a `--servers` deploy, a failed server or a mixed-architecture deploy leaves it on the version before. The second is a warning: the deploy succeeded, but MUP would start the older version. Fix the push (see above) and deploy again, or ignore it if you do not run MUP on this app.
+
+### Rollback refused after a MUP deploy with a registry
+
+```
+Server "one" was last deployed by MUP with privateDockerRegistry: its start.sh pulls :latest from the registry, so a rollback would not change the version. Run "comet-deploy reconfig" first, then the rollback.
+```
+
+MUP's `start.sh` with a registry pulls `<imagePrefix>/mup-<name>:latest` on every start, so any image a rollback tagged on the server would be replaced by the registry's. `comet-deploy reconfig` writes comet-deploy's `start.sh` (it first tags `mup-<name>:latest` to the image that runs, so nothing changes for the app), and then `rollback` works. The other servers of the rollback are not affected.
 
 ### Health check failed and the server was reverted
 

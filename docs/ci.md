@@ -16,6 +16,8 @@ comet-deploy works the same in a CI job as on your machine: the job builds the i
 
 The servers need nothing new: the image still travels through an SSH reverse tunnel from the runner.
 
+**With [`privateDockerRegistry`](configuration.md#privatedockerregistry)** the runner pushes the image to that registry and the servers pull it from there, so the runner needs network access to the registry, and no SSH forwarding is used. Keep the password in a CI secret and read it in `mup.js` (`password: process.env.REGISTRY_PASSWORD`); comet-deploy logs the runner's Docker in with `--password-stdin` before the build. Without `username` and `password` in the config, log the runner in yourself first (for example with the CI's own registry token), and log each server in once with `sudo docker login <host>`. On a self-hosted runner the login stays in the runner user's Docker config after the job.
+
 ## The build cache between runs
 
 On your machine, BuildKit keeps the layers of earlier builds. When the app's dependencies did not change, the `npm install` layer is a cache hit, it is the same layer the servers already have, and only the app code travels.

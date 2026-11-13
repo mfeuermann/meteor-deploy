@@ -4,7 +4,7 @@ Fast deploys for Meteor apps, compatible with Meteor Up (MUP) 1.5.11.
 
 comet-deploy builds the Docker image of your app **once, on your machine**, and sends each server **only the image layers it does not have yet**, to all servers in parallel. It reads your existing `mup.js`, has the same commands, and leaves the servers in the same state as MUP. You can switch an app from MUP to comet-deploy and back without touching the servers.
 
-**Status:** version 0.3.0: phase 1 of the [roadmap](#roadmap) and the first parts of the next phase: MUP's reverse proxy, MUP's built-in MongoDB, hooks, and the image transfer over plain SSH for servers without SSH forwarding. Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
+**Status:** version 0.3.0: phase 1 of the [roadmap](#roadmap) and the first parts of the next phase: MUP's reverse proxy, MUP's built-in MongoDB, hooks, the image transfer over plain SSH for servers without SSH forwarding, and the image transfer through MUP's private registry. Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
 
 > **Important: comet-deploy needs Docker on your machine**, with BuildKit and buildx: Docker Desktop, OrbStack, or Docker Engine on Linux. This is new compared to MUP, which builds the image on each server. To build for `x86_64` servers on an Apple Silicon Mac, amd64 emulation must be on. See [Requirements](#requirements).
 
@@ -71,7 +71,7 @@ comet-deploy keeps what works in MUP (the config, the commands, the server layou
 1. **Preflight** checks your machine and all servers in parallel and reports every problem before anything is built.
 2. **Build.** `meteor build`, then `docker buildx build` with a generated Dockerfile that puts the inputs of `npm install` in their own layer. If no file of the app changed since an earlier build, the build is skipped.
 3. **Lock.** A lock directory on each server prevents two deploys at once.
-4. **Distribute.** The image is pushed to a registry on your machine. Each server pulls through an SSH reverse tunnel and gets only the layers it does not have; the base image comes from Docker Hub on the server side. The running app is not touched.
+4. **Distribute.** The image is pushed to a registry on your machine. Each server pulls through an SSH reverse tunnel and gets only the layers it does not have; the base image comes from Docker Hub on the server side. With `privateDockerRegistry`, the image goes through that registry instead. The running app is not touched.
 5. **Activate.** Per server: save the current config, move `:latest` to `:previous`, write MUP's `start.sh` and `env.list`, restart the container, run the health check. A server that fails goes back to its previous image and config.
 6. **Finish.** Write the deploy history on each server, remove old versions, release the locks.
 
@@ -84,7 +84,7 @@ Details: [How it works](docs/how-it-works.md).
 - **Drop-in for MUP 1.5.11.** The same `mup.js` / `mup.json`, the same `settings.json`, the same commands and options, the same `/opt/<name>` layout, container and image names, and `start.sh` from MUP's own template.
 - **Build once, locally.** One build for all servers, with BuildKit and a layer cache for `npm install`.
 - **Skip unchanged builds.** A content hash of the app decides whether a build is needed (`No changes since <version>`).
-- **Delta transfer.** Only missing layers travel, through an SSH tunnel, to all servers in parallel. A server whose `sshd` refuses forwarding gets the whole image over SSH instead.
+- **Delta transfer.** Only missing layers travel, through an SSH tunnel, to all servers in parallel. A server whose `sshd` refuses forwarding gets the whole image over SSH instead. With MUP's `privateDockerRegistry`, the servers pull from your registry.
 - **Rollout strategies.** `canary` (default), `rolling` or `parallel`.
 - **Strict health check.** HTTP status up to 499 counts as healthy (configurable); a crashed container fails at once.
 - **Automatic revert.** A failed server returns to its previous image, `start.sh` and `env.list`, and the restored version is checked again.
@@ -203,7 +203,7 @@ comet-deploy validate          # warnings about useBuildKit and similar are fine
 comet-deploy deploy            # no "setup" needed on servers MUP set up
 ```
 
-Check first that your config does not use a part that is still phase 2 (`privateDockerRegistry`, the default `kadirahq/meteord` image): [Migrating from MUP](docs/migrating-from-mup.md).
+Check first that your config does not use a part that is still phase 2 (the default `kadirahq/meteord` image): [Migrating from MUP](docs/migrating-from-mup.md).
 
 ## Configuration
 
@@ -259,7 +259,7 @@ The `cometDeploy` section:
 | `healthCheck.path` | `'/'` | Path the health check requests. |
 | `healthCheck.maxStatus` | `499` | Highest HTTP status that counts as healthy. MUP accepts any answer; set `599` for that. |
 | `platform` | `'auto'` | `auto` (detect per server), `'linux/amd64'` or `'linux/arm64'`. |
-| `transfer` | `'auto'` | `auto`: the SSH tunnel, or the whole image over SSH where `sshd` refuses forwarding. `tunnel`: the tunnel only. `stream`: the whole image over SSH everywhere. `registry` is phase 2. |
+| `transfer` | `'auto'` | `auto`: the SSH tunnel, or the whole image over SSH where `sshd` refuses forwarding. `tunnel`: the tunnel only. `stream`: the whole image over SSH everywhere. `registry`: through `privateDockerRegistry`, which `auto` uses too when the config has it. |
 | `lock` | `true` | Deploy lock on the servers. |
 | `zeroDowntime` | `true` | Behind the proxy: replace the container without a gap, and with load balancing take each server out of the upstream while it restarts. `false`: restart in place, as MUP does. |
 
@@ -317,7 +317,6 @@ The full list and a side-by-side table: [Migrating from MUP](docs/migrating-from
 
 comet-deploy does not include these MUP features yet. A config that uses them stops with a clear message, and MUP keeps working on the same config:
 
-- `privateDockerRegistry`;
 - MUP's bundle mode, used by the default `kadirahq/meteord` image. Set `docker.image: 'zodern/meteor:root'`;
 - the commands `ssh`, `meteor debug`, and the full `status` report.
 
@@ -345,7 +344,7 @@ Other limits of this release:
 - Done: MUP's built-in MongoDB (the `mongo` section and commands).
 - Done: hooks (`localCommand`, `remoteCommand`, `method` with MUP's api object) under MUP's names.
 - Done: image transfer over plain SSH for servers without forwarding (`transfer: 'stream'`, automatic with `auto`).
-- Image transfer through a private registry (`privateDockerRegistry`, `transfer: 'registry'`).
+- Done: image transfer through MUP's private registry (`privateDockerRegistry`, `transfer: 'registry'`).
 - MUP's bundle mode (`kadirahq/meteord`).
 - `meteor debug`, `ssh`, the full `status` report, and a command to prune the local build cache.
 

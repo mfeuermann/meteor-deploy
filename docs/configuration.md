@@ -17,6 +17,7 @@ comet-deploy reads the same config file as Meteor Up (MUP) 1.5.11: `mup.js` or `
   - [Other `app` options](#other-app-options)
 - [`mongo`](#mongo)
 - [`proxy`](#proxy)
+- [`privateDockerRegistry`](#privatedockerregistry)
 - [Accepted but ignored](#accepted-but-ignored)
 - [Rejected options](#rejected-options)
 - [Planned for phase 2](#planned-for-phase-2)
@@ -92,7 +93,8 @@ comet-deploy validates the config with the same Joi schemas as MUP 1.5.11 and re
 - An env value contains a newline (`env.list` cannot represent it).
 - One of the [rejected options](#rejected-options) is set.
 - A required key of `mongo`, `proxy.domains` or `privateDockerRegistry.host` is missing.
-- A `cometDeploy` value is invalid.
+- Only one of `privateDockerRegistry.username` and `password` is set.
+- A `cometDeploy` value is invalid, or `cometDeploy.transfer` does not fit `privateDockerRegistry` (see [`cometDeploy`](#cometdeploy)).
 
 Everything else is a **warning**: unknown keys (for example a misspelled option), type differences that MUP tolerates in practice, and the [ignored options](#accepted-but-ignored). Keys in `servers.<name>.opts` are not checked at all: they all go to the SSH client.
 
@@ -353,6 +355,43 @@ What comet-deploy does with it:
 
 How each of these works: [How it works → Behind the proxy](how-it-works.md#behind-the-proxy). The differences from MUP in one list: [Migrating from MUP](migrating-from-mup.md#the-reverse-proxy).
 
+## `privateDockerRegistry`
+
+MUP's private registry. comet-deploy builds the image on your machine as usual, pushes it to the registry, and every server pulls it from there. Use it when the servers should get the image from your registry instead of from your machine, for example when your uplink is slow and the servers are close to the registry.
+
+```js
+privateDockerRegistry: {
+  host: 'registry.example.com',               // where docker login goes
+  imagePrefix: 'registry.example.com/team',   // the image becomes registry.example.com/team/mup-<app>
+  username: 'deploy',
+  password: process.env.REGISTRY_PASSWORD,
+},
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `host` | required | The registry that `docker login` logs in to, on your machine and on the servers. |
+| `imagePrefix` | - | Where the image goes: `<imagePrefix>/mup-<lowercase app name>`. `deploy`, `meteor deploy` and `meteor push` need it, and it must start with the registry in `host` (see below). |
+| `username`, `password` | - | Set both or neither. With them, comet-deploy logs in on your machine, and `setup` and `docker setup` log the servers in. |
+
+What comet-deploy does with it:
+
+- **Login on your machine**, after preflight and before the build: `docker login --username <username> --password-stdin <host>`, so the password is never in a command line. Docker keeps the login (in `~/.docker/config.json` or your system's credential store) and replaces an earlier login to the same host. Without `username` and `password`, comet-deploy uses the login your Docker already has, for example from `docker login` in CI.
+- **Push** of the version: `<imagePrefix>/mup-<app>:<version>`, or one tag per CPU architecture (`<version>-amd64`, `<version>-arm64`) when the servers differ. Nothing is pushed when every server has the version already. The local tags made for the push are removed again.
+- **Pull on the servers.** Each server pulls its tag and keeps the image as `mup-<app>:<version>`, exactly as with the other transfers, so `rollback`, `history` and `status` work the same. The registry tag is removed on the server. The servers need a login to the registry: `setup` and `docker setup` run `docker login` there (MUP's script) when the config has `username` and `password`.
+- **`:latest` for MUP.** After a deploy that ended healthy on every app server, `<imagePrefix>/mup-<app>:latest` in the registry points to the new version. MUP's `start.sh` pulls that tag (`mup reconfig`, `mup deploy`); comet-deploy never reads it. It is not changed by a deploy to only some app servers (`--servers`), by a deploy with several CPU architectures, or by `meteor push`, `rollback`, `reconfig` and `restart`. So after a `rollback` it still points to the newer version.
+- **`start.sh` never pulls.** comet-deploy writes the same `start.sh` as without a registry: it runs `mup-<app>:latest` from the server's own Docker. MUP's `start.sh` with a registry pulls `:latest` from the registry on every start instead; see [How it works → Through a private registry](how-it-works.md#through-a-private-registry).
+- **No clean-up in the registry.** Every deploy adds a version tag, and comet-deploy never deletes tags there. Use your registry's retention policy.
+- **Trust.** Your Docker and the servers' Docker must accept the registry: a certificate they trust, or the registry in `insecure-registries` in `/etc/docker/daemon.json`. comet-deploy configures neither.
+
+**`imagePrefix` and `host`.** Docker sends an image to the registry named in the first part of its name when that part contains a `.` or a `:` or is `localhost`, and to Docker Hub otherwise. `imagePrefix: 'team'` with `host: 'registry.example.com'` would therefore push your app to Docker Hub, so comet-deploy stops before preflight:
+
+```
+privateDockerRegistry.imagePrefix "team" would push to docker.io, not to the registry "registry.example.com" in privateDockerRegistry.host. Start it with the registry host, for example "registry.example.com/team".
+```
+
+For Docker Hub itself, use `host: 'docker.io'` (or `'https://index.docker.io/v1/'`) and `imagePrefix: '<your user>'`.
+
 ## Accepted but ignored
 
 These options are valid MUP options. comet-deploy accepts them, so the same config keeps working with both tools, but they have no effect.
@@ -385,14 +424,7 @@ MUP deprecated `app.ssl`, `app.nginx` and `imageFrontendServer` in version 1.4 i
 
 ## Planned for phase 2
 
-comet-deploy 0.3.0 does not run these parts of a MUP config yet. They are validated and normalized exactly like MUP (so `validate --show` matches MUP's output):
-
-| Section | `setup` | `deploy`, `reconfig`, `rollback`, `meteor push`, `meteor build`, `meteor envconfig` |
-|---|---|---|
-| `privateDockerRegistry` | - | stop: `"privateDockerRegistry" is not supported yet (planned for phase 2 of comet-deploy).` |
-| `cometDeploy.transfer: 'registry'` | - | stop: `cometDeploy.transfer "registry" is not supported yet (planned for phase 2 of comet-deploy).` |
-
-A base image without app-image support (the default `kadirahq/meteord`, or `docker.prepareBundle: false`) stops the build with `The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode). Bundle mode is planned for phase 2 of comet-deploy.` and the hint `Use a zodern/meteor image (app.docker.image), e.g. "zodern/meteor:root".`
+comet-deploy does not run MUP's bundle mode yet. A base image without app-image support (the default `kadirahq/meteord`, or `docker.prepareBundle: false`) stops the build with `The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode). Bundle mode is planned for phase 2 of comet-deploy.` and the hint `Use a zodern/meteor image (app.docker.image), e.g. "zodern/meteor:root".`
 
 If your deploy depends on any of these, keep using MUP for now. Both tools can work on the same servers; see [Migrating from MUP](migrating-from-mup.md).
 
@@ -549,7 +581,7 @@ New options live in their own top-level section, so they never change the meanin
 ```js
 cometDeploy: {
   strategy: 'canary',          // 'canary' | 'rolling' | 'parallel'
-  transfer: 'auto',            // 'auto' | 'tunnel' | 'stream' ('registry' is phase 2)
+  transfer: 'auto',            // 'auto' | 'tunnel' | 'stream' | 'registry'
   platform: 'auto',            // 'auto' | 'linux/amd64' | 'linux/arm64'
   keepVersions: 5,             // version tags kept on each server for rollback
   zeroDowntime: true,          // behind the proxy: no gap on restart, drain with load balancing
@@ -564,7 +596,7 @@ cometDeploy: {
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `strategy` | `'canary'` \| `'rolling'` \| `'parallel'` | `'canary'` | How servers are activated. `canary`: the first server alone, then the rest in parallel if it is healthy. `rolling`: one by one, stop at the first unhealthy server. `parallel`: all at once. Applies to `deploy`, `reconfig`, `restart` and `rollback`. The `--strategy` flag overrides it. See [How it works](how-it-works.md#rollout-strategies). |
-| `transfer` | `'auto'` \| `'tunnel'` \| `'registry'` \| `'stream'` | `'auto'` | How the image reaches the servers; see the table below. `registry` (through `privateDockerRegistry`) is phase 2 and stops the deploy. |
+| `transfer` | `'auto'` \| `'tunnel'` \| `'registry'` \| `'stream'` | `'auto'` | How the image reaches the servers; see the table below. With [`privateDockerRegistry`](#privatedockerregistry) it always goes through that registry. |
 | `platform` | `'auto'` \| `'linux/amd64'` \| `'linux/arm64'` | `'auto'` | Target platform of the image. `auto` reads `uname -m` on each server (`x86_64`/`amd64` → `linux/amd64`, `aarch64`/`arm64` → `linux/arm64`) and builds once per platform found. A fixed value is used for all servers. |
 | `keepVersions` | integer ≥ 1 | `5` | How many version tags stay on each server for `rollback`. Old tags are removed after a successful deploy. Versions that never ran healthy on that server are removed and do not count. The images behind `:latest` and `:previous` are never removed. |
 | `zeroDowntime` | boolean | `true` | Behind the proxy (the `proxy` section), `deploy`, `reconfig`, `restart` and `rollback` replace the container without a gap; with `proxy.loadBalancing` they take each server out of the upstream while it restarts. `false` restarts the container in place, as MUP does. No effect without the proxy. See [How it works → Behind the proxy](how-it-works.md#behind-the-proxy). |
@@ -572,7 +604,9 @@ cometDeploy: {
 | `healthCheck.maxStatus` | integer 100–599 | `499` | Highest HTTP status that counts as healthy. With the default, a 4xx counts as healthy (the app answers) and a 5xx does not. MUP accepts any HTTP answer, including 500. |
 | `lock` | boolean | `true` | Take a lock on every target server before changing anything, so two deploys cannot run at the same time. `false` turns locking (and the lock check in preflight) off. |
 
-**`transfer`** decides per server, from the forwarding check in preflight:
+**`transfer`** with `privateDockerRegistry`: `'auto'` and `'registry'` send the image through the registry to every server; `'tunnel'` and `'stream'` are config errors (`cometDeploy.transfer "tunnel" cannot be used with privateDockerRegistry: …`). `'registry'` without `privateDockerRegistry` is an error too.
+
+Without `privateDockerRegistry`, `transfer` decides per server, from the forwarding check in preflight:
 
 | `transfer` | Server allows SSH forwarding | Server refuses it (`AllowTcpForwarding no`) |
 |---|---|---|

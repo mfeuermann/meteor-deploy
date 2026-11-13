@@ -38,6 +38,7 @@ sequenceDiagram
     L->>S: Open a reverse SSH tunnel, run docker pull 127.0.0.1:port/...
     S->>R: Missing layers only, through the tunnel
     Note over S: Without SSH forwarding: the whole image as a docker save archive<br/>over SSH into docker load instead
+    Note over S: With privateDockerRegistry: docker push to that registry,<br/>then docker pull on every server instead
     Note over S: The running app is not touched yet
     L->>S: Activate by strategy: retag, write start.sh + env.list,<br/>restart, health check, revert on failure
     L->>S: History, prune old versions, unlock
@@ -86,7 +87,7 @@ On every server:
 | Deploy lock | error if another deploy holds it (skipped with `--force-unlock` or `cometDeploy.lock: false`) |
 | Reverse proxy (with a `proxy` section, on every proxy server) | error `Server "<name>": the reverse proxy is not set up (container mup-nginx-proxy is missing or stopped). Run "comet-deploy proxy setup" first.` |
 | MongoDB (with a `mongo` section; `deploy` only) | error `Server "<name>": MongoDB (container "mongodb") is not running. Start it with: comet-deploy mongo start` (or `Set it up with: comet-deploy setup`). `reconfig`, `restart`, `rollback` and `start` make the same check before they touch the app. |
-| SSH reverse port forwarding (not with `cometDeploy.transfer: 'stream'`) | `auto`: a warning, and the server gets the whole image over SSH; `tunnel`: error if `sshd` refuses it (`AllowTcpForwarding no`) |
+| SSH reverse port forwarding (not with `cometDeploy.transfer: 'stream'` or `privateDockerRegistry`) | `auto`: a warning, and the server gets the whole image over SSH; `tunnel`: error if `sshd` refuses it (`AllowTcpForwarding no`) |
 
 `meteor build` sends nothing to the servers, so it skips the app setup, lock and port forwarding checks. `meteor build` and `meteor push` start no app, so both skip the proxy and MongoDB checks. It still connects to every server to read its CPU architecture.
 
@@ -206,6 +207,27 @@ A server whose `sshd` refuses forwarding (found by preflight; with `cometDeploy.
 4. **Clean up.** The file is removed at the end of the phase, also after an error or Ctrl+C.
 
 The local registry starts only when at least one server uses the tunnel. With `auto`, a tunnel the server refuses only now (after preflight passed) switches that server to this transfer, with the same warning as in preflight.
+
+### Through a private registry
+
+With [`privateDockerRegistry`](configuration.md#privatedockerregistry) every server gets the image from that registry; there is no local registry and no tunnel:
+
+1. **Login** (before the build, only with `username` and `password`): `docker login --username <username> --password-stdin <host>` on your machine: `registry: logged in to registry.example.com`.
+2. **Already there?** As above, a server that has `mup-myapp:<version>` gets nothing, and when all of them have it, nothing is pushed.
+3. **Push, once per platform:** `docker tag mup-myapp:<version> registry.example.com/team/mup-myapp:<version>`, `docker push`, and the extra local tag is removed: `registry: pushed registry.example.com/team/mup-myapp:<version> in 14s`. A multi-platform build pushes `…:<version>-amd64` and `…:<version>-arm64`.
+4. **Pull, per server, in parallel:**
+
+   ```bash
+   sudo docker pull 'registry.example.com/team/mup-myapp:<version>'
+   sudo docker tag  'registry.example.com/team/mup-myapp:<version>' 'mup-myapp:<version>'
+   sudo docker rmi  'registry.example.com/team/mup-myapp:<version>'
+   ```
+
+   The server line ends with `(from registry.example.com)`. The server needs a login to the registry, which `setup` and `docker setup` do; a pull the registry refuses fails with `The server is not logged in to the registry: run "comet-deploy docker setup" …`.
+
+5. **`:latest` for MUP**, after the summary of a deploy that ended healthy on every app server with one platform: `registry.example.com/team/mup-myapp:latest` is pushed. A failed push is a warning; the deploy stays successful.
+
+**Why `start.sh` does not pull.** MUP's `start.sh` with a registry runs `docker pull <imagePrefix>/mup-myapp:latest` on every start, so the registry decides which version a server runs. comet-deploy writes MUP's `start.sh` without a registry instead: it runs the server's own `mup-myapp:latest`, which the activation sets. That keeps the canary, the automatic revert and `rollback --servers` working server by server, and a restart never needs the registry.
 
 The running app is **not touched** during the distribution: `start.sh`, `env.list` and `:latest` still point to the old version, so `mup restart` or a server reboot in the meantime keeps running the old version. If the pull or the load fails on any server, the deploy stops before activation with `Image distribution failed: …` and `No server was changed.`
 
@@ -470,6 +492,12 @@ Things to know:
 - `mup proxy setup` clears the `down` marks of servers that are out of load balancing.
 - MUP prints `cometDeploy is an unknown property` as a validation message and continues.
 - `mup meteor destroy` removes `/opt/<name>/` (including the history) but leaves comet-deploy's version tags; `comet-deploy meteor destroy --force` removes them too.
+
+**With a private registry**, MUP keeps its images as `<imagePrefix>/mup-<name>` and its `start.sh` pulls `:latest` from the registry, while comet-deploy keeps `mup-<name>` and its `start.sh` never pulls. The integration tests check this sequence too: `mup deploy`, then `comet-deploy deploy` (MUP's image becomes `:previous`), `mup reconfig` (runs comet-deploy's version, because `:latest` in the registry points to it), `comet-deploy rollback` (refused, see below), `comet-deploy reconfig` and `rollback` (back to MUP's version), then `mup deploy` and `comet-deploy deploy` again.
+
+- When MUP wrote `start.sh` last (its registry variant), `deploy` and `reconfig` first tag `mup-<name>:latest` to the image the app container runs, so a revert and a later rollback know MUP's version. Then they write comet-deploy's `start.sh`.
+- `rollback` refuses such a server before changing it: `Server "one" was last deployed by MUP with privateDockerRegistry: its start.sh pulls :latest from the registry, so a rollback would not change the version. Run "comet-deploy reconfig" first, then the rollback.`
+- `restart`, `start` and `stop` use the `start.sh` that is on the server, so with MUP's they pull `:latest` from the registry, as MUP does.
 
 More in [Migrating from MUP](migrating-from-mup.md).
 
