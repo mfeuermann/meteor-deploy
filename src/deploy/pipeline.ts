@@ -469,6 +469,9 @@ export async function deployPipeline(
     const locked = await r.phase('Lock', () => lockServers(ctx, rollout ? lockTargets(ctx) : servers, 'deploy', d, { force: o.forceUnlock }));
     // Tells the `finally` whether this deploy holds a lease on the shared local registry.
     let registryStarted = false;
+    // Set once the activation ran, so a hook that fails after it still gets the summary.
+    let activationRan = false;
+    let failure: unknown;
     try {
       // Inside the `try`, so an abort that arrived while locking still releases the locks.
       aborted(d.signal);
@@ -543,6 +546,8 @@ export async function deployPipeline(
             // pruning reads it to find the versions that never ran healthy. Skipped servers were
             // not touched and get no entry.
             await writeHistory(ctx, d, { action: 'deploy', results: activated.results, startedAt, servers, git, versionOf: (s) => imageFor(s).version });
+            ({ results, skipped } = activated);
+            activationRan = true;
             return activated;
           },
           { failed: activationFailed },
@@ -568,6 +573,8 @@ export async function deployPipeline(
             }
           }),
       );
+    } catch (e) {
+      failure = e;
     } finally {
       // Runs on success, on any error and on abort (including the `meteor push` return above).
       // None of these calls throws. The proxy is finished while the locks are still held, so no
@@ -578,9 +585,13 @@ export async function deployPipeline(
       if (registryStarted) await d.stopLocalRegistry().catch(() => {});
     }
 
+    // An error before the activation changed no server: no summary. After it (a failing post
+    // hook of meteor.start or default.reconfig) the summary says what the servers run now.
+    if (failure !== undefined && !activationRan) throw failure;
     // The summary is printed even after an abort; the abort error (exit code 130) follows it.
     reportOutcome(ctx, summaryRows(results, skipped, (s) => imageFor(s).version), results, skipped, deployedVersion);
     for (const w of proxyWarnings) r.warn(w);
+    if (failure !== undefined) throw failure;
     aborted(d.signal);
     const ok = skipped.length === 0 && results.every((x) => x.status === 'healthy');
     return { version: deployedVersion, results, skipped, ok };

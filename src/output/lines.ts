@@ -9,7 +9,7 @@ import type { Reporter } from './reporter.js';
  * Turns a chunked stream into whole lines. SSH data chunks do not follow line boundaries, so
  * text is buffered until its newline arrives; `flush` emits a last line that has none.
  */
-export function lineSplitter(onLine: (line: string) => void): { push(chunk: string): void; flush(): void } {
+export function lineSplitter(onLine: (line: string) => void): { push(chunk: string): void; flush(): void; pending(): boolean } {
   let buf = '';
   return {
     push(chunk) {
@@ -24,6 +24,8 @@ export function lineSplitter(onLine: (line: string) => void): { push(chunk: stri
       if (buf) onLine(buf);
       buf = '';
     },
+    /** Whether a line without its newline is buffered. */
+    pending: () => buf !== '',
   };
 }
 

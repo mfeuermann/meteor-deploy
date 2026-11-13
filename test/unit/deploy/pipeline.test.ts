@@ -320,6 +320,14 @@ describe('deployPipeline', () => {
     expect(s.calls.some((c) => c.startsWith('prune'))).toBe(false);
   });
 
+  it('a failing post.meteor.start hook still prints the summary of the activated servers', async () => {
+    const s = await setup({ extra: "hooks: { 'post.meteor.start': { localCommand: 'exit 5' } }," });
+    await expect(deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps)).rejects.toThrow('exited with code 5');
+    expect(s.output()).toContain('SERVER');
+    expect(s.output()).toMatch(/one\s.*20261107-183005/);
+    expect(s.output()).toMatch(/two\s.*20261107-183005/);
+  });
+
   it('a failing post.meteor.prepareBundle hook drops the registry lease', async () => {
     const s = await setup({ extra: "hooks: { 'post.meteor.prepareBundle': { localCommand: 'exit 6' } }," });
     await expect(deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps)).rejects.toThrow('exited with code 6');

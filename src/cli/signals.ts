@@ -3,6 +3,7 @@
  * `meteor …` variants): the first SIGINT/SIGTERM becomes an `AbortSignal` that the pipeline
  * checks between steps, so it never stops a server halfway through an activation.
  */
+import { CometError } from '../core/errors.js';
 import type { Reporter } from '../output/reporter.js';
 
 const SIGNALS = ['SIGINT', 'SIGTERM'] as const;
@@ -27,7 +28,16 @@ export function withAbortOnSignals<T>(reporter: Reporter, fn: (signal: AbortSign
     ac.abort();
   };
   for (const s of SIGNALS) process.on(s, onSignal);
-  return fn(ac.signal).finally(() => {
-    for (const s of SIGNALS) process.off(s, onSignal);
-  });
+  return fn(ac.signal)
+    .catch((e: unknown) => {
+      // After the signal the command ends with 130 whatever stopped it, e.g. a hook's local
+      // command that died of the same Ctrl+C and failed its step.
+      if (ac.signal.aborted && e instanceof CometError && e.exitCode !== 130) {
+        throw new CometError(e.message, { exitCode: 130, hint: e.hint, cause: e });
+      }
+      throw e;
+    })
+    .finally(() => {
+      for (const s of SIGNALS) process.off(s, onSignal);
+    });
 }

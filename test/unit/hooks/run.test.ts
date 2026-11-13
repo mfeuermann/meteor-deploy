@@ -68,6 +68,16 @@ describe('localCommand', () => {
     expect(s.out()).toContain('***');
   });
 
+  it('shows a prompt without a newline while the command waits', async () => {
+    const s = await setup();
+    const run = runLocalCommand(s.ctx, 'pre.default.deploy', "printf 'Continue? '; sleep 1; echo yes");
+    await new Promise((r) => setTimeout(r, 600));
+    expect(s.out()).toContain('Continue? ');
+    expect(s.out()).not.toContain('yes');
+    await run;
+    expect(s.out()).toContain('yes');
+  });
+
   it('a failing local command fails with its exit code', async () => {
     const s = await setup();
     const run = runLocalCommand(s.ctx, 'pre.default.deploy', 'exit 3');
@@ -117,6 +127,21 @@ describe('the hook executor', () => {
     expect(out.indexOf('local\n')).toBeLessThan(out.indexOf('> Running hook pre.default.deploy remote command "echo remote"'));
     expect(order).toEqual(['method 1 true']);
     expect(s.execs).toEqual(['a: echo remote']);
+  });
+
+  it('values a method adds to the env or the settings are masked afterwards', async () => {
+    const s = await setup();
+    const exec = createHookExecutor(s.ctx, () => ({}));
+    await exec('pre.default.deploy', {
+      method: () => {
+        // The settings first: loading them registers the secrets known at that moment.
+        (s.ctx.getSettings() as Record<string, unknown>).privateToken = 'settings-s3cret';
+        s.ctx.config.app.env!.API_KEY = 'hunter2-key';
+      },
+    });
+    s.ctx.reporter.info(`API_KEY=hunter2-key METEOR_SETTINGS=${JSON.stringify(s.ctx.getSettings())}`);
+    expect(s.out()).not.toContain('hunter2-key');
+    expect(s.out()).not.toContain('settings-s3cret');
   });
 
   it('a throwing method fails the hook with its message', async () => {

@@ -86,6 +86,11 @@ export interface CommandContext extends BaseContext {
   setConfig(config: NormalizedConfig): void;
   /** Replaces the settings that `getSettings` returns from now on (`api.settings = …`). */
   setSettings(settings: unknown): void;
+  /**
+   * Masks the secrets of the current config and settings, after a method hook that may have
+   * added values to them in place (`api.getConfig().app.env.X = …`).
+   */
+  refreshSecrets(): void;
 }
 
 /** Injection points for tests; production code uses the defaults. */
@@ -204,12 +209,16 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
     appServers,
     setConfig(next) {
       ctx.config = next;
+      reporter.addSecrets(collectSecrets(next));
     },
     setSettings(next) {
       // Values a hook puts into the settings are as secret as the file's.
       reporter.addSecrets(collectSecrets(ctx.config, next));
       settings = next;
       settingsLoaded = true;
+    },
+    refreshSecrets() {
+      reporter.addSecrets(collectSecrets(ctx.config, settingsLoaded ? settings : undefined));
     },
   };
   // The config's hooks run through the runner. Method hooks share one api object for the whole

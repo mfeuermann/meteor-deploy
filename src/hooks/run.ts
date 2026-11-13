@@ -38,9 +38,8 @@ export function hookServers(ctx: CommandContext): string[] {
  */
 export async function runLocalCommand(ctx: CommandContext, name: string, command: string, o: { spawn?: typeof nodeSpawn } = {}): Promise<void> {
   const spawn = o.spawn ?? nodeSpawn;
-  const print = (l: string) => ctx.reporter.info(l);
-  const out = lineSplitter(print);
-  const err = lineSplitter(print);
+  const out = promptAwareLines(ctx);
+  const err = promptAwareLines(ctx);
   const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
     const child = spawn('/bin/sh', ['-c', command], { cwd: ctx.basePath, env: process.env, stdio: ['inherit', 'pipe', 'pipe'] });
     child.stdout?.setEncoding('utf8').on('data', (c: string) => out.push(c));
@@ -53,6 +52,31 @@ export async function runLocalCommand(ctx: CommandContext, name: string, command
   if (result.code === 0) return;
   const how = result.code === null ? `was stopped by ${result.signal}` : `exited with code ${result.code}`;
   throw new CometError(`Hook "${name}" failed: "${command}" ${how}.`);
+}
+
+/** How long a line without a newline waits for more output before it is shown (a prompt). */
+const PROMPT_FLUSH_MS = 150;
+
+/**
+ * Lines of a local command's output for the reporter. A partial line that no more output
+ * follows within PROMPT_FLUSH_MS is shown as it is, so a prompt (`read -p 'Continue? '`) is
+ * visible while the command waits for input. Chunks of one write arrive together, so a value
+ * to mask is not split by the timer.
+ */
+function promptAwareLines(ctx: CommandContext): { push(chunk: string): void; flush(): void } {
+  const lines = lineSplitter((l) => ctx.reporter.info(l));
+  let timer: NodeJS.Timeout | undefined;
+  return {
+    push(chunk) {
+      clearTimeout(timer);
+      lines.push(chunk);
+      if (lines.pending()) timer = setTimeout(() => lines.flush(), PROMPT_FLUSH_MS);
+    },
+    flush() {
+      clearTimeout(timer);
+      lines.flush();
+    },
+  };
 }
 
 /**
@@ -93,10 +117,13 @@ export function createHookExecutor(ctx: CommandContext, api: () => unknown): Hoo
       try {
         await h.method(api(), NODEMIRAL_STUB);
       } catch (e) {
+        ctx.refreshSecrets();
         const err = e as Error;
         if (err?.stack) for (const l of err.stack.split('\n')) ctx.reporter.verboseLine(null, l);
         throw new CometError(`Hook "${name}" failed: ${err?.message ?? String(e)}`);
       }
+      // The method may have added values to the config or the settings in place.
+      ctx.refreshSecrets();
     }
     if (h.remoteCommand) {
       ctx.reporter.info(`> Running hook ${name} remote command "${h.remoteCommand}"`);
