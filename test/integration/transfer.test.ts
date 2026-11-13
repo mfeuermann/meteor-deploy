@@ -3,6 +3,7 @@ import { run } from '../../src/local/exec.js';
 import { SshConnection } from '../../src/ssh/connection.js';
 import { distributeToServer } from '../../src/transfer/distribute.js';
 import { ensureLocalRegistry, pushToLocalRegistry } from '../../src/transfer/local-registry.js';
+import { localImageStore, removeArchive, saveImageArchive, serverHasImage, streamToServer } from '../../src/transfer/stream.js';
 import { probeForwarding, TunnelUnavailableError } from '../../src/transfer/tunnel.js';
 import { fakeServersConfig, startFakeServers, type FakeServer } from '../harness/fake-servers.js';
 
@@ -87,5 +88,39 @@ describe('image distribution through the local registry and a reverse tunnel', (
     } finally {
       await conn.close();
     }
+  });
+});
+
+// The stream transfer loads a `docker save` archive of this machine's Docker (classic or
+// containerd store) into both Docker releases the fake servers offer; 29 uses the containerd store.
+describe.each(['27.5', '29'] as const)('image transfer over SSH to a server without forwarding (Docker %s)', (docker) => {
+  let server: FakeServer;
+  const platform = process.arch === 'arm64' ? 'linux/arm64' : 'linux/amd64';
+
+  beforeAll(async () => {
+    [server] = await startFakeServers(1, { allowTcpForwarding: false, docker });
+    await run('docker', ['pull', BASE]);
+    await dockerBuild('mup-stream:v1-helper', `FROM ${BASE}\nRUN echo stream > /marker\n`);
+  });
+
+  afterAll(async () => {
+    await server?.stop();
+  });
+
+  it('loads the image under the target tag only, and a container runs from it', async () => {
+    const archive = await saveImageArchive({ localTag: 'mup-stream:v1-helper', platform, app: 'stream', store: await localImageStore() });
+    const conn = await connect(server);
+    try {
+      expect(await serverHasImage(conn, 'mup-stream:v1')).toBe(false);
+      await streamToServer(conn, { archive, targetTag: 'mup-stream:v1' });
+      // What the deploy checks before it sends anything the next time.
+      expect(await serverHasImage(conn, 'mup-stream:v1')).toBe(true);
+    } finally {
+      removeArchive(archive);
+      await conn.close();
+    }
+    const tags = (await server.exec(`docker images mup-stream --format '{{.Repository}}:{{.Tag}}'`)).stdout.split('\n').filter(Boolean);
+    expect(tags).toEqual(['mup-stream:v1']);
+    expect((await server.exec('docker run --rm mup-stream:v1 cat /marker')).stdout.trim()).toBe('stream');
   });
 });

@@ -128,13 +128,14 @@ async function waitReady(server: FakeServer): Promise<void> {
  * Starts `n` fake servers in parallel and resolves when all of them accept SSH and run Docker.
  * `o.user` picks the SSH user (`deployer` is a non-root user with passwordless sudo);
  * `o.allowTcpForwarding: false` makes sshd refuse the reverse tunnel; `o.docker` picks the Docker
- * release inside (default 27.5). If any server does not
+ * release inside (default 27.5); `o.namePrefix` names the servers `<prefix>1…` (default `s`), so
+ * servers from two calls can share one config. If any server does not
  * become ready, all of them are removed and the error is rethrown. Otherwise the caller must
  * `stop()` them.
  */
 export async function startFakeServers(
   n: number,
-  o: { allowTcpForwarding?: boolean; user?: 'root' | 'deployer'; docker?: FakeDockerVersion } = {},
+  o: { allowTcpForwarding?: boolean; user?: 'root' | 'deployer'; docker?: FakeDockerVersion; namePrefix?: string } = {},
 ): Promise<FakeServer[]> {
   const image = await ensureImage(o.docker ?? '27.5');
   const { pemPath, publicKey } = await keyPair();
@@ -157,7 +158,7 @@ export async function startFakeServers(
       const port = Number(mapping.split('\n')[0].split(':').pop());
       const ip = (await docker(['inspect', '-f', '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}', containerId])).split(/\s+/)[0] ?? '';
       const server: FakeServer = {
-        name: `s${i + 1}`,
+        name: `${o.namePrefix ?? 's'}${i + 1}`,
         host: '127.0.0.1',
         port,
         ip,
