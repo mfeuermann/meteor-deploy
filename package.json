@@ -1,6 +1,6 @@
 {
   "name": "comet-deploy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Fast, MUP-compatible deployment tool for Meteor apps: build once locally, ship only changed layers.",
   "type": "module",
   "license": "MIT",
