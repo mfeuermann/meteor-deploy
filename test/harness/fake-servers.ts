@@ -19,7 +19,7 @@ const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 // The image is only built when its tag is missing: bump IMAGE_REVISION after changing
 // fake-server/, or an old image is reused.
-const IMAGE_REVISION = 3;
+const IMAGE_REVISION = 4;
 /** The Docker releases a fake server can run: the default one, and the newest major (29). */
 export type FakeDockerVersion = '27.5' | '29';
 /** The exact release of each major; 29.9 was the newest 29.x when the proxy gate was added. */
