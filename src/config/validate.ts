@@ -163,6 +163,18 @@ export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[
 
   if (config.privateDockerRegistry) {
     issues.push(...joiIssues(registrySchema, config.privateDockerRegistry, 'privateDockerRegistry', (path) => path === 'privateDockerRegistry.host'));
+    // Only one of them would log in with an empty value (in MUP's setup too).
+    const { username, password } = config.privateDockerRegistry;
+    if (!username !== !password) err('privateDockerRegistry', 'username and password go together: set both, or neither and log in to the registry yourself.');
+  }
+  // The registry decides the transfer: with it every image goes through the registry, and the
+  // `registry` transfer has nothing to push to without it (registry design §4.2).
+  const transfer = raw.cometDeploy?.transfer;
+  if (config.privateDockerRegistry && (transfer === 'tunnel' || transfer === 'stream')) {
+    err('cometDeploy.transfer', `"${transfer}" cannot be used with privateDockerRegistry: with a private registry the image goes through the registry. Remove cometDeploy.transfer or set it to "registry".`);
+  }
+  if (!config.privateDockerRegistry && transfer === 'registry') {
+    err('cometDeploy.transfer', '"registry" needs a privateDockerRegistry section (host, imagePrefix, username, password).');
   }
 
   if (config.swarm?.enabled) err('swarm.enabled', 'Docker Swarm is not supported by comet-deploy');

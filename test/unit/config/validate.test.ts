@@ -174,6 +174,62 @@ describe('validateConfig', () => {
     expect(find(issues, 'meteor.env.ROOT_URL')?.severity).toBe('error');
   });
 
+  describe('privateDockerRegistry and cometDeploy.transfer', () => {
+    const REG = { host: 'reg.example.com', imagePrefix: 'reg.example.com/team', username: 'u', password: 'pw' };
+    const TRANSFER = 'cometDeploy.transfer';
+
+    it.each(['tunnel', 'stream'])('refuses transfer "%s" with a registry', (transfer) => {
+      const issues = check((c) => {
+        c.privateDockerRegistry = { ...REG };
+        c.cometDeploy = { transfer };
+      });
+      expect(find(issues, TRANSFER)).toEqual({
+        path: TRANSFER,
+        message: `"${transfer}" cannot be used with privateDockerRegistry: with a private registry the image goes through the registry. Remove cometDeploy.transfer or set it to "registry".`,
+        severity: 'error',
+      });
+    });
+
+    it('refuses transfer "registry" without a registry', () => {
+      const issues = check((c) => (c.cometDeploy = { transfer: 'registry' }));
+      expect(find(issues, TRANSFER)).toEqual({
+        path: TRANSFER,
+        message: '"registry" needs a privateDockerRegistry section (host, imagePrefix, username, password).',
+        severity: 'error',
+      });
+    });
+
+    it.each([undefined, 'auto', 'registry'])('accepts transfer %s with a registry', (transfer) => {
+      const issues = check((c) => {
+        c.privateDockerRegistry = { ...REG };
+        if (transfer) c.cometDeploy = { transfer };
+      });
+      expect(find(issues, TRANSFER)).toBeUndefined();
+      expect(find(issues, 'privateDockerRegistry')).toBeUndefined();
+    });
+
+    it('accepts no transfer key without a registry', () => {
+      expect(find(check(() => {}), TRANSFER)).toBeUndefined();
+    });
+
+    it.each([
+      [{ username: 'u' }],
+      [{ password: 'pw' }],
+    ])('requires username and password together: %j', (creds) => {
+      const issues = check((c) => (c.privateDockerRegistry = { host: 'reg.example.com', imagePrefix: 'reg.example.com/team', ...creds }));
+      expect(find(issues, 'privateDockerRegistry')).toEqual({
+        path: 'privateDockerRegistry',
+        message: 'username and password go together: set both, or neither and log in to the registry yourself.',
+        severity: 'error',
+      });
+    });
+
+    it('accepts a registry without credentials', () => {
+      const issues = check((c) => (c.privateDockerRegistry = { host: 'reg.example.com', imagePrefix: 'reg.example.com/team' }));
+      expect(find(issues, 'privateDockerRegistry')).toBeUndefined();
+    });
+  });
+
   it('accepts all bundled fixtures without fatal errors', () => {
     for (const name of ['per-server-env', 'mongo', 'proxy-le', 'proxy-lb', 'registry', 'legacy-docker-image', 'upper-dot-name']) {
       const cwd = join(FIXTURES, name);
