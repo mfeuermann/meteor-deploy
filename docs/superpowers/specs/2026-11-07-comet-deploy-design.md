@@ -244,7 +244,7 @@ Mapování musí být zdokumentované v README.
 
 Režim `transfer` (§12), výchozí `auto`:
 
-1. **`registry`**, pokud je nastavené `privateDockerRegistry`:
+1. **`registry`**, pokud je nastavené `privateDockerRegistry`. *Poznámka 2026-11-13: implementace se od tohoto bodu odchyluje (start.sh bez pullu, registry jen jako cesta přenosu, `rollback --servers` funguje), viz `2026-11-13-comet-deploy-registry-design.md` §4.1.*
    - Lokálně `docker login` + push `<prefix>/mup-<lc>:<verze>`. Při více architekturách se pushne manifest list.
    - Servery paralelně pullují. `start.sh` (MUP formát, byte-identický) dělá `docker pull <prefix>/mup-<lc>:latest` sám, takže **o verzi rozhoduje sdílený tag `:latest` v registry**. Sémantika [moje volba]:
      - Na začátku aktivace (před canary) se v registry nastaví `:previous` = dosavadní `:latest` a `:latest` = nová verze (jako MUP, ref. §4.6).
