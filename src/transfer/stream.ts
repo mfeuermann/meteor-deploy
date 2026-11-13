@@ -6,7 +6,7 @@
  * and Docker.
  */
 import { spawn as nodeSpawn } from 'node:child_process';
-import { createReadStream, createWriteStream, statSync, unlinkSync } from 'node:fs';
+import { createReadStream, createWriteStream, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Transform } from 'node:stream';
@@ -98,12 +98,41 @@ function unlinkQuietly(file: string): void {
   }
 }
 
+/** Whether a process with this pid runs (EPERM: it runs, as another user). */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Removes the archives in `dir` whose comet-deploy process no longer runs: the exit handler
+ * cannot run when the process is killed or its terminal is closed (SIGHUP), and the pid in the
+ * name means no later run would ever reuse the file. A pid that runs again keeps its file.
+ */
+function removeStaleArchives(dir: string): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const pid = Number(/^comet-deploy-.+-(\d+)\.tar\.gz$/.exec(name)?.[1]);
+    if (pid && pid !== process.pid && !pidAlive(pid)) unlinkQuietly(join(dir, name));
+  }
+}
+
 /**
  * Saves `localTag` with `docker save` and gzips it into a new file in `dir` (default
  * `os.tmpdir()`), mode 600, named `comet-deploy-<app>-<version>-<arch>-<pid>.tar.gz`. With the
  * containerd image store `--platform` limits the archive to this platform (otherwise it holds
  * the whole index with its attestation manifests); a docker CLI without that flag gets a plain
- * `docker save`. The file is removed when the process exits, unless `removeArchive` did first.
+ * `docker save`. The file is removed when the process exits, unless `removeArchive` did first;
+ * archives that killed comet-deploy processes left in `dir` are removed before the save.
  *
  * @throws CometError `Saving <localTag> for the transfer over SSH failed: <stderr>`; the partial
  *   file is removed.
@@ -124,6 +153,7 @@ export async function saveImageArchive(o: {
   const version = o.localTag.slice(o.localTag.lastIndexOf(':') + 1).replace(new RegExp(`-${arch}$`), '');
   const file = join(dir, `comet-deploy-${safe(o.app)}-${safe(version)}-${safe(arch)}-${process.pid}.tar.gz`);
   const attempts = o.store === 'containerd' ? [['save', '--platform', o.platform, o.localTag], ['save', o.localTag]] : [['save', o.localTag]];
+  removeStaleArchives(dir);
   track(file);
   let r: Awaited<ReturnType<typeof saveOnce>> = { code: 1, stderr: '' };
   for (const args of attempts) {

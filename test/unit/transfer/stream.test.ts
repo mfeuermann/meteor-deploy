@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, type Readable } from 'node:stream';
@@ -12,18 +13,32 @@ interface SaveRun {
   chunks?: string[];
   code?: number;
   stderr?: string;
+  /** Keeps writing to stdout until killed, like a big `docker save`. */
+  endless?: boolean;
 }
 
 /** A fake `spawn` for `docker save`: the n-th call emits `runs[n]` (the last one repeats). */
 function fakeSpawn(...runs: SaveRun[]) {
   const calls: { cmd: string; args: string[] }[] = [];
+  let kills = 0;
   const spawn = ((cmd: string, args: string[]) => {
     const o = runs[Math.min(calls.length, runs.length - 1)];
     calls.push({ cmd, args });
     const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; kill: () => void };
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
-    child.kill = () => {};
+    let timer: NodeJS.Timeout | undefined;
+    child.kill = () => {
+      kills++;
+      clearInterval(timer);
+      setImmediate(() => child.emit('close', null, 'SIGTERM'));
+    };
+    if (o.endless) {
+      timer = setInterval(() => {
+        if (!child.stdout.destroyed) child.stdout.write('x'.repeat(1024));
+      }, 1);
+      return child;
+    }
     setImmediate(() => {
       for (const c of o.chunks ?? []) child.stdout.write(c);
       child.stdout.end();
@@ -33,7 +48,7 @@ function fakeSpawn(...runs: SaveRun[]) {
     });
     return child;
   }) as unknown as typeof import('node:child_process').spawn;
-  return { spawn, calls };
+  return { spawn, calls, kills: () => kills };
 }
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'comet-stream-test-'));
@@ -89,6 +104,30 @@ describe('saveImageArchive', () => {
     const a = await saveImageArchive({ localTag: 'mup-app:v1', platform: 'linux/amd64', app: 'app', store: 'containerd', spawn, dir });
     expect(calls.map((c) => c.args)).toEqual([['save', '--platform', 'linux/amd64', 'mup-app:v1'], ['save', 'mup-app:v1']]);
     expect(gunzipSync(readFileSync(a.file)).toString()).toBe('whole');
+    removeArchive(a);
+  });
+
+  it('a write error on the local disk stops docker save and says why', async () => {
+    const { spawn, kills } = fakeSpawn({ endless: true });
+    const dir = join(tmp(), 'missing');
+    await expect(saveImageArchive({ localTag: 'mup-app:v1', platform: 'linux/amd64', app: 'app', store: 'classic', spawn, dir })).rejects.toThrow(
+      /^Saving mup-app:v1 for the transfer over SSH failed: ENOENT/,
+    );
+    expect(kills()).toBe(1);
+  });
+
+  it('removes the archives of comet-deploy processes that no longer run', async () => {
+    const dir = tmp();
+    const deadPid = spawnSync('true').pid;
+    const dead = join(dir, `comet-deploy-other-v0-amd64-${deadPid}.tar.gz`);
+    const alive = join(dir, `comet-deploy-other-v0-amd64-${process.ppid}.tar.gz`);
+    const unrelated = join(dir, `backup-${deadPid}.tar.gz`);
+    for (const f of [dead, alive, unrelated]) writeFileSync(f, 'old');
+    const { spawn } = fakeSpawn({ chunks: ['x'] });
+    const a = await saveImageArchive({ localTag: 'mup-app:v1', platform: 'linux/amd64', app: 'app', store: 'classic', spawn, dir });
+    expect(existsSync(dead)).toBe(false);
+    expect(existsSync(alive)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
     removeArchive(a);
   });
 
