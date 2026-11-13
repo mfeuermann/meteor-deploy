@@ -4,7 +4,7 @@ Fast deploys for Meteor apps, compatible with Meteor Up (MUP) 1.5.11.
 
 comet-deploy builds the Docker image of your app **once, on your machine**, and sends each server **only the image layers it does not have yet**, to all servers in parallel. It reads your existing `mup.js`, has the same commands, and leaves the servers in the same state as MUP. You can switch an app from MUP to comet-deploy and back without touching the servers.
 
-**Status:** version 0.1.0: phase 1 of the [roadmap](#roadmap) and the first parts of the next phase, MUP's reverse proxy and (unreleased, on `main`) MUP's built-in MongoDB. Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
+**Status:** version 0.2.0: phase 1 of the [roadmap](#roadmap) and the first parts of the next phase, MUP's reverse proxy and MUP's built-in MongoDB. Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
 
 > **Important: comet-deploy needs Docker on your machine**, with BuildKit and buildx: Docker Desktop, OrbStack, or Docker Engine on Linux. This is new compared to MUP, which builds the image on each server. To build for `x86_64` servers on an Apple Silicon Mac, amd64 emulation must be on. See [Requirements](#requirements).
 

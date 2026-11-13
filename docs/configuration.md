@@ -385,7 +385,7 @@ MUP deprecated `app.ssl`, `app.nginx` and `imageFrontendServer` in version 1.4 i
 
 ## Planned for phase 2
 
-comet-deploy 0.1.0 is phase 1 of the project. These parts of a MUP config are validated and normalized exactly like MUP (so `validate --show` matches MUP's output), but comet-deploy does not run them yet:
+comet-deploy 0.2.0 does not run these parts of a MUP config yet. They are validated and normalized exactly like MUP (so `validate --show` matches MUP's output):
 
 | Section | `setup` | `deploy`, `reconfig`, `rollback`, `meteor push`, `meteor build`, `meteor envconfig` |
 |---|---|---|

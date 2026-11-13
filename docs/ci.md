@@ -133,7 +133,7 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
 
       - name: Install comet-deploy
-        run: npm install -g comet-deploy@0.1.0
+        run: npm install -g comet-deploy@0.2.0
 
       - name: Deploy
         working-directory: .deploy
@@ -149,7 +149,7 @@ Notes:
 
 - **Secrets.** Add `DEPLOY_SSH_KEY` (the private key, whose public key is in the deploy user's `~/.ssh/authorized_keys` on every server) and `MONGO_URL` under the repository's Settings → Secrets and variables → Actions. comet-deploy masks the `env` values (except public ones such as `ROOT_URL`) and the settings values in its output.
 - **Settings with secrets.** Commit a `settings.json` without secrets, or write it in a step from a secret, the same way as the key, and point to it with `--settings`.
-- **Pin the version** of comet-deploy (`comet-deploy@0.1.0`), so a new release changes your deploys only when you change the workflow.
+- **Pin the version** of comet-deploy (`comet-deploy@0.2.0`), so a new release changes your deploys only when you change the workflow.
 - **Cache scope.** A run can read the caches of its own branch, of the base branch of a pull request, and of the default branch. Use one `scope` per app and environment.
 - **Docker Hub.** The build pulls the base image (`zodern/meteor`) from Docker Hub. Many runs from shared runner IPs can hit Docker Hub's rate limit for anonymous pulls; `docker/login-action` with a Docker Hub account avoids it.
 - **A cancelled run** stops the deploy at the next safe point, as Ctrl+C does (see [Commands → Graceful abort](commands.md)). If the runner is killed without that, the deploy lock stays; `comet-deploy unlock` releases it.

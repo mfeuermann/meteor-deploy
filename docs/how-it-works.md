@@ -300,7 +300,7 @@ MUP does not know these locks. Do not run `mup deploy` while a comet-deploy depl
 Each server keeps its own history in `/opt/<name>/config/deploy-history.jsonl`, one JSON object per line, appended by `deploy`, `reconfig`, `restart` and `rollback`:
 
 ```json
-{"version":"20261111-091502-3f2a1c9","action":"deploy","result":"success","startedAt":"2026-11-11T09:15:02.118Z","durationMs":41200,"user":"Jane Doe","machine":"laptop","servers":["one","two"],"tool":"comet-deploy@0.1.0","git":{"commit":"3f2a1c9…","branch":"main","dirty":false}}
+{"version":"20261111-091502-3f2a1c9","action":"deploy","result":"success","startedAt":"2026-11-11T09:15:02.118Z","durationMs":41200,"user":"Jane Doe","machine":"laptop","servers":["one","two"],"tool":"comet-deploy@0.2.0","git":{"commit":"3f2a1c9…","branch":"main","dirty":false}}
 ```
 
 | Field | Meaning |
