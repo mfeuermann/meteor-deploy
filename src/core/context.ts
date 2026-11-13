@@ -16,6 +16,7 @@ import { SshPool } from '../ssh/pool.js';
 import { CometError } from './errors.js';
 import { CommandRunner } from './runner.js';
 import { createPluginApi, type PluginApi } from '../hooks/api.js';
+import { runHookCommand } from '../hooks/commands.js';
 import { hookTable } from '../hooks/registry.js';
 import { createHookExecutor } from '../hooks/run.js';
 
@@ -222,7 +223,3 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
   return ctx;
 }
 
-/** `api.runCommand` until the key table exists (hooks plan Task 6). */
-async function runHookCommand(_ctx: CommandContext, key: string): Promise<void> {
-  throw new CometError(`Unknown command name: ${key}`);
-}
