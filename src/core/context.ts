@@ -75,6 +75,13 @@ export interface CommandContext extends BaseContext {
   maskSettings(): void;
   /** Keys of `app.servers` selected by `--servers`, in config order. */
   appServers(): string[];
+  /**
+   * Replaces the config for the steps that start later (`api.setConfig` of a method hook).
+   * The SSH pool keeps the server connection options it started with.
+   */
+  setConfig(config: NormalizedConfig): void;
+  /** Replaces the settings that `getSettings` returns from now on (`api.settings = …`). */
+  setSettings(settings: unknown): void;
 }
 
 /** Injection points for tests; production code uses the defaults. */
@@ -154,8 +161,9 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
 
   let settings: unknown;
   let settingsLoaded = false;
+  // Read through `ctx`, so a config replaced by a hook (`setConfig`) is the one used.
   const appServers = () => {
-    const appKeys = Object.keys(config.app.servers ?? {});
+    const appKeys = Object.keys(ctx.config.app.servers ?? {});
     return serverFilter ? appKeys.filter((n) => serverFilter.includes(n)) : appKeys;
   };
 
@@ -165,8 +173,8 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
       // Per-server settings files are secret too. Loading them here also fails early when one
       // is missing, before anything changes on the servers. Only the selected servers' files:
       // the others are never rendered or printed, and may not exist on this machine.
-      const perServer = appServers().map((s) => loadServerSettings(config, s, { cwd, basePath }));
-      reporter.addSecrets(collectSecrets(config, loaded, perServer));
+      const perServer = appServers().map((s) => loadServerSettings(ctx.config, s, { cwd, basePath }));
+      reporter.addSecrets(collectSecrets(ctx.config, loaded, perServer));
       // Cached only when everything loaded, so a failure is reported again on the next call.
       settings = loaded;
       settingsLoaded = true;
@@ -181,7 +189,7 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
     }
   };
 
-  return {
+  const ctx: CommandContext = {
     ...base,
     ...project,
     serverFilter,
@@ -190,5 +198,15 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
     getSettings,
     maskSettings,
     appServers,
+    setConfig(next) {
+      ctx.config = next;
+    },
+    setSettings(next) {
+      // Values a hook puts into the settings are as secret as the file's.
+      reporter.addSecrets(collectSecrets(ctx.config, next));
+      settings = next;
+      settingsLoaded = true;
+    },
   };
+  return ctx;
 }
