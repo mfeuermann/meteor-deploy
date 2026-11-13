@@ -94,18 +94,17 @@ Místo toho [moje volba]:
 
 ### 4.4 Na každém serveru, paralelně
 
-1. **Převzetí stavu po MUP** podle §4.5.
-2. **Má už tuto verzi?** `mup-<lc>:<verze>` existuje → přeskočit (`ok (already on the server)`).
-3. **Jinak:** `sudo docker pull <ref>`, `sudo docker tag <ref> mup-<lc>:<verze>`, `sudo docker rmi <ref>` (jen tag) a kontrola, že `mup-<lc>:<verze>` existuje.
-4. Řádek serveru: `distribute running`, na konci `ok <čas> (from <host>)`. S `--verbose` výstup `docker pull`.
+1. **Má už tuto verzi?** `mup-<lc>:<verze>` existuje → přeskočit (`ok (already on the server)`).
+2. **Jinak:** `sudo docker pull <ref>`, `sudo docker tag <ref> mup-<lc>:<verze>`, `sudo docker rmi <ref>` (jen tag) a kontrola, že `mup-<lc>:<verze>` existuje.
+3. Řádek serveru: `distribute running`, na konci `ok <čas> (from <host>)`. S `--verbose` výstup `docker pull`.
 
 ### 4.5 Server, na kterém naposledy pracoval MUP s registry
 
 `mup deploy` a `mup reconfig` s registry zapíšou na server start.sh MUP, který při každém startu stahuje `<imagePrefix>/mup-<lc>:latest` z registry a spouští prefixovaný image. Lokální `mup-<lc>:latest` pak neodpovídá tomu, co běží: chybí (první přechod z MUP), nebo je to starší verze z dřívějšího deploye comet-deploy (nástroje se střídají).
 
 - **Poznání:** start.sh na serveru obsahuje registry blok MUP, tj. řádek `sudo docker pull $IMAGE` [moje volba]. start.sh od comet-deploy ho nikdy nemá (§4.1).
-- **Převzetí** (`deploy`, `meteor deploy`, `reconfig`, jen s `privateDockerRegistry`): na takovém serveru se před aktivací otaguje `mup-<lc>:latest` na image, ze kterého běží (nebo naposledy běžel) kontejner aplikace (`docker inspect` kontejneru → ID image → `docker tag`). Aktivace pak udělá z verze MUP `:previous`, takže `rollback` na ni funguje. Bez kontejneru aplikace se nic nepřebírá. Běžící aplikace se nezmění a prefixované tagy MUP se nemažou. Oba příkazy pak zapíšou start.sh od comet-deploy, takže server je zase ve stavu comet-deploy.
-- **`rollback`** na takovém serveru skončí chybou dřív, než cokoli změní [moje volba]: start.sh by spustil `:latest` z registry, ne verzi, na kterou rollback přepnul. `Server "one" was last deployed by MUP with privateDockerRegistry: its start.sh pulls :latest from the registry, so a rollback would not change the version. Run "comet-deploy reconfig" first, then the rollback.`
+- **Převzetí** (`deploy`, `meteor deploy`, `reconfig`): na takovém serveru se na začátku aktivace (před snímkem configu a přetagováním) otaguje `mup-<lc>:latest` na image, ze kterého běží (nebo naposledy běžel) kontejner aplikace (`docker inspect` kontejneru → ID image → `docker tag`). Aktivace pak udělá z verze MUP `:previous`, takže `rollback` na ni funguje. Bez kontejneru aplikace se nic nepřebírá. Běžící aplikace se nezmění a prefixované tagy MUP se nemažou. Oba příkazy pak zapíšou start.sh od comet-deploy, takže server je zase ve stavu comet-deploy. Platí i bez `privateDockerRegistry` v configu (uživatel registry z configu odebral), protože se pozná podle start.sh [moje volba].
+- **`rollback`** na takovém serveru skončí chybou dřív, než ho změní, stejně jako server bez verze, na kterou by se dalo vrátit (strategie pak další servery přeskočí) [moje volba]: start.sh by spustil `:latest` z registry, ne verzi, na kterou rollback přepnul. `Server "one" was last deployed by MUP with privateDockerRegistry: its start.sh pulls :latest from the registry, so a rollback would not change the version. Run "comet-deploy reconfig" first, then the rollback.`
 - **`restart`, `start`, `stop`** pracují se start.sh, který na serveru je, jako MUP (restart s ním stáhne `:latest` z registry). Dokumentace to zmíní.
 - **Revert** po neúspěšném deployi nebo reconfigu vrátí start.sh MUP a ten stáhne `:latest` z registry. To je pořád verze MUP, protože comet-deploy `:latest` v registry mění jen po úspěšném deployi (§4.6).
 
@@ -140,9 +139,10 @@ Všechny jsou `CometError` a žádná nevypíše heslo.
 
 ## 5. Kód
 
-- **`src/transfer/registry.ts`** (nový): lokální přihlášení, push verze (tag, push, odstranění tagu), pull na serveru (převzetí z MUP, přeskočení, pull, otagování, kontrola), push `:latest`. Rozpoznání chyby oprávnění pro rady v §4.7.
+- **`src/transfer/registry.ts`** (nový): lokální přihlášení, push verze (tag, push, odstranění tagu), pull na serveru (pull, otagování, kontrola), push `:latest`.
+- **`src/remote/ops.ts`, `src/deploy/activate.ts`:** poznání start.sh MUP s registry a převzetí podle §4.5 na začátku aktivace (`deploy`, `reconfig`). Rozpoznání chyby oprávnění pro rady v §4.7.
 - **`src/deploy/distribution.ts`:** registry mód jako třetí cesta vedle tunelu a `stream`; funkce přes `DistributionDeps`, aby šly v unit testech nahradit.
-- **`src/deploy/pipeline.ts`:** kontrola `imagePrefix`, přihlášení po preflightu a před buildem, převzetí po MUP v `reconfig`, odmítnutí `rollback` podle §4.5, `:latest` po úspěšném deployi podle §4.6.
+- **`src/deploy/pipeline.ts`:** kontrola `imagePrefix`, přihlášení po preflightu a před buildem, odmítnutí `rollback` podle §4.5, `:latest` po úspěšném deployi podle §4.6.
 - **`src/deploy/preflight.ts`:** v registry módu žádná zkouška forwardingu.
 - **`src/config/validate.ts`:** chyby configu z §4.2.
 - **`src/cli/commands/setup.ts`, `docker.ts`:** `privateRegistry` pro docker-setup.sh jen s credentials (§4.1).
