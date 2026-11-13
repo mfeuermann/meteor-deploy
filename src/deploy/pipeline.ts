@@ -41,7 +41,7 @@ import { CometError } from '../core/errors.js';
 import { appDir, localImageRepo } from '../core/naming.js';
 import { TOOL_ID } from '../core/version.js';
 import { verboseOutput } from '../output/lines.js';
-import { formatDuration, type ServerStatus, type SummaryRow } from '../output/reporter.js';
+import type { ServerStatus, SummaryRow } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStop, renderStartSh } from '../remote/app-files.js';
 import {
   acquireLock,
@@ -60,7 +60,9 @@ import { createProxyRollout, lockTargets, rolloutProxies } from '../proxy/rollou
 import type { SshConnection } from '../ssh/connection.js';
 import { distributeToServer } from '../transfer/distribute.js';
 import { ensureLocalRegistry, pushToLocalRegistry, stopLocalRegistry } from '../transfer/local-registry.js';
+import { localImageStore, removeArchive, saveImageArchive, serverHasImage, streamToServer } from '../transfer/stream.js';
 import { activateServer, startServer, type ActivationResult } from './activate.js';
+import { distributeImages } from './distribution.js';
 import { deployerName, makeHistoryEntry, versionOutcomes } from './history.js';
 import { runPreflight } from './preflight.js';
 import { assertMongoRunning } from '../mongo/check.js';
@@ -80,6 +82,12 @@ export interface PipelineDeps {
   pushToLocalRegistry: typeof pushToLocalRegistry;
   stopLocalRegistry: typeof stopLocalRegistry;
   distributeToServer: typeof distributeToServer;
+  /** The `stream` transfer (servers without SSH forwarding get the whole image as an archive). */
+  localImageStore: typeof localImageStore;
+  saveImageArchive: typeof saveImageArchive;
+  removeArchive: typeof removeArchive;
+  serverHasImage: typeof serverHasImage;
+  streamToServer: typeof streamToServer;
   activateServer: typeof activateServer;
   acquireLock: typeof acquireLock;
   releaseLock: typeof releaseLock;
@@ -124,6 +132,11 @@ const DEFAULT_DEPS: PipelineDeps = {
   pushToLocalRegistry,
   stopLocalRegistry,
   distributeToServer,
+  localImageStore,
+  saveImageArchive,
+  removeArchive,
+  serverHasImage,
+  streamToServer,
   activateServer,
   acquireLock,
   releaseLock,
@@ -475,38 +488,19 @@ export async function deployPipeline(
     try {
       // Inside the `try`, so an abort that arrived while locking still releases the locks.
       aborted(d.signal);
+      // Distribution only adds an image next to the running app (tunnel or stream per server).
       await step('meteor.prepareBundle', () =>
-        r.phase('Distribute', async () => {
-          const { port } = await d.ensureLocalRegistry();
-          registryStarted = true;
-          // One push per platform. The registry keeps its layers between deploys, so only
-          // changed layers are uploaded.
-          const refs = new Map<string, string>();
-          for (const b of built) refs.set(b.platform, await d.pushToLocalRegistry(b.localTag, port, (l) => r.verboseLine(null, l)));
-          aborted(d.signal);
-          // Distribution only adds an image next to the running app. A failure on any server
-          // fails the whole deploy here, before activation, so no server has been changed.
-          const dist = await Promise.allSettled(
-            servers.map(async (s) => {
-              r.server(s, 'distribute', 'running');
-              const res = await d.distributeToServer(await ctx.ssh.get(s), {
-                registryPort: port,
-                registryRef: refs.get(imageFor(s).platform)!,
-                targetTag: targetTag(s),
-                baseImage: c.app.docker.image!,
-                onStatus: (l) => r.verboseLine(s, l),
-              });
-              r.server(s, 'distribute', 'ok', formatDuration(res.durationMs));
-            }),
-          );
-          const failed = dist.flatMap((x, i) => (x.status === 'rejected' ? [{ s: servers[i], e: x.reason as Error }] : []));
-          for (const f of failed) r.server(f.s, 'distribute', 'failed', f.e?.message);
-          if (failed.length) {
-            throw new CometError(`Image distribution failed:\n${failed.map((f) => `  - ${f.s}: ${f.e?.message ?? f.e}`).join('\n')}`, {
-              hint: 'No server was changed.',
-            });
-          }
-        }),
+        r.phase('Distribute', () =>
+          distributeImages(ctx, d, {
+            servers,
+            streamServers: pre.streamServers,
+            built,
+            imageFor,
+            targetTag,
+            checkAbort: () => aborted(d.signal),
+            onRegistryStarted: () => (registryStarted = true),
+          }),
+        ),
       );
       if (pushing) await run.leave('meteor.push');
       aborted(d.signal);

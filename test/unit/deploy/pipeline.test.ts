@@ -7,6 +7,7 @@ import { deployPipeline, holdsLock, lockServers, restartPipeline, type PipelineD
 import { createProxyRollout } from '../../../src/proxy/rollout.js';
 import { createReporter } from '../../../src/output/reporter.js';
 import { SetupMissingError, type HistoryEntry } from '../../../src/remote/ops.js';
+import { TunnelUnavailableError } from '../../../src/transfer/tunnel.js';
 import type { SshConnection } from '../../../src/ssh/connection.js';
 import { tempDir } from '../../helpers/fs.js';
 import { fakeProxyDeps, inSyncState } from '../../helpers/proxy.js';
@@ -17,7 +18,7 @@ const MUP = (extra = '') => `module.exports = {
   ${extra}
 };`;
 
-async function setup(o: { extra?: string; activate?: Record<string, ActivationResult['status']>; strategy?: string; servers?: string } = {}) {
+async function setup(o: { extra?: string; activate?: Record<string, ActivationResult['status']>; strategy?: string; servers?: string; stream?: string[] } = {}) {
   const dir = tempDir({ '.deploy/mup.js': MUP(o.extra), '.deploy/settings.json': '{"public":{}}' });
   const lines: string[] = [];
   const reporter = createReporter({ verbose: false, tty: false, write: (s) => void lines.push(s) });
@@ -45,7 +46,7 @@ async function setup(o: { extra?: string; activate?: Record<string, ActivationRe
     readGitInfo: async () => null,
     preflight: async (_c, servers, p) => {
       calls.push(p.proxyServers?.length ? `preflight:proxy=${p.proxyServers.join(',')}` : 'preflight');
-      return { errors: [], warnings: [], platformByServer: Object.fromEntries(servers.map((s) => [s, 'linux/amd64'])), platforms: ['linux/amd64'], streamServers: [] };
+      return { errors: [], warnings: [], platformByServer: Object.fromEntries(servers.map((s) => [s, 'linux/amd64'])), platforms: ['linux/amd64'], streamServers: (o.stream ?? []).filter((x) => servers.includes(x)) };
     },
     buildApp: async () => {
       calls.push('build');
@@ -89,6 +90,22 @@ async function setup(o: { extra?: string; activate?: Record<string, ActivationRe
     stopLocalRegistry: async () => {
       calls.push('stop-registry');
       return true;
+    },
+    localImageStore: async () => 'classic',
+    serverHasImage: async (conn) => {
+      calls.push(`has:${conn.name}`);
+      return false;
+    },
+    saveImageArchive: async (x) => {
+      calls.push(`save:${x.localTag}`);
+      return { file: `/nonexistent/${x.localTag}.tar.gz`, bytes: 312e6, localTag: x.localTag, platform: x.platform };
+    },
+    streamToServer: async (conn, x) => {
+      calls.push(`stream:${conn.name}:${x.targetTag}`);
+      return { durationMs: 1 };
+    },
+    removeArchive: (a) => {
+      calls.push(`remove-archive:${a.localTag}`);
     },
   };
   return { ctx, deps, calls, history, output: () => lines.join('') };
@@ -427,6 +444,137 @@ describe('deployPipeline', () => {
       return { ok: true };
     };
     await expect(lockServers(s.ctx, ['one', 'two'], 'proxy setup', deps, { skipNotSetUp: true })).rejects.toThrow(/exit code 1/);
+  });
+});
+
+describe('deployPipeline: stream transfer', () => {
+  const V = 'mup-myapp:20261107-183005';
+  const OPTS = { cachedBuild: false, forceBuild: false };
+
+  it('streams to the servers preflight marks and tunnels to the others', async () => {
+    const s = await setup({ stream: ['two'] });
+    const out = await deployPipeline(s.ctx, OPTS, s.deps);
+    expect(out.ok).toBe(true);
+    expect(s.calls).toContain(`distribute:one:${V}`);
+    expect(s.calls).not.toContain(`distribute:two:${V}`);
+    expect(s.calls).toContain(`stream:two:${V}`);
+    expect(s.calls.filter((c) => c.startsWith('save:'))).toEqual([`save:${V}`]);
+    expect(s.calls).toContain('registry');
+    expect(s.calls.indexOf(`remove-archive:${V}`)).toBeGreaterThan(s.calls.indexOf(`stream:two:${V}`));
+    expect(s.output()).toContain(`stream: ${V} (linux/amd64), 312 MB compressed`);
+    expect(s.output()).toMatch(/\[two\] distribute \S+ \S+ \(whole image, 312 MB\)/);
+  });
+
+  it('a pure stream deploy starts no local registry', async () => {
+    const s = await setup({ extra: "cometDeploy: { transfer: 'stream' },", stream: ['one', 'two'] });
+    await deployPipeline(s.ctx, OPTS, s.deps);
+    expect(s.calls).toEqual(expect.arrayContaining([`stream:one:${V}`, `stream:two:${V}`]));
+    expect(s.calls.filter((c) => c.startsWith('save:'))).toHaveLength(1);
+    for (const c of ['registry', 'push', 'stop-registry']) expect(s.calls).not.toContain(c);
+  });
+
+  it('a server that has the version gets nothing and no archive is saved', async () => {
+    const s = await setup({ stream: ['one', 'two'] });
+    s.deps.serverHasImage = async () => true;
+    await deployPipeline(s.ctx, OPTS, s.deps);
+    expect(s.calls.some((c) => c.startsWith('save:') || c.startsWith('stream:'))).toBe(false);
+    expect(s.output()).toMatch(/\[one\] distribute \S+ \(already on the server\)/);
+    expect(s.output()).toMatch(/\[two\] distribute \S+ \(already on the server\)/);
+  });
+
+  it('auto falls back to the stream when the tunnel fails at distribution', async () => {
+    const s = await setup();
+    const distribute = s.deps.distributeToServer!;
+    s.deps.distributeToServer = async (conn, x) => {
+      if (conn.name !== 'two') return distribute(conn, x);
+      const e = new TunnelUnavailableError('[two] The SSH server does not allow reverse port forwarding (Unable to bind to 127.0.0.1:0).');
+      e.reason = 'Unable to bind to 127.0.0.1:0';
+      throw e;
+    };
+    const out = await deployPipeline(s.ctx, OPTS, s.deps);
+    expect(out.ok).toBe(true);
+    expect(s.calls).toContain(`stream:two:${V}`);
+    expect(s.calls).not.toContain(`stream:one:${V}`);
+    expect(s.output()).toContain('Server "two": SSH port forwarding is off (Unable to bind to 127.0.0.1:0), so comet-deploy sends the whole image over SSH');
+    expect(s.calls).toContain(`remove-archive:${V}`);
+  });
+
+  it('tunnel does not fall back', async () => {
+    const s = await setup({ extra: "cometDeploy: { transfer: 'tunnel' }," });
+    s.deps.distributeToServer = async (conn) => {
+      if (conn.name === 'two') throw new TunnelUnavailableError('[two] The SSH server does not allow reverse port forwarding.');
+      return { durationMs: 1 };
+    };
+    await expect(deployPipeline(s.ctx, OPTS, s.deps)).rejects.toThrow(/Image distribution failed/);
+    expect(s.calls.some((c) => c.startsWith('activate') || c.startsWith('stream:') || c.startsWith('save:'))).toBe(false);
+  });
+
+  it('a failing stream fails the deploy before activation and removes the archive', async () => {
+    const s = await setup({ stream: ['two'] });
+    s.deps.streamToServer = async () => {
+      throw new CometError('[two] Loading the image failed: no space left on device');
+    };
+    const err = await deployPipeline(s.ctx, OPTS, s.deps).catch((e: CometError) => e);
+    expect(err).toBeInstanceOf(CometError);
+    expect((err as CometError).message).toMatch(/^Image distribution failed:\n {2}- two: \[two\] Loading the image failed/);
+    expect((err as CometError).hint).toBe('No server was changed.');
+    expect(s.calls.some((c) => c.startsWith('activate'))).toBe(false);
+    expect(s.calls).toEqual(expect.arrayContaining([`remove-archive:${V}`, 'release:one', 'release:two']));
+  });
+
+  it('a failing docker save stops before any server is changed', async () => {
+    const s = await setup({ stream: ['two'] });
+    s.deps.saveImageArchive = async () => {
+      throw new CometError(`Saving ${V} for the transfer over SSH failed: no space left on device`);
+    };
+    await expect(deployPipeline(s.ctx, OPTS, s.deps)).rejects.toThrow(`Saving ${V} for the transfer over SSH failed: no space left on device`);
+    expect(s.calls.some((c) => c.startsWith('activate') || c.startsWith('stream:') || c.startsWith('distribute:'))).toBe(false);
+    expect(s.calls).toEqual(expect.arrayContaining(['release:one', 'release:two']));
+  });
+
+  it('two platforms get their own archive', async () => {
+    const s = await setup({ stream: ['one', 'two'] });
+    s.deps.preflight = async () => ({
+      errors: [],
+      warnings: [],
+      platformByServer: { one: 'linux/amd64', two: 'linux/arm64' },
+      platforms: ['linux/amd64', 'linux/arm64'],
+      streamServers: ['one', 'two'],
+    });
+    const img = (platform: 'linux/amd64' | 'linux/arm64'): BuiltImage => ({
+      platform,
+      version: '20261107-183005',
+      localTag: `${V}-${platform.split('/')[1]}`,
+      imageId: `sha256:${platform}`,
+      nodeVersion: '24.22.1',
+      depsHash: 'd',
+      fromCache: false,
+    });
+    s.deps.buildApp = async () => [img('linux/amd64'), img('linux/arm64')];
+    s.deps.streamToServer = async (conn, x) => {
+      s.calls.push(`stream:${conn.name}:${x.archive.localTag}->${x.targetTag}`);
+      return { durationMs: 1 };
+    };
+    await deployPipeline(s.ctx, OPTS, s.deps);
+    expect(s.calls.filter((c) => c.startsWith('save:')).sort()).toEqual([`save:${V}-amd64`, `save:${V}-arm64`]);
+    expect(s.calls).toEqual(expect.arrayContaining([`stream:one:${V}-amd64->${V}`, `stream:two:${V}-arm64->${V}`, `remove-archive:${V}-amd64`, `remove-archive:${V}-arm64`]));
+  });
+
+  it('an abort after the save removes the archive and exits 130', async () => {
+    const s = await setup({ stream: ['two'] });
+    const ac = new AbortController();
+    const save = s.deps.saveImageArchive!;
+    s.deps.saveImageArchive = async (x) => {
+      const a = await save(x);
+      ac.abort();
+      return a;
+    };
+    s.deps.signal = ac.signal;
+    const err = await deployPipeline(s.ctx, OPTS, s.deps).catch((e: CometError) => e);
+    expect(err).toBeInstanceOf(CometError);
+    expect((err as CometError).exitCode).toBe(130);
+    expect(s.calls.some((c) => c.startsWith('stream:') || c.startsWith('distribute:') || c.startsWith('activate'))).toBe(false);
+    expect(s.calls).toEqual(expect.arrayContaining([`remove-archive:${V}`, 'release:one', 'release:two']));
   });
 });
 

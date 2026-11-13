@@ -50,7 +50,7 @@ export async function openReverseTunnel(conn: SshConnection, localPort: number):
     const msg = (err as Error).message ?? String(err);
     if (REFUSED_RE.test(msg)) {
       const e = new TunnelUnavailableError(`[${conn.name}] The SSH server does not allow reverse port forwarding (${msg}). Set "AllowTcpForwarding yes" in its sshd_config.`, {
-        hint: 'Edit /etc/ssh/sshd_config on the server and reload sshd. A transfer without a tunnel is planned for phase 2.',
+        hint: 'Edit /etc/ssh/sshd_config on the server and reload sshd, or set cometDeploy.transfer to "auto" to send the whole image over SSH instead.',
         cause: err,
       });
       e.reason = msg.replace(/^\[[^\]]*\]\s*/, '');
