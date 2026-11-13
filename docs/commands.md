@@ -27,7 +27,7 @@ These work with every command.
 | `--servers <names>` | Only these servers, by their names in `servers`. Space or comma separated: `--servers one,two` or `--servers "one two"`. An unknown name is an error (`Unknown server in --servers: <name>`). It filters the app servers for all app commands; `docker` and `proxy` commands filter their own server lists. |
 | `--verbose` | Stream the output of remote commands and of the local `meteor build` and `docker buildx build`, line by line. |
 | `--show-hook-names` | Print `Hook: pre.<key>` before each step and `Hook: post.<key>` after it, as MUP does. The command runs as usual. See [Configuration → Hooks](configuration.md#hooks). |
-| `-v`, `--version` | Print the version (`0.2.0`). |
+| `-v`, `--version` | Print the version (`0.3.0`). |
 | `-h`, `--help` | Show help. `comet-deploy meteor --help` and `comet-deploy docker --help` list the commands of those groups; `--help` after a command (for example `comet-deploy meteor destroy --help`) shows its options. |
 
 Without `--verbose`, remote output appears only when a step fails: the last 4200 characters of stderr and stdout, as in MUP. A failed local build shows its last lines (50 for `meteor build`, 60 for `docker buildx build`).
