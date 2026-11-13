@@ -18,15 +18,6 @@ import { renderTemplate } from './render.js';
 const START_SH = 'mup/meteor/templates/start.sh';
 const ENV_LIST = 'mup/meteor/templates/env.list';
 
-/**
- * start.sh's `imagePrefix`: the image repository up to the app name (`mup-`, or
- * `<privateDockerRegistry.imagePrefix>/mup-`); the template appends the lowercase app name.
- */
-function imagePrefix(c: NormalizedConfig): string {
-  const prefix = c.privateDockerRegistry?.imagePrefix;
-  return prefix ? `${prefix}/mup-` : 'mup-';
-}
-
 /** The `app.servers` entry of `serverName`; throws when it is not one of the app servers. */
 function serverRef(c: NormalizedConfig, serverName: string) {
   const ref = c.app.servers?.[serverName];
@@ -35,11 +26,12 @@ function serverRef(c: NormalizedConfig, serverName: string) {
 }
 
 /**
- * Renders `/opt/<app>/config/start.sh` for one server, exactly as MUP's envconfig does. The
- * script replaces the app container with one from `<prefix>mup-<lc>:latest`; without a
- * private registry it falls back to `docker.image` with the bundle mounted (bundle mode) when
- * that tag is missing, which is why comet-deploy always keeps `:latest` on the active version.
- * The server's `bind` and `env.PORT` override the app-wide values.
+ * Renders `/opt/<app>/config/start.sh` for one server, exactly as MUP's envconfig does without
+ * a private registry (also when the config has one, see `imagePrefix` below). The script
+ * replaces the app container with one from `mup-<lc>:latest`, and falls back to `docker.image`
+ * with the bundle mounted (bundle mode) when that tag is missing, which is why comet-deploy
+ * always keeps `:latest` on the active version. The server's `bind` and `env.PORT` override
+ * the app-wide values.
  */
 export async function renderStartSh(c: NormalizedConfig, serverName: string): Promise<string> {
   const app: any = cloneDeep(c.app);
@@ -57,7 +49,11 @@ export async function renderStartSh(c: NormalizedConfig, serverName: string): Pr
   if (ref.env && ref.env.PORT) hostVars.port = ref.env.PORT;
 
   const vars = {
-    imagePrefix: imagePrefix(c),
+    // Always MUP's start.sh without a registry (registry design §4.1): with one, MUP's pulls
+    // `<prefix>/mup-<app>:latest` on every start, so the registry would decide which version a
+    // server runs, not the activation (no canary, revert or rollback per server). The registry
+    // only carries the image; the server keeps it as `mup-<app>:<version>`.
+    imagePrefix: 'mup-',
     appName: app.name,
     // The host port start.sh publishes; inside the container the app listens on
     // docker.imagePort (see createEnv).
@@ -69,7 +65,8 @@ export async function renderStartSh(c: NormalizedConfig, serverName: string): Pr
     docker: app.docker,
     proxyConfig: cloneDeep(c.proxy),
     nginxClientUploadLimit: app.nginx.clientUploadLimit || '10M',
-    privateRegistry: cloneDeep(c.privateDockerRegistry),
+    // The template reads the variable, so it must exist (MUP passes `undefined` without a registry).
+    privateRegistry: undefined,
   };
   // `vars` is built fresh on every call, so merging this server's values into it cannot reach
   // another server (unlike in MUP, see the header).

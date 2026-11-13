@@ -12,6 +12,7 @@ import { renderTemplate } from '../../remote/render.js';
 import { mongoSetup, mongoStart } from '../../mongo/setup.js';
 import { proxySetup } from '../../proxy/setup.js';
 import type { ConfigCommand } from '../registry.js';
+import { setupRegistry } from '../../transfer/registry.js';
 
 /**
  * Keeps the first server of every machine (MUP `uniqueSessions`), in the given
@@ -45,7 +46,7 @@ export function dockerServers(ctx: CommandContext): string[] {
 /** `docker setup`: MUP's docker-setup.sh (installs/starts Docker ≥ 18) on every unique host. */
 export async function dockerSetup(ctx: CommandContext): Promise<void> {
   await ctx.runner.run('docker.setup', async () => {
-    const script = await renderTemplate('mup/docker/docker-setup.sh', { privateRegistry: ctx.config.privateDockerRegistry });
+    const script = await renderTemplate('mup/docker/docker-setup.sh', { privateRegistry: setupRegistry(ctx.config) });
     await ctx.reporter.phase('Docker setup', () =>
       runOnServers(ctx, uniqueHosts(ctx.config, dockerServers(ctx)), 'docker setup', async (conn, s) => {
         await conn.runScriptOrThrow(script, 'Setting up Docker', verboseOutput(ctx.reporter, s));

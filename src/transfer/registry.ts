@@ -5,12 +5,22 @@
  * stream, and start.sh never pulls (registry design §4.1), so canary, revert and rollback work
  * server by server without the registry.
  */
-import type { NormalizedConfig } from '../config/types.js';
+import type { NormalizedConfig, RegistryConfig } from '../config/types.js';
 import { CometError } from '../core/errors.js';
 
 /** Whether the config sends the image through `privateDockerRegistry` (validation keeps `transfer` in line). */
 export function usesRegistry(c: NormalizedConfig): boolean {
   return !!c.privateDockerRegistry;
+}
+
+/**
+ * The registry for MUP's docker-setup.sh (`setup`, `docker setup`), which runs `docker login`
+ * on the servers: only with both credentials. Without them MUP's template would log in with
+ * empty values and fail under `set -e`; the servers then log in by themselves (spec §4.1).
+ */
+export function setupRegistry(c: NormalizedConfig): RegistryConfig | undefined {
+  const reg = c.privateDockerRegistry;
+  return reg?.username && reg.password ? reg : undefined;
 }
 
 /** The image repository in the registry: `<imagePrefix>/mup-<lowercase app name>`, as in MUP. */

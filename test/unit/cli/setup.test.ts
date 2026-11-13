@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { destroyApp } from '../../../src/cli/commands/destroy.js';
-import { dockerServers, setupAll, uniqueHosts } from '../../../src/cli/commands/setup.js';
+import { dockerServers, dockerSetup, setupAll, uniqueHosts } from '../../../src/cli/commands/setup.js';
 import { createContext, type CommandContext } from '../../../src/core/context.js';
 import { CometError } from '../../../src/core/errors.js';
 import { createReporter } from '../../../src/output/reporter.js';
@@ -165,5 +165,22 @@ describe('docker ps through the CLI', () => {
     const help = captureIO();
     expect(await main(['--help'], help.io, { cwd: dir })).toBe(0);
     for (const c of ['setup', 'deploy', 'reconfig', 'restart', 'rollback', 'history', 'unlock', 'status', 'logs', 'docker', 'meteor']) expect(help.stdout()).toContain(c);
+  });
+});
+
+describe('docker-setup.sh and privateDockerRegistry', () => {
+  const REG = (creds: string) => `privateDockerRegistry: { host: 'reg.example.com', imagePrefix: 'reg.example.com/team'${creds} },`;
+
+  it('setup logs the servers in to the registry with both credentials, as MUP', async () => {
+    const s = await setup(REG(", username: 'u', password: 'registry-pw'"));
+    await setupAll(s.ctx);
+    expect(s.scripts['docker-setup']).toContain("sudo docker login --password 'registry-pw' --username 'u' reg.example.com");
+  });
+
+  it('docker setup without credentials does not run docker login with empty values', async () => {
+    const s = await setup(REG(''));
+    await dockerSetup(s.ctx);
+    expect(s.scripts['docker-setup']).toBeDefined();
+    expect(s.scripts['docker-setup']).not.toContain('docker login');
   });
 });

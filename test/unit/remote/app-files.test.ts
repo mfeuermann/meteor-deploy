@@ -42,12 +42,22 @@ describe('start.sh / env.list are byte-identical with MUP envconfig', () => {
     for (const server of Object.keys(config.app.servers)) {
       it(`${name} / ${server}`, async () => {
         const { config: c, dir, settingsPath, settings } = load(name);
-        const expected = await mupEnvconfigFiles(join(dir, 'mup.js'), settingsPath, server);
+        // With a registry, MUP's start.sh pulls :latest on every start; comet-deploy's is MUP's
+        // start.sh without the registry (registry design §4.1). env.list does not depend on it.
+        const expected = await mupEnvconfigFiles(join(dir, 'mup.js'), settingsPath, server, { withoutRegistry: name === 'registry' });
         expect(await renderStartSh(c, server)).toBe(expected.startSh);
         expect(await renderEnvList(c, settings, server, { cwd: dir, basePath: dir })).toBe(fixKnownMupQuirks(expected.envList));
       });
     }
   }
+
+  it('start.sh with a registry runs the local mup-<app>:latest and never pulls', async () => {
+    const { config } = load('registry');
+    const startSh = await renderStartSh(config, 'one');
+    expect(startSh).toContain('APP_IMAGE=mup-reg-app\n');
+    expect(startSh).not.toContain('docker pull $IMAGE');
+    expect(startSh).not.toContain('docker image prune');
+  });
 
   it('per-server PORT goes to start.sh only, never into env.list', async () => {
     const { config, dir, settings } = load('per-server-env');

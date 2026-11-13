@@ -86,7 +86,7 @@ export async function mupEnvconfigFiles(
   configPath: string,
   settingsPath: string,
   serverName: string,
-  opts: { cwd?: string } = {},
+  opts: { cwd?: string; withoutRegistry?: boolean } = {},
 ): Promise<{ startSh: string; envList: string }> {
   const { readFileSync } = await import('node:fs');
   const cloneDeep = require('lodash/cloneDeep');
@@ -106,7 +106,9 @@ export async function mupEnvconfigFiles(
   console.log = () => {};
   try {
     process.chdir(opts.cwd ?? dirname(configPath));
-    api.getConfig(false);
+    const mupConfig = api.getConfig(false);
+    // comet-deploy renders start.sh as MUP does without a registry (registry design §4.1).
+    if (opts.withoutRegistry) delete mupConfig.privateDockerRegistry;
     await handlers.envconfig(api);
   } finally {
     console.log = log;

@@ -13,6 +13,7 @@ import { renderTemplate } from '../../remote/render.js';
 import type { ConfigCommand } from '../registry.js';
 import { logsPassthrough } from './lifecycle.js';
 import { dockerServers, dockerSetup, uniqueHosts } from './setup.js';
+import { setupRegistry } from '../../transfer/registry.js';
 
 /** Oldest Docker major version accepted, as in MUP. */
 const MIN_DOCKER_MAJOR = 18;
@@ -23,7 +24,7 @@ const MIN_DOCKER_MAJOR = 18;
  */
 async function runTemplateOnHosts(ctx: CommandContext, key: string, template: string, step: string): Promise<void> {
   await ctx.runner.run(key, async () => {
-    const script = await renderTemplate(template, { privateRegistry: ctx.config.privateDockerRegistry });
+    const script = await renderTemplate(template, { privateRegistry: setupRegistry(ctx.config) });
     await runOnServers(ctx, uniqueHosts(ctx.config, dockerServers(ctx)), step, async (conn, s) => {
       await conn.runScriptOrThrow(script, step, verboseOutput(ctx.reporter, s));
     });
