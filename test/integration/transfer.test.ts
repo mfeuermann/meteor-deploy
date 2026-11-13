@@ -1,3 +1,4 @@
+import { spawn, type SpawnOptions } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { run } from '../../src/local/exec.js';
 import { SshConnection } from '../../src/ssh/connection.js';
@@ -91,8 +92,8 @@ describe('image distribution through the local registry and a reverse tunnel', (
   });
 });
 
-// The stream transfer loads a `docker save` archive of this machine's Docker (classic or
-// containerd store) into both Docker releases the fake servers offer; 29 uses the containerd store.
+// The stream transfer loads a `docker save` archive of this machine's Docker (whichever image
+// store it uses) into both Docker releases the fake servers offer; 29 uses the containerd store.
 describe.each(['27.5', '29'] as const)('image transfer over SSH to a server without forwarding (Docker %s)', (docker) => {
   let server: FakeServer;
   const platform = process.arch === 'arm64' ? 'linux/arm64' : 'linux/amd64';
@@ -122,5 +123,47 @@ describe.each(['27.5', '29'] as const)('image transfer over SSH to a server with
     const tags = (await server.exec(`docker images mup-stream --format '{{.Repository}}:{{.Tag}}'`)).stdout.split('\n').filter(Boolean);
     expect(tags).toEqual(['mup-stream:v1']);
     expect((await server.exec('docker run --rm mup-stream:v1 cat /marker')).stdout.trim()).toBe('stream');
+  });
+});
+
+// A local Docker with the containerd image store (Docker Desktop 4.34+): saveImageArchive's
+// `docker` commands run inside a Docker 29 fake server, as if it were this machine. Its archive,
+// with `--platform` and without it (what a docker CLI before 28 gets), must load on Docker 27.5.
+describe('image transfer over SSH from a Docker with the containerd image store', () => {
+  let source: FakeServer;
+  let target: FakeServer;
+  const platform = process.arch === 'arm64' ? 'linux/arm64' : 'linux/amd64';
+  const inSource = ((_cmd: string, args: string[], o: SpawnOptions) => spawn('docker', ['exec', source.containerId, 'docker', ...args], o)) as typeof spawn;
+
+  beforeAll(async () => {
+    [[source], [target]] = await Promise.all([startFakeServers(1, { docker: '29' }), startFakeServers(1, { allowTcpForwarding: false })]);
+    const built = await source.exec(`docker pull -q ${BASE} > /dev/null && printf 'FROM ${BASE}\\nRUN echo containerd > /marker\\n' | docker build -q -t mup-cd:v1-helper -`);
+    expect(built.code, built.stderr).toBe(0);
+  });
+
+  afterAll(async () => {
+    await Promise.all([source?.stop(), target?.stop()]);
+  });
+
+  it('detects the containerd image store', async () => {
+    const inSourceRun = ((cmd: string, args: string[]) => run('docker', ['exec', source.containerId, cmd, ...args])) as typeof run;
+    expect(await localImageStore({ run: inSourceRun })).toBe('containerd');
+  });
+
+  it.each([
+    ['with --platform', 'containerd'],
+    ['without --platform (docker CLI before 28)', 'classic'],
+  ] as const)('an archive saved %s loads on Docker 27.5 under the target tag', async (_what, store) => {
+    const archive = await saveImageArchive({ localTag: 'mup-cd:v1-helper', platform, app: 'cd', store, spawn: inSource });
+    const conn = await connect(target);
+    try {
+      await streamToServer(conn, { archive, targetTag: 'mup-cd:v1' });
+    } finally {
+      removeArchive(archive);
+      await conn.close();
+    }
+    expect((await target.exec(`docker images mup-cd --format '{{.Repository}}:{{.Tag}}'`)).stdout.trim()).toBe('mup-cd:v1');
+    expect((await target.exec('docker run --rm mup-cd:v1 cat /marker')).stdout.trim()).toBe('containerd');
+    await target.exec('docker rmi mup-cd:v1');
   });
 });
