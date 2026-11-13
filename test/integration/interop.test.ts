@@ -2,8 +2,10 @@
  * Interchangeability with MUP 1.5.11 (spec §13, Review Focus 4): the same
  * mup.js works with both tools, in both directions, on one server.
  */
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { KEYS_COMET_DOES_NOT_RUN, MUP_COMMAND_KEYS } from '../../src/hooks/registry.js';
 import { startFakeServers, type FakeServer } from '../harness/fake-servers.js';
 import { APP_NAME, cli, containerId, curlApp, curlVia, imageId, mup, sampleProject, waitFor, writeTestConfig } from './helpers.js';
 
@@ -185,4 +187,61 @@ describe('interop with MUP 1.5.11 and the mongo section', () => {
     expect(await mongoId()).toBe(before);
     expect(await read()).toBe('["comet","mup"]');
   });
+});
+
+/**
+ * Hooks next to MUP (hooks plan Task 7): with the mongo and proxy sections, a hook on every MUP
+ * key runs at the same point with both tools, and `--show-hook-names` prints the same names.
+ * MUP prints `Hook: post.default.<command>` before the nested steps, because its own work for
+ * the command runs inside that hook (registered before the config's); the config's
+ * `post.default.<command>` hooks run last in both tools.
+ */
+describe('MUP and comet-deploy run the hooks at the same points', () => {
+  let server: FakeServer;
+  let p: ReturnType<typeof sampleProject>;
+  const config = () => ['--config', join(p.deployDir, 'mup.js'), '--show-hook-names'];
+  const hookLines = (output: string) => output.split('\n').map((l) => l.replace(/\x1b\[[0-9;]*m/g, '').trim()).filter((l) => l.startsWith('Hook: '));
+  /** The hooks that ran since the last call, in order (each one appends its name to a file). */
+  const ran = () => {
+    const file = join(p.deployDir, 'hook-order.log');
+    const lines = existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [];
+    writeFileSync(file, '');
+    return lines;
+  };
+  const names = MUP_COMMAND_KEYS.filter((k) => !KEYS_COMET_DOES_NOT_RUN.includes(k)).flatMap((k) => [`pre.${k}`, `post.${k}`]);
+  const hooks = `{\n${names.map((n) => `  '${n}': { localCommand: 'echo ${n} >> hook-order.log' },`).join('\n')}\n}`;
+
+  beforeAll(async () => {
+    [server] = await startFakeServers(1);
+    p = sampleProject();
+    // useBuildKit: see the first describe.
+    writeTestConfig(p.deployDir, [server], {
+      docker: { useBuildKit: true },
+      proxy: { domains: 'hooks.test' },
+      mongo: { version: '7.0.14', servers: { [server.name]: {} } },
+      hooks,
+    });
+  });
+
+  afterAll(async () => {
+    await server?.stop();
+  });
+
+  for (const command of ['setup', 'deploy', 'reconfig', 'restart', 'stop', 'start', 'status']) {
+    it(command, async () => {
+      const theirs = await mup([command, ...config()], p.root);
+      expect(theirs.code, theirs.output).toBe(0);
+      const theirOrder = ran();
+      const ours = await cli([command, ...config()], p.root);
+      expect(ours.code, ours.output).toBe(0);
+      const ourOrder = ran();
+      expect(theirOrder.length).toBeGreaterThan(0);
+      // MUP's proxy plugin does not wait for proxy.status (plugins/proxy/index.js has no return
+      // in its post.default.status hook), so the config's post.default.status runs while
+      // proxy.status still runs. comet-deploy runs it after proxy.status.
+      const expected = command === 'status' ? [...theirOrder.filter((n) => n !== 'post.default.status'), 'post.default.status'] : theirOrder;
+      expect(ourOrder).toEqual(expected);
+      expect(hookLines(ours.output).sort()).toEqual(hookLines(theirs.output).sort());
+    });
+  }
 });

@@ -37,7 +37,7 @@ interface World {
   upstream?: string;
 }
 
-async function setup(fixture: string, world: World = {}) {
+async function setup(fixture: string, world: World = {}, argv: Record<string, unknown> = {}) {
   const dir = join(fixtures, fixture);
   const out: string[] = [];
   const log: string[] = [];
@@ -72,7 +72,7 @@ async function setup(fixture: string, world: World = {}) {
     } as unknown as SshConnection;
   };
   const ctx: CommandContext = await createContext(
-    { config: join(dir, 'mup.js') },
+    { config: join(dir, 'mup.js'), ...argv },
     {
       cwd: dir,
       reporter: createReporter({ verbose: false, tty: false, write: (s) => void out.push(s) }),
@@ -111,6 +111,13 @@ describe('proxySetup', () => {
     // Without load balancing the app's upstream is removed, as upstream.sh does.
     expect(s.scripts.upstream).toContain('sudo rm -f $UPSTREAM');
     expect(s.ctx.runner.history).toEqual(['proxy.setup', 'proxy.start']);
+  });
+
+  it('runs proxy.start inside proxy.setup, as MUP', async () => {
+    const s = await setup('proxy-certs', { digests: { one: ['digest=-\nrunning=0'] } }, { 'show-hook-names': true });
+    await proxySetup(s.ctx);
+    const hooks = s.out().split('\n').filter((l) => l.startsWith('Hook: '));
+    expect(hooks).toEqual(['Hook: pre.proxy.setup', 'Hook: pre.proxy.start', 'Hook: post.proxy.start', 'Hook: post.proxy.setup']);
   });
 
   it('configures the load balancing container after the start (MUP post.proxy.setup)', async () => {
@@ -218,6 +225,13 @@ describe('proxyReconfigShared', () => {
     const s = await setup('proxy-certs');
     await proxyReconfigShared(s.ctx);
     expect(s.ctx.runner.history).toEqual(['proxy.reconfigShared', 'proxy.start']);
+  });
+
+  it('runs proxy.start inside proxy.reconfigShared, as MUP', async () => {
+    const s = await setup('proxy-certs', {}, { 'show-hook-names': true });
+    await proxyReconfigShared(s.ctx);
+    const hooks = s.out().split('\n').filter((l) => l.startsWith('Hook: '));
+    expect(hooks).toEqual(['Hook: pre.proxy.reconfigShared', 'Hook: pre.proxy.start', 'Hook: post.proxy.start', 'Hook: post.proxy.reconfigShared']);
   });
 });
 

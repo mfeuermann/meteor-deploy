@@ -81,6 +81,8 @@ export function writeTestConfig(
     privateIp?: boolean;
     /** The `mongo` section, written as given. */
     mongo?: Record<string, unknown>;
+    /** The `hooks` section as JavaScript source (an object literal), so functions survive. */
+    hooks?: string;
   } = {},
 ): string {
   const serversConfig = fakeServersConfig(servers, o.auth ?? 'password');
@@ -100,7 +102,8 @@ export function writeTestConfig(
     ...(o.strategy || o.cometDeploy ? { cometDeploy: { ...o.cometDeploy, ...(o.strategy ? { strategy: o.strategy } : {}) } } : {}),
   };
   const path = join(dir, 'mup.js');
-  writeFileSync(path, `module.exports = ${JSON.stringify(config, null, 2)};\n`);
+  const hooks = o.hooks ? `config.hooks = ${o.hooks};\n` : '';
+  writeFileSync(path, `const config = ${JSON.stringify(config, null, 2)};\n${hooks}module.exports = config;\n`);
   writeFileSync(join(dir, 'settings.json'), JSON.stringify(o.settings ?? { public: {} }));
   return path;
 }

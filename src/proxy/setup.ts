@@ -129,7 +129,7 @@ async function runProxyStart(ctx: CommandContext, servers: string[], o: { force:
 /**
  * `proxy setup` (and the proxy part of `setup`): MUP's setup steps on every proxy server in
  * parallel, then `proxy.start` when needed, then the load balancing config container (MUP
- * `post.proxy.setup`). Everything local is read first, so a missing file fails before any
+ * `post.proxy.setup`), all inside the `proxy.setup` step. Everything local is read first, so a missing file fails before any
  * server changes.
  */
 export async function proxySetup(ctx: CommandContext, d: ProxyLockDeps = LOCK_DEPS): Promise<void> {
@@ -185,14 +185,16 @@ export async function proxySetup(ctx: CommandContext, d: ProxyLockDeps = LOCK_DE
           }
         }),
       );
+      // Inside the step, as MUP: its proxy.setup runs proxy.start, and the load balancing config
+      // container is its built-in post.proxy.setup hook, which runs before the hooks of the config.
+      await runProxyStart(ctx, servers, { force: false, before, parallel: true });
+      if (p.loadBalancing && balanced.size > 0) {
+        const script = await renderServiceConfigureSh(c);
+        await runOnServers(ctx, servers.filter((s) => balanced.has(s)), 'proxy load balancing', async (conn, s) => {
+          await conn.runScriptOrThrow(script, 'Configure Proxy', verboseOutput(ctx.reporter, s));
+        });
+      }
     });
-    await runProxyStart(ctx, servers, { force: false, before, parallel: true });
-    if (p.loadBalancing && balanced.size > 0) {
-      const script = await renderServiceConfigureSh(c);
-      await runOnServers(ctx, servers.filter((s) => balanced.has(s)), 'proxy load balancing', async (conn, s) => {
-        await conn.runScriptOrThrow(script, 'Configure Proxy', verboseOutput(ctx.reporter, s));
-      });
-    }
   });
 }
 
@@ -250,8 +252,9 @@ export async function proxyReconfigShared(ctx: CommandContext, d: ProxyLockDeps 
         if (f.template !== null) await conn.writeFile(`${dir}/nginx-shared.tmpl`, f.template);
         else await conn.runScriptOrThrow(cleanupSh, 'Cleanup Template', out);
       });
+      // Inside the step, as MUP's reconfigShared runs proxy.start.
+      await runProxyStart(ctx, servers, { force: false, before, parallel: false });
     });
-    await runProxyStart(ctx, servers, { force: false, before, parallel: false });
   });
 }
 
