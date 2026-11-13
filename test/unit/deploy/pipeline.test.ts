@@ -45,7 +45,7 @@ async function setup(o: { extra?: string; activate?: Record<string, ActivationRe
     readGitInfo: async () => null,
     preflight: async (_c, servers, p) => {
       calls.push(p.proxyServers?.length ? `preflight:proxy=${p.proxyServers.join(',')}` : 'preflight');
-      return { errors: [], warnings: [], platformByServer: Object.fromEntries(servers.map((s) => [s, 'linux/amd64'])), platforms: ['linux/amd64'] };
+      return { errors: [], warnings: [], platformByServer: Object.fromEntries(servers.map((s) => [s, 'linux/amd64'])), platforms: ['linux/amd64'], streamServers: [] };
     },
     buildApp: async () => {
       calls.push('build');

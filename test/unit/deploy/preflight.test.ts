@@ -27,6 +27,7 @@ function input(p: Partial<PreflightInput> = {}): PreflightInput {
     needsBuild: true,
     checkLocks: true,
     distributes: true,
+    transfer: 'auto',
     ...p,
   };
 }
@@ -120,7 +121,7 @@ describe('evaluatePreflight', () => {
   });
 
   it('fails early when the server does not allow TCP forwarding (M3)', () => {
-    const r = evaluatePreflight(input({ servers: { one: { facts: facts(), forwardingError: 'reverse port forwarding is disabled' } } }));
+    const r = evaluatePreflight(input({ transfer: 'tunnel', servers: { one: { facts: facts(), forwardingError: 'reverse port forwarding is disabled' } } }));
     expect(r.errors).toEqual([expect.stringMatching(/"one".*forwarding.*AllowTcpForwarding yes/s)]);
   });
 
@@ -197,5 +198,64 @@ describe('evaluatePreflight: MongoDB', () => {
 
   it('an unreachable app server is reported once', () => {
     expect(evaluatePreflight(input({ mongo: { problem: null }, servers: { one: { error: 'connect ETIMEDOUT' } } })).errors).toEqual(['Server "one": connect ETIMEDOUT']);
+  });
+});
+
+describe('evaluatePreflight: tunnel or stream', () => {
+  const two = (forwardingError: string | null = 'remote port forwarding failed') => ({ one: { facts: facts() }, two: { facts: facts(), forwardingError } });
+
+  it('auto: a server without forwarding is streamed, with a warning', () => {
+    const r = evaluatePreflight(input({ transfer: 'auto', servers: two() }));
+    expect(r.errors).toEqual([]);
+    expect(r.streamServers).toEqual(['two']);
+    expect(r.warnings).toEqual([
+      'Server "two": SSH port forwarding is off (remote port forwarding failed), so comet-deploy sends the whole image over SSH, which is slower. ' +
+        'To send only the changed layers, set "AllowTcpForwarding yes" in /etc/ssh/sshd_config and reload sshd.',
+    ]);
+  });
+
+  it('tunnel: a server without forwarding is an error with the stream hint', () => {
+    const r = evaluatePreflight(input({ transfer: 'tunnel', servers: two() }));
+    expect(r.streamServers).toEqual([]);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toMatch(/^Server "two": SSH reverse port forwarding does not work \(remote port forwarding failed\)/);
+    expect(r.errors[0].endsWith(' Or set cometDeploy.transfer to "auto" to send the whole image over SSH instead.')).toBe(true);
+  });
+
+  it('stream: every server is streamed, without a warning', () => {
+    const r = evaluatePreflight(input({ transfer: 'stream', servers: two(null) }));
+    expect(r).toMatchObject({ errors: [], warnings: [], streamServers: ['one', 'two'] });
+  });
+
+  it('meteor build streams nothing', () => {
+    const r = evaluatePreflight(input({ transfer: 'stream', distributes: false, servers: two() }));
+    expect(r).toMatchObject({ errors: [], warnings: [], streamServers: [] });
+  });
+});
+
+describe('runPreflight: forwarding probe', () => {
+  it('stream: forwarding is not probed, auto probes it', async () => {
+    const dir = tempDir({
+      '.deploy/mup.js': `module.exports = { servers: { one: { host: '192.0.2.1', username: 'root', password: 'pw' } }, app: { name: 'myapp', path: '../app', servers: { one: {} }, env: { ROOT_URL: 'http://a.com' }, docker: { image: 'zodern/meteor' } } };`,
+    });
+    let probes = 0;
+    const conn = {
+      name: 'one',
+      host: 'one',
+      exec: async () => ({ code: 0, stdout: 'arch=x86_64\ndocker=27.5.1\ndocker_running=1\nbash=1\napp_setup=1\n', stderr: '' }),
+      forwardIn: async () => {
+        probes++;
+        throw new Error('administratively prohibited');
+      },
+    };
+    const ctx = await createContext(
+      { config: '.deploy/mup.js' },
+      { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }), sshPoolFactory: () => ({ get: async () => conn as never, closeAll: async () => {} }) },
+    );
+    const run = (transfer: 'stream' | 'auto') => runPreflight(ctx, ['one'], { needsBuild: false, checkLocks: false, distributes: true, transfer });
+    expect((await run('stream')).streamServers).toEqual(['one']);
+    expect(probes).toBe(0);
+    expect((await run('auto')).streamServers).toEqual(['one']);
+    expect(probes).toBe(1);
   });
 });

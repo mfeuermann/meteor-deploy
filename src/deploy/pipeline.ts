@@ -140,14 +140,14 @@ const DEFAULT_DEPS: PipelineDeps = {
 
 /**
  * Refuses the config sections this release cannot run yet (`privateDockerRegistry`, the
- * `registry` / `stream` transfers) with a `CometError`. Called before anything else, so such a
- * config fails up front instead of halfway through a deploy.
+ * `registry` transfer) with a `CometError`. Called before anything else, so such a config fails
+ * up front instead of halfway through a deploy.
  */
 export function assertPhase1Supported(ctx: CommandContext): void {
   const c = ctx.config;
   const phase2 = (what: string) => new CometError(`${what} is not supported yet (planned for phase 2 of comet-deploy).`);
   if (c.privateDockerRegistry) throw phase2('"privateDockerRegistry"');
-  if (c.cometDeploy.transfer === 'registry' || c.cometDeploy.transfer === 'stream') throw phase2(`cometDeploy.transfer "${c.cometDeploy.transfer}"`);
+  if (c.cometDeploy.transfer === 'registry') throw phase2('cometDeploy.transfer "registry"');
 }
 
 /**

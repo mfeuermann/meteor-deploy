@@ -66,6 +66,11 @@ export interface PreflightInput {
    * do reverse port forwarding and the app directories from `setup` matter.
    */
   distributes: boolean;
+  /**
+   * `cometDeploy.transfer`. A server without forwarding is streamed (`auto`, with a warning) or
+   * an error (`tunnel`); `stream` streams every server.
+   */
+  transfer: CometOptions['transfer'];
 }
 
 export interface PreflightResult {
@@ -77,6 +82,22 @@ export interface PreflightResult {
   platformByServer: Record<string, Platform>;
   /** The distinct platforms to build, one image each. */
   platforms: Platform[];
+  /**
+   * The servers that get the whole image over SSH (`stream`) instead of the tunnel, in input
+   * order. Empty when nothing is distributed.
+   */
+  streamServers: string[];
+}
+
+/**
+ * The warning for a server that gets the whole image over SSH because it refuses port
+ * forwarding (`transfer: 'auto'`); also used when the tunnel fails only at distribution.
+ */
+export function streamWarning(server: string, reason: string): string {
+  return (
+    `Server "${server}": SSH port forwarding is off (${reason}), so comet-deploy sends the whole image over SSH, which is slower. ` +
+    'To send only the changed layers, set "AllowTcpForwarding yes" in /etc/ssh/sshd_config and reload sshd.'
+  );
 }
 
 function describeLock(l: LockInfo): string {
@@ -91,6 +112,7 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
   const errors: string[] = [];
   const warnings: string[] = [];
   const platformByServer: Record<string, Platform> = {};
+  const streamServers: string[] = [];
 
   if (i.needsBuild) {
     if (!i.local.docker.ok) errors.push(`Local Docker is not available: ${i.local.docker.error ?? 'unknown error'}`);
@@ -109,11 +131,17 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
     if (!f.hasBash) errors.push(`Server "${name}": bash is required on the server.`);
     if (i.distributes && f.appSetup === false) errors.push(`Server "${name}": the app is not set up on this server yet. Run "comet-deploy setup" first.`);
     if (i.mongo && f.mongoRunning === false) errors.push(mongoNotRunningMessage(name, f.mongoSetUp === true, i.mongo.problem));
-    if (i.distributes && s.forwardingError) {
+    if (i.distributes && i.transfer === 'stream') {
+      streamServers.push(name);
+    } else if (i.distributes && s.forwardingError && i.transfer === 'tunnel') {
       errors.push(
         `Server "${name}": SSH reverse port forwarding does not work (${s.forwardingError}). ` +
-          'comet-deploy sends the image through it: set "AllowTcpForwarding yes" in /etc/ssh/sshd_config and reload sshd.',
+          'comet-deploy sends the image through it: set "AllowTcpForwarding yes" in /etc/ssh/sshd_config and reload sshd. ' +
+          'Or set cometDeploy.transfer to "auto" to send the whole image over SSH instead.',
       );
+    } else if (i.distributes && s.forwardingError) {
+      streamServers.push(name);
+      warnings.push(streamWarning(name, s.forwardingError));
     }
     // sudo comes first: the Docker facts are read through sudo, so without working sudo Docker
     // would look missing and the error would point at the wrong problem.
@@ -173,7 +201,7 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
       }
     }
   }
-  return { errors, warnings, platformByServer, platforms };
+  return { errors, warnings, platformByServer, platforms, streamServers };
 }
 
 /**
@@ -183,9 +211,10 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
 export async function runPreflight(
   ctx: CommandContext,
   servers: string[],
-  o: { needsBuild: boolean; checkLocks: boolean; distributes: boolean; proxyServers?: string[]; mongo?: boolean },
+  o: { needsBuild: boolean; checkLocks: boolean; distributes: boolean; transfer?: CometOptions['transfer']; proxyServers?: string[]; mongo?: boolean },
 ): Promise<PreflightResult> {
   const appName = ctx.config.app.name;
+  const transfer = o.transfer ?? ctx.config.cometDeploy.transfer;
   const proxyServers = o.proxyServers ?? [];
   const proxyName = (s: string) => (proxyServers.includes(s) ? PROXY_NAME : undefined);
   // Started first and awaited last, so the local checks overlap with the SSH round trips.
@@ -199,8 +228,8 @@ export async function runPreflight(
       const conn = await ctx.ssh.get(name);
       const facts = await serverFacts(conn, o.distributes ? appName : undefined, { proxyName: proxyName(name), mongoName: o.mongo ? MONGO_CONTAINER : undefined });
       const lock = o.checkLocks ? await readLock(conn, appName) : null;
-      // The image reaches the servers through a reverse tunnel; `meteor build` sends nothing.
-      const forwardingError = o.distributes ? await probeForwarding(conn) : null;
+      // The tunnel needs reverse forwarding; `stream` and `meteor build` do not.
+      const forwardingError = o.distributes && transfer !== 'stream' ? await probeForwarding(conn) : null;
       return { facts, lock, forwardingError };
     }),
   );
@@ -232,6 +261,7 @@ export async function runPreflight(
     needsBuild: o.needsBuild,
     checkLocks: o.checkLocks,
     distributes: o.distributes,
+    transfer,
   };
   const result = evaluatePreflight(input);
   for (const w of result.warnings) ctx.reporter.warn(w);

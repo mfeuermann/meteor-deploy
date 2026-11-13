@@ -85,7 +85,7 @@ async function setup(versions: Record<string, ImageVersions>) {
     readGitInfo: async () => null,
     preflight: async (_c, servers) => {
       calls.push('preflight');
-      return { errors: [], warnings: [], platformByServer: Object.fromEntries(servers.map((s) => [s, 'linux/amd64'])), platforms: ['linux/amd64'] };
+      return { errors: [], warnings: [], platformByServer: Object.fromEntries(servers.map((s) => [s, 'linux/amd64'])), platforms: ['linux/amd64'], streamServers: [] };
     },
     buildApp: async () => [{ platform: 'linux/amd64', version: V3, localTag: `mup-myapp:${V3}`, imageId: 'x', nodeVersion: '24', depsHash: 'd', fromCache: false }],
     ensureLocalRegistry: async () => ({ port: 5555 }),
@@ -183,7 +183,7 @@ describe('--force-unlock', () => {
       const s = await setup({ one: three, two: three });
       s.deps.preflight = async (_c, servers, o) => {
         s.calls.push(`preflight:checkLocks=${o.checkLocks}`);
-        return { errors: [], warnings: [], platformByServer: Object.fromEntries(servers.map((x) => [x, 'linux/amd64'])), platforms: ['linux/amd64'] };
+        return { errors: [], warnings: [], platformByServer: Object.fromEntries(servers.map((x) => [x, 'linux/amd64'])), platforms: ['linux/amd64'], streamServers: [] };
       };
       await run(s.ctx, s.deps);
       const lockCalls = s.calls.filter((x) => /^(release|lock):one$/.test(x));

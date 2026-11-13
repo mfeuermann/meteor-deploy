@@ -156,6 +156,13 @@ describe('the app commands with a mongo section', () => {
     expect(preflight).toMatchObject({ mongo: true });
   });
 
+  it('transfer stream is accepted, transfer registry is still refused', async () => {
+    const stream = (await setup({ extra: "cometDeploy: { transfer: 'stream' }," })).ctx;
+    const registry = (await setup({ extra: "cometDeploy: { transfer: 'registry' }," })).ctx;
+    expect(() => assertPhase1Supported(stream)).not.toThrow();
+    expect(() => assertPhase1Supported(registry)).toThrow(/phase 2/);
+  });
+
   it('privateDockerRegistry is still refused', async () => {
     const s = await setup({ extra: "privateDockerRegistry: { host: 'reg.example.com' }," });
     expect(() => assertPhase1Supported(s.ctx)).toThrow(/phase 2/);
