@@ -32,6 +32,11 @@ function find(issues: Issue[], path: string) {
 }
 
 describe('validateConfig', () => {
+  it('reports hook problems', () => {
+    const issues = check((c) => (c.hooks = { 'pre.deploy': { localCommand: 3 } }));
+    expect(find(issues, 'hooks."pre.deploy".localCommand')).toMatchObject({ message: 'must be a string', severity: 'error' });
+  });
+
   it('accepts the aaa-like fixture without issues', () => {
     const cwd = join(FIXTURES, 'aaa-like');
     const l = loadConfig(cwd, join(cwd, 'mup.js'));

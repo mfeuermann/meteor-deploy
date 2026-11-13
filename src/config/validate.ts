@@ -8,6 +8,7 @@ import type Joi from 'joi';
 import { appSchema, cometSchema, KNOWN_TOP_LEVEL_KEYS, mongoSchema, proxySchema, registrySchema, serversSchema } from './schema.js';
 import { builtInMongoProblem } from '../mongo/rules.js';
 import type { NormalizedConfig, RawConfig } from './types.js';
+import { hookIssues } from '../hooks/registry.js';
 
 /** One validation problem, printed as `<path> <message>`. */
 export interface Issue {
@@ -165,6 +166,9 @@ export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[
   }
 
   if (config.swarm?.enabled) err('swarm.enabled', 'Docker Swarm is not supported by comet-deploy');
+
+  // From `raw`, where the user's hook names are.
+  issues.push(...hookIssues(raw.hooks));
 
   if (Array.isArray(config.plugins) && config.plugins.length > 0) {
     warn('plugins', 'MUP plugins are not supported by comet-deploy and will be ignored');
