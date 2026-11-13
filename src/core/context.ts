@@ -15,6 +15,9 @@ import type { SshConnection } from '../ssh/connection.js';
 import { SshPool } from '../ssh/pool.js';
 import { CometError } from './errors.js';
 import { CommandRunner } from './runner.js';
+import { createPluginApi, type PluginApi } from '../hooks/api.js';
+import { hookTable } from '../hooks/registry.js';
+import { createHookExecutor } from '../hooks/run.js';
 
 /** The global CLI options, named like MUP's. */
 export interface GlobalArgs {
@@ -208,5 +211,18 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
       settingsLoaded = true;
     },
   };
+  // The config's hooks run through the runner. Method hooks share one api object for the whole
+  // command, created on first use, so `api.settings.X = …` lasts until the later steps.
+  let api: PluginApi | undefined;
+  ctx.runner = new CommandRunner({
+    hooks: hookTable(ctx.config.hooks as Record<string, unknown> | undefined),
+    exec: createHookExecutor(ctx, () => (api ??= createPluginApi(ctx, (key) => runHookCommand(ctx, key)))),
+    showHookNames: argv['show-hook-names'] ? (l) => reporter.hookName(l) : undefined,
+  });
   return ctx;
+}
+
+/** `api.runCommand` until the key table exists (hooks plan Task 6). */
+async function runHookCommand(_ctx: CommandContext, key: string): Promise<void> {
+  throw new CometError(`Unknown command name: ${key}`);
 }

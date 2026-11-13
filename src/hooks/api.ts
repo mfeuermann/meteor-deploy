@@ -10,7 +10,7 @@ import { resolveAppPath } from '../config/normalize.js';
 import { scrubConfig } from '../config/scrub.js';
 import type { NormalizedConfig, ServerConfig } from '../config/types.js';
 import { validateConfig } from '../config/validate.js';
-import { formatIssue, type CommandContext } from '../core/context.js';
+import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
 import { logsPassthrough } from '../cli/commands/lifecycle.js';
 import { SshConnection } from '../ssh/connection.js';
@@ -56,7 +56,8 @@ export function createPluginApi(ctx: CommandContext, runCommand: (key: string) =
     getOptions: () => ctx.argv,
     getConfig: () => ctx.config,
     setConfig: (c: NormalizedConfig) => ctx.setConfig(c),
-    validateConfig: () => validateConfig(ctx.config, ctx.raw).map(formatIssue),
+    // `<path> <message>`, as formatIssue in core/context.ts (not imported: context imports this file).
+    validateConfig: () => validateConfig(ctx.config, ctx.raw).map((i) => `${i.path} ${i.message}`),
     scrubConfig: () => scrubConfig(ctx.config),
     getSettings: () => ctx.getSettings(),
     getSettingsFromPath: (p: string) => loadSettingsFile(resolve(ctx.cwd, expandTilde(p))),

@@ -134,6 +134,9 @@ export const statusCommand: ConfigCommand = {
   builder: overview,
   run: (ctx, argv) =>
     ctx.runner.run('default.status', async () => {
+      // MUP's `post.default.status` runs `docker.status` first. comet-deploy shows Docker in the
+      // app table, so the step is empty and only keeps the place of its hooks.
+      await ctx.runner.run('docker.status', async () => {});
       await status(ctx);
       if (ctx.config.mongo) await showMongoStatus(ctx, argv.overview === true);
       if (ctx.config.proxy) await showProxyStatus(ctx);

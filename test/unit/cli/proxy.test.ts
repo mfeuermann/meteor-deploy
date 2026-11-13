@@ -1,7 +1,9 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { PROXY_COMMANDS } from '../../../src/cli/commands/proxy.js';
 import { statusCommand } from '../../../src/cli/commands/status.js';
+import type { ConfigCommand } from '../../../src/cli/registry.js';
 import { main } from '../../../src/cli/main.js';
 import { createContext } from '../../../src/core/context.js';
 import { createReporter } from '../../../src/output/reporter.js';
@@ -43,7 +45,12 @@ describe('proxy commands', () => {
       },
     );
     await statusCommand.run(ctx, {});
-    expect(ctx.runner.history).toEqual(['default.status', 'meteor.status', 'proxy.status']);
+    expect(ctx.runner.history).toEqual(['default.status', 'docker.status', 'meteor.status', 'proxy.status']);
+    const command = (name: string) => PROXY_COMMANDS.find((c) => c.command === name)! as ConfigCommand;
+    await command('logs-le').run(ctx, { _: ['proxy', 'logs-le'] });
+    await command('nginx-config').run(ctx, { _: ['proxy', 'nginx-config'] });
+    // MUP's keys are the export names, not the CLI names.
+    expect(ctx.runner.history.slice(4)).toEqual(['proxy.leLogs', 'proxy.nginxConfig']);
     const text = out.join('');
     expect(text.indexOf('SERVER')).toBeLessThan(text.indexOf('=> Reverse Proxy Status'));
   });

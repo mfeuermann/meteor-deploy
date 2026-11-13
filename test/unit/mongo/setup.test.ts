@@ -243,9 +243,10 @@ describe('setup', () => {
     expect(s.out()).not.toContain('MongoDB is not started');
   });
 
-  it('a hook on mongo.start stops setup before Docker', async () => {
-    const s = await setup({ extra: "hooks: { 'pre.mongo.start': { localCommand: 'true' } }," });
-    await expect(setupAll(s.ctx)).rejects.toThrow(/pre\.mongo\.start/);
-    expect(s.log).toEqual([]);
+  it('a failing pre.mongo.start hook stops setup after the MongoDB setup', async () => {
+    const s = await setup({ extra: "hooks: { 'pre.mongo.start': { localCommand: 'exit 7' } }," }, { states: ['set_up=0\nrunning=0', 'set_up=1\nnew_version=7.0.14\nrunning=0'] });
+    await expect(setupAll(s.ctx)).rejects.toThrow('exited with code 7');
+    expect(s.steps('one')).toContain('mongo-setup.sh');
+    expect(s.steps('one')).not.toContain('mongo-start.sh');
   });
 });

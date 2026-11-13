@@ -60,8 +60,7 @@ async function runDeploy(ctx: CommandContext, argv: Record<string, unknown>, sto
 
 /**
  * `deploy`. As in MUP, only the top-level command runs under the `default.deploy` key; the
- * pipeline adds `meteor.deploy` → `meteor.push` → `meteor.build`. The runner refuses a command
- * when the config has a hook on one of its keys (hooks are not supported yet).
+ * pipeline adds `meteor.deploy` › `meteor.push` › `meteor.build` and the rest (hooks design §4.3).
  */
 export const deployCommand: ConfigCommand = {
   command: 'deploy',

@@ -69,12 +69,6 @@ function addCommand(y: Argv, m: CommandModule, makeCtx: MakeContext): Argv {
     const needsConfig = m.needsConfig !== false;
     const ctx = await makeCtx(argv as GlobalArgs & Record<string, unknown>, needsConfig);
     try {
-      // MUP prints the hook names while it runs the command. Without hook support there are no
-      // names to print, so comet-deploy says so and does not run the command at all.
-      if (argv['show-hook-names']) {
-        ctx.reporter.info('Hooks are not supported yet: they are planned for phase 2 of comet-deploy.');
-        return;
-      }
       // Commands such as logs, restart and rollback print app output but never load the
       // settings; their values must be masked there too.
       if ('maskSettings' in ctx) ctx.maskSettings();

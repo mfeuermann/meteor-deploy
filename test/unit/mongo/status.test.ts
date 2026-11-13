@@ -105,7 +105,7 @@ describe('status', () => {
   it('status runs mongo.status before proxy.status', async () => {
     const s = await context();
     await statusCommand.run(s.ctx, {});
-    expect(s.ctx.runner.history).toEqual(['default.status', 'meteor.status', 'mongo.status', 'proxy.status']);
+    expect(s.ctx.runner.history).toEqual(['default.status', 'docker.status', 'meteor.status', 'mongo.status', 'proxy.status']);
     expect(s.out()).toContain('=> MongoDB status');
   });
 

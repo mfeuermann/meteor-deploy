@@ -29,7 +29,7 @@
  *
  * `reconfig`, `restart` and `rollback` share the proxy rollout → lock → strategy → history →
  * unlock part (`lockedRollout`). Every step runs inside `ctx.runner.run()` under MUP's command key and in MUP's
- * nesting, so a hook configured for any of them is refused instead of silently skipped.
+ * nesting, so the config's hooks run at the same points as in MUP (hooks design §4.3).
  */
 import { hostname } from 'node:os';
 import { buildApp, type BuiltImage } from '../build/index.js';
@@ -267,7 +267,24 @@ export async function lockServers(
       hint: hints.size ? [...hints].join('\n') : undefined,
     });
   }
+  for (const s of locked) heldLocks(ctx).add(s);
   return locked;
+}
+
+/** The servers whose deploy lock this command holds right now (see `holdsLock`). */
+const HELD = new WeakMap<CommandContext, Set<string>>();
+const heldLocks = (ctx: CommandContext): Set<string> => {
+  let set = HELD.get(ctx);
+  if (!set) HELD.set(ctx, (set = new Set()));
+  return set;
+};
+
+/**
+ * Whether this command holds a deploy lock now: between `lockServers` and `releaseServers`
+ * (also inside `withAppLock`). A hook that runs then cannot start another locking command.
+ */
+export function holdsLock(ctx: CommandContext): boolean {
+  return (HELD.get(ctx)?.size ?? 0) > 0;
 }
 
 /**
@@ -275,6 +292,7 @@ export async function lockServers(
  * whose lock cannot be released only gets a warning with the command that releases it by hand.
  */
 export async function releaseServers(ctx: CommandContext, servers: string[], d: Pick<PipelineDeps, 'releaseLock'>): Promise<void> {
+  for (const s of servers) heldLocks(ctx).delete(s);
   await Promise.all(
     servers.map(async (s) => {
       try {
@@ -387,7 +405,10 @@ export async function deployPipeline(
     o.stopAfter === 'build'
       ? ['meteor.build']
       : ['meteor.push', 'meteor.build', 'meteor.prepareBundle', ...(o.stopAfter === 'push' ? [] : ['meteor.deploy', 'default.reconfig', 'meteor.envconfig', 'meteor.start'])];
-  const step = <T>(key: string, fn: () => Promise<T>): Promise<T> => (keys.includes(key) ? run.run(key, fn) : fn());
+  const step = <T>(key: string, fn: () => Promise<T>, so?: { failed?: (r: T) => boolean }): Promise<T> => (keys.includes(key) ? run.run(key, fn, so) : fn());
+  // `meteor.push` spans the build and the distribution, with the lock in between, so it is
+  // entered and left by hand.
+  const pushing = keys.includes('meteor.push');
 
   return step('meteor.deploy', async () => {
     // Only a full deploy goes through the proxy; `meteor build` / `meteor push` do not touch the app.
@@ -416,15 +437,14 @@ export async function deployPipeline(
     let skipped: string[] = [];
 
     // In MUP `meteor.push` is build + upload + `meteor.prepareBundle`. Here the lock sits between
-    // the build and the distribution, so `meteor.push` wraps only the build and
-    // `meteor.prepareBundle` is entered after the lock; the keys still run in MUP's order.
-    await step('meteor.push', async () => {
-      built = await step('meteor.build', () =>
-        r.phase('Build', () =>
-          d.buildApp(ctx, { platforms: pre.platforms, version, cachedBuild: o.cachedBuild, forceBuild: o.forceBuild, cacheFrom: o.cacheFrom, cacheTo: o.cacheTo }),
-        ),
-      );
-    });
+    // the build and the distribution (`meteor.prepareBundle`); `meteor.push` still starts before
+    // the build and ends after the distribution, so its hooks run where MUP runs them.
+    if (pushing) await run.enter('meteor.push');
+    built = await step('meteor.build', () =>
+      r.phase('Build', () =>
+        d.buildApp(ctx, { platforms: pre.platforms, version, cachedBuild: o.cachedBuild, forceBuild: o.forceBuild, cacheFrom: o.cacheFrom, cacheTo: o.cacheTo }),
+      ),
+    );
     // A build-cache hit reuses the image of an earlier build, which keeps that build's version
     // tag, so the version reported and deployed is the image's, not the one generated above.
     // Platforms reused from different builds can differ, hence the join.
@@ -485,40 +505,50 @@ export async function deployPipeline(
           }
         }),
       );
+      if (pushing) await run.leave('meteor.push');
       aborted(d.signal);
       if (o.stopAfter === 'push') return { version: deployedVersion, results, skipped, ok: true };
 
       // The app's proxy files are brought in line before the first server switches to the new
       // version; nothing of the running app is changed by that.
       if (rollout) await rollout.prepare();
-      // MUP's deploy continues with `default.reconfig` → `meteor.envconfig` → `meteor.start`.
-      // One activation per server does all three, but the keys are entered in the same nesting
-      // so that hooks on them are refused.
-      ({ results, skipped } = await step('default.reconfig', () =>
-        step('meteor.envconfig', () =>
-          step('meteor.start', () =>
-            r.phase('Activate', async () =>
+      // MUP's deploy continues with `default.reconfig` › `meteor.envconfig` → `meteor.start`.
+      // One activation per server writes the config and starts the app, so that a canary and a
+      // revert work server by server; `meteor.envconfig` is therefore an empty step right before
+      // it (hooks design §4.3).
+      ({ results, skipped } = await step('default.reconfig', async () => {
+        await step('meteor.envconfig', async () => {});
+        return step(
+          'meteor.start',
+          async () => {
+            // Read now, not before the build: a hook may have changed the settings or the config.
+            const settingsNow = ctx.getSettings();
+            const activated = await r.phase('Activate', async () =>
               runStrategy(
                 servers,
                 strategy,
                 async (s) => {
                   const activate = async (mode?: SwitchMode) =>
                     d.activateServer(
-                      { conn: await ctx.ssh.get(s), config: c, settings, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: r },
+                      { conn: await ctx.ssh.get(s), config: ctx.config, settings: settingsNow, serverName: s, cwd: ctx.cwd, basePath: ctx.basePath, reporter: r },
                       { version: imageFor(s).version, mode: 'deploy', switch: mode },
                     );
                   return rollout ? rollout.activate(s, activate) : activate();
                 },
                 d.signal,
               ),
-            ),
-          ),
-        ),
-      ));
+            );
+            // History right after the activation, before the post hooks: a failing post hook
+            // must not lose the record of a version the servers already run. Before pruning too:
+            // pruning reads it to find the versions that never ran healthy. Skipped servers were
+            // not touched and get no entry.
+            await writeHistory(ctx, d, { action: 'deploy', results: activated.results, startedAt, servers, git, versionOf: (s) => imageFor(s).version });
+            return activated;
+          },
+          { failed: activationFailed },
+        );
+      }));
 
-      // History before pruning: pruning reads it to find the versions that never ran healthy.
-      // Skipped servers were not touched and get no entry.
-      await writeHistory(ctx, d, { action: 'deploy', results, startedAt, servers, git, versionOf: (s) => imageFor(s).version });
       // Pruning runs only where the new version is healthy; a server that failed or was reverted
       // keeps all its images for a manual rollback. Versions that never ran healthy on a server
       // do not use up one of its `keepVersions` slots. Removing version tags can leave untagged
@@ -556,6 +586,12 @@ export async function deployPipeline(
     return { version: deployedVersion, results, skipped, ok };
   });
 }
+
+/** For the runner: a rollout whose outcome is not ok failed, so its post hooks do not run. */
+const notOk = (o: { ok: boolean }) => !o.ok;
+
+/** The activation of a deploy failed when a server is not healthy or was skipped. */
+const activationFailed = (a: { results: ActivationResult[]; skipped: string[] }) => a.skipped.length > 0 || a.results.some((x) => x.status !== 'healthy');
 
 /** Result of `reconfig` and `restart`: `DeployOutcome` without a version. */
 export interface LifecycleOutcome {
@@ -648,9 +684,13 @@ async function lockedRollout(
 export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy']; forceUnlock?: boolean }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
   assertPhase1Supported(ctx);
-  return ctx.runner.run('default.reconfig', () =>
-    ctx.runner.run('meteor.envconfig', () =>
-      ctx.runner.run('meteor.start', async () => {
+  // MUP: `default.reconfig` › `meteor.envconfig` → `meteor.start`. The activation writes the
+  // config on each server, so `meteor.envconfig` is an empty step before it (hooks design §4.3).
+  return ctx.runner.run('default.reconfig', async () => {
+    await ctx.runner.run('meteor.envconfig', async () => {});
+    return ctx.runner.run(
+      'meteor.start',
+      async () => {
         // Before the lock, as in deploy: a settings file or env.list that cannot be used fails
         // while no server is locked yet.
         const settings = ctx.getSettings();
@@ -674,9 +714,10 @@ export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: Come
         for (const w of proxyWarnings) ctx.reporter.warn(w);
         aborted(d.signal, 'Reconfig');
         return outcome;
-      }),
-    ),
-  );
+      },
+      { failed: notOk },
+    );
+  });
 }
 
 /**
@@ -710,7 +751,7 @@ export async function restartPipeline(ctx: CommandContext, o: { strategy?: Comet
     for (const w of proxyWarnings) ctx.reporter.warn(w);
     aborted(d.signal, 'Restart');
     return outcome;
-  });
+  }, { failed: notOk });
 }
 
 /**
@@ -851,5 +892,5 @@ export async function rollbackPipeline(
     // went back to different versions are listed per server in the summary.
     const labels = [...new Set(outcome.results.map((r) => label(r.server)).filter((x): x is string => !!x))];
     return { version: o.to ?? (labels.length === 1 ? labels[0] : 'the versions listed above'), ...outcome };
-  });
+  }, { failed: notOk });
 }

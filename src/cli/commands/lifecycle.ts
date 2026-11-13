@@ -88,8 +88,7 @@ export async function streamLogs(
 
 /**
  * Top-level commands run under MUP's `default.<name>` key, the `meteor` variants without it.
- * The key decides which hooks belong to the command, and the runner refuses a command that
- * has one (hooks are not supported yet).
+ * The key decides which hooks run around the command.
  */
 const asDefault = (name: string, fn: (ctx: CommandContext, argv: Record<string, unknown>) => Promise<void>) => (ctx: CommandContext, argv: Record<string, unknown>) =>
   ctx.runner.run(`default.${name}`, () => fn(ctx, argv));
@@ -109,7 +108,7 @@ async function restart(ctx: CommandContext, argv: Record<string, unknown>): Prom
 
 /** `meteor.start` with a health check on all app servers; throws if one did not come up healthy. */
 async function start(ctx: CommandContext): Promise<void> {
-  const results = await ctx.runner.run('meteor.start', () => startAll(ctx));
+  const results = await ctx.runner.run('meteor.start', () => startAll(ctx), { failed: (rs) => rs.some((r) => r.status !== 'healthy') });
   assertAllHealthy('Start', { results, skipped: [] });
 }
 

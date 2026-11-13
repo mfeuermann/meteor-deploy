@@ -11,8 +11,8 @@ import { logsPassthrough, streamLogs } from './lifecycle.js';
 import { showProxyStatus } from './status.js';
 
 /** `docker logs` of a proxy container; options after `proxy <command>` pass through. */
-const logs = (name: string, container: string, servers: (ctx: CommandContext) => string[]) => (ctx: CommandContext, argv: Record<string, unknown>) =>
-  ctx.runner.run(`proxy.${name}`, () => streamLogs(ctx, logsPassthrough(argv, ['proxy', name]), { container, servers: servers(ctx) }));
+const logs = (name: string, key: string, container: string, servers: (ctx: CommandContext) => string[]) => (ctx: CommandContext, argv: Record<string, unknown>) =>
+  ctx.runner.run(key, () => streamLogs(ctx, logsPassthrough(argv, ['proxy', name]), { container, servers: servers(ctx) }));
 
 export const PROXY_COMMANDS: CommandModule[] = [
   { command: 'setup', describe: 'Setup and start proxy', group: 'proxy', run: (ctx) => proxySetup(ctx) },
@@ -22,7 +22,7 @@ export const PROXY_COMMANDS: CommandModule[] = [
     describe: 'View logs for proxy (docker logs options pass through)',
     group: 'proxy',
     strict: false,
-    run: logs('logs', PROXY_NAME, (ctx) => proxyServers(ctx.config, ctx.serverFilter)),
+    run: logs('logs', 'proxy.logs', PROXY_NAME, (ctx) => proxyServers(ctx.config, ctx.serverFilter)),
   },
   {
     command: 'logs-le',
@@ -30,7 +30,8 @@ export const PROXY_COMMANDS: CommandModule[] = [
     group: 'proxy',
     strict: false,
     // MUP reads these on the app servers (`getSessions(['app'])`), not on proxy.servers.
-    run: logs('logs-le', `${PROXY_NAME}-letsencrypt`, (ctx) => ctx.appServers()),
+    // MUP's key is the export name `leLogs`, not the CLI name.
+    run: logs('logs-le', 'proxy.leLogs', `${PROXY_NAME}-letsencrypt`, (ctx) => ctx.appServers()),
   },
   {
     // Listed in MUP's help, but its handler is missing, so running it fails there too.
@@ -44,6 +45,6 @@ export const PROXY_COMMANDS: CommandModule[] = [
   },
   { command: 'start', describe: "Start proxy and let's encrypt containers", group: 'proxy', run: (ctx) => proxyStart(ctx, { force: true }) },
   { command: 'stop', describe: 'Stop proxy', group: 'proxy', run: (ctx) => proxyStop(ctx) },
-  { command: 'nginx-config', describe: 'View generated nginx config', group: 'proxy', run: (ctx) => ctx.runner.run('proxy.nginx-config', () => proxyNginxConfig(ctx)) },
+  { command: 'nginx-config', describe: 'View generated nginx config', group: 'proxy', run: (ctx) => ctx.runner.run('proxy.nginxConfig', () => proxyNginxConfig(ctx)) },
   { command: 'status', describe: "View the proxy's status", group: 'proxy', run: (ctx) => showProxyStatus(ctx) },
 ];

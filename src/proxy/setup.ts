@@ -229,7 +229,8 @@ export async function proxyReconfigShared(ctx: CommandContext, d: ProxyLockDeps 
   const servers = proxyServers(c, ctx.serverFilter);
   await withAppLock(ctx, 'proxy reconfig-shared', d, async () => {
     const before: Record<string, ProxyInputs> = {};
-    await ctx.runner.run('proxy.reconfig-shared', async () => {
+    // MUP's key is the export name `reconfigShared`.
+    await ctx.runner.run('proxy.reconfigShared', async () => {
       ctx.reporter.info('The shared settings affect all apps using this reverse proxy.');
       if (Object.keys(shared).length === 0) ctx.reporter.info('No shared config properties are set. Resetting proxy to defaults.');
       const f = await renderSharedFiles(c, { basePath: ctx.basePath, cwd: ctx.cwd });

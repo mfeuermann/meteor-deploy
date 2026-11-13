@@ -52,12 +52,28 @@ describe('CometError', () => {
   });
 });
 
-describe('--show-hook-names (I5)', () => {
-  it('says hooks are phase 2 instead of silently doing nothing', async () => {
+describe('--show-hook-names', () => {
+  it('prints the hook names and runs the command', async () => {
     const { main } = await import('../../../src/cli/main.js');
-    const { captureIO } = await import('../../helpers/fs.js');
+    const { captureIO, tempDir } = await import('../../helpers/fs.js');
+    // A server that refuses the connection at once: status reports it and goes on.
+    const dir = tempDir({
+      '.deploy/mup.js': `module.exports = {
+        servers: { one: { host: '127.0.0.1', username: 'root', password: 'pw', opts: { port: 1 } } },
+        app: { name: 'myapp', path: '../app', servers: { one: {} }, env: { ROOT_URL: 'http://a.com', MONGO_URL: 'mongodb://db/x' }, docker: { image: 'zodern/meteor' } },
+      };`,
+    });
     const io = captureIO();
-    expect(await main(['validate', '--show-hook-names'], io.io, { cwd: process.cwd() })).toBe(0);
-    expect(io.stdout()).toMatch(/hooks.*phase 2/i);
+    await main(['status', '--show-hook-names', '--config', '.deploy/mup.js'], io.io, { cwd: dir });
+    const hooks = io.all().split('\n').filter((l) => l.startsWith('Hook: '));
+    expect(hooks).toEqual([
+      'Hook: pre.default.status',
+      'Hook: pre.docker.status',
+      'Hook: post.docker.status',
+      'Hook: pre.meteor.status',
+      'Hook: post.meteor.status',
+      'Hook: post.default.status',
+    ]);
+    expect(io.all()).toContain('Could not read the status of "one"');
   });
 });

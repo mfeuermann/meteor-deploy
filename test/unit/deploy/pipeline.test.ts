@@ -3,7 +3,7 @@ import type { BuiltImage } from '../../../src/build/index.js';
 import { createContext, type CommandContext } from '../../../src/core/context.js';
 import { CometError } from '../../../src/core/errors.js';
 import type { ActivationResult } from '../../../src/deploy/activate.js';
-import { deployPipeline, lockServers, restartPipeline, type PipelineDeps } from '../../../src/deploy/pipeline.js';
+import { deployPipeline, holdsLock, lockServers, restartPipeline, type PipelineDeps } from '../../../src/deploy/pipeline.js';
 import { createProxyRollout } from '../../../src/proxy/rollout.js';
 import { createReporter } from '../../../src/output/reporter.js';
 import { SetupMissingError, type HistoryEntry } from '../../../src/remote/ops.js';
@@ -94,6 +94,19 @@ async function setup(o: { extra?: string; activate?: Record<string, ActivationRe
   return { ctx, deps, calls, history, output: () => lines.join('') };
 }
 
+/** A `hooks` section whose method hooks push `hook:<name>` into the array of `withCalls`. */
+const recordHooks = (names: string[]) => `hooks: { ${names.map((n) => `'${n}': () => void globalThis.__hookCalls.push('hook:${n}')`).join(', ')} },`;
+
+/** Runs `fn` with `globalThis.__hookCalls` pointing at `calls`. */
+async function withCalls<T>(calls: string[], fn: () => Promise<T>): Promise<T> {
+  (globalThis as { __hookCalls?: string[] }).__hookCalls = calls;
+  try {
+    return await fn();
+  } finally {
+    delete (globalThis as { __hookCalls?: string[] }).__hookCalls;
+  }
+}
+
 describe('deployPipeline', () => {
   it('hands the build cache import and export to the build', async () => {
     const s = await setup();
@@ -121,6 +134,7 @@ describe('deployPipeline', () => {
       'push',
       'distribute:one:mup-myapp:20261107-183005',
       'distribute:two:mup-myapp:20261107-183005',
+      'settings',
       'activate:one:20261107-183005',
       'activate:two:20261107-183005',
       'history:one',
@@ -275,10 +289,80 @@ describe('deployPipeline', () => {
     expect(s.calls.some((c) => c.startsWith('lock:'))).toBe(false);
   });
 
-  it('refuses a hook on any step of the deploy before doing anything', async () => {
-    const s = await setup({ extra: "hooks: { 'pre.meteor.start': { localCommand: 'echo' } }," });
-    await expect(deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps)).rejects.toThrow(/pre\.meteor\.start/);
-    expect(s.calls).toEqual([]);
+  it('runs the hooks around the deploy steps where MUP runs them', async () => {
+    const names = ['meteor.deploy', 'meteor.push', 'meteor.build', 'meteor.prepareBundle', 'default.reconfig', 'meteor.envconfig', 'meteor.start'].flatMap((k) => [`pre.${k}`, `post.${k}`]);
+    const s = await setup({ extra: recordHooks(names) });
+    await withCalls(s.calls, () => deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps));
+    const at = (c: string) => s.calls.indexOf(c);
+    for (const n of names) expect(at(`hook:${n}`), n).toBeGreaterThanOrEqual(0);
+    expect(at('hook:pre.meteor.push')).toBeLessThan(at('build'));
+    expect(at('hook:post.meteor.build')).toBeLessThan(at('lock:one'));
+    expect(at('hook:pre.meteor.prepareBundle')).toBeGreaterThan(at('lock:two'));
+    expect(at('hook:post.meteor.push')).toBeGreaterThan(at('distribute:two:mup-myapp:20261107-183005'));
+    expect(at('hook:post.meteor.envconfig')).toBeLessThan(at('hook:pre.meteor.start'));
+    expect(at('hook:pre.meteor.start')).toBeLessThan(at('activate:one:20261107-183005'));
+    expect(at('hook:post.meteor.start')).toBeGreaterThan(at('history:two'));
+    expect(at('hook:post.default.reconfig')).toBeLessThan(at('release:one'));
+    expect(at('hook:post.meteor.deploy')).toBeGreaterThan(at('release:two'));
+  });
+
+  it('a failing pre.meteor.start hook stops the deploy before the activation and releases the locks', async () => {
+    const s = await setup({ extra: "hooks: { 'pre.meteor.start': { localCommand: 'exit 4' } }," });
+    await expect(deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps)).rejects.toThrow('exited with code 4');
+    expect(s.calls.some((c) => c.startsWith('activate'))).toBe(false);
+    expect(s.calls).toEqual(expect.arrayContaining(['release:one', 'release:two', 'stop-registry']));
+  });
+
+  it('a failing post.meteor.start hook keeps the history of the activated servers and releases the locks', async () => {
+    const s = await setup({ extra: "hooks: { 'post.meteor.start': { localCommand: 'exit 5' } }," });
+    await expect(deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps)).rejects.toThrow('exited with code 5');
+    expect(s.calls).toEqual(expect.arrayContaining(['history:one', 'history:two', 'release:one', 'release:two', 'stop-registry']));
+    expect(s.calls.some((c) => c.startsWith('prune'))).toBe(false);
+  });
+
+  it('a failing post.meteor.prepareBundle hook drops the registry lease', async () => {
+    const s = await setup({ extra: "hooks: { 'post.meteor.prepareBundle': { localCommand: 'exit 6' } }," });
+    await expect(deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps)).rejects.toThrow('exited with code 6');
+    expect(s.calls.some((c) => c.startsWith('activate'))).toBe(false);
+    expect(s.calls).toEqual(expect.arrayContaining(['release:one', 'release:two', 'stop-registry']));
+  });
+
+  it('a failed activation runs no post hooks', async () => {
+    const s = await setup({ activate: { two: 'reverted' }, strategy: 'parallel', extra: recordHooks(['pre.meteor.start', 'post.meteor.start', 'post.default.reconfig', 'post.meteor.deploy']) });
+    const out = await withCalls(s.calls, () => deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps));
+    expect(out.ok).toBe(false);
+    expect(s.calls.filter((c) => c.startsWith('hook:'))).toEqual(['hook:pre.meteor.start']);
+  });
+
+  it('settings replaced in pre.default.reconfig reach the activation', async () => {
+    const s = await setup({ extra: "hooks: { 'pre.reconfig'(api) { api.settings = { public: { fromHook: 1 } }; } }," });
+    const got: unknown[] = [];
+    const activate = s.deps.activateServer!;
+    s.deps.activateServer = async (d, x) => (got.push(d.settings), activate(d, x));
+    await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps);
+    expect(got).toEqual([{ public: { fromHook: 1 } }, { public: { fromHook: 1 } }]);
+  });
+
+  it('a config replaced in pre.meteor.start reaches the activation', async () => {
+    const s = await setup({
+      extra: "hooks: { 'pre.meteor.start'(api) { const c = api.getConfig(); api.setConfig({ ...c, app: { ...c.app, env: { ...c.app.env, FROM_HOOK: 'yes' } } }); } },",
+    });
+    const got: unknown[] = [];
+    const activate = s.deps.activateServer!;
+    s.deps.activateServer = async (d, x) => (got.push(d.config.app.env.FROM_HOOK), activate(d, x));
+    await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps);
+    expect(got).toEqual(['yes', 'yes']);
+  });
+
+  it('holdsLock is true inside the lock and false after it', async () => {
+    const s = await setup();
+    const seen: boolean[] = [];
+    const activate = s.deps.activateServer!;
+    s.deps.activateServer = async (d, x) => (seen.push(holdsLock(s.ctx)), activate(d, x));
+    expect(holdsLock(s.ctx)).toBe(false);
+    await deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false }, s.deps);
+    expect(seen).toEqual([true, true]);
+    expect(holdsLock(s.ctx)).toBe(false);
   });
 
   it('meteor build only runs under meteor.build, like MUP', async () => {
@@ -382,6 +466,7 @@ describe('pipelines behind the proxy', () => {
       `distribute:one:mup-myapp:${V}`,
       `distribute:two:mup-myapp:${V}`,
       'proxy:prepare',
+      'settings',
       'proxy:activate:one',
       `activate:one:${V}:zero-downtime`,
       'proxy:activate:two',

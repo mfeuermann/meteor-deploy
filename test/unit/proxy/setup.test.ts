@@ -213,6 +213,12 @@ describe('proxyReconfigShared', () => {
     expect(own).toBeGreaterThanOrEqual(0);
     expect(own).toBeLessThan(steps.indexOf('write /opt/mup-nginx-proxy/config/shared-config.sh'));
   });
+
+  it("runs under MUP's key proxy.reconfigShared, then proxy.start", async () => {
+    const s = await setup('proxy-certs');
+    await proxyReconfigShared(s.ctx);
+    expect(s.ctx.runner.history).toEqual(['proxy.reconfigShared', 'proxy.start']);
+  });
 });
 
 describe('formatProxyStatus', () => {
