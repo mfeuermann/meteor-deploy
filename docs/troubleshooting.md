@@ -48,6 +48,7 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 
 - [A deploy lock is held](#a-deploy-lock-is-held)
 - [Image distribution failed](#image-distribution-failed)
+- [Saving the image for the transfer over SSH failed](#saving-the-image-for-the-transfer-over-ssh-failed)
 - [Timed out waiting for the registry lock](#timed-out-waiting-for-the-registry-lock)
 - [Health check failed and the server was reverted](#health-check-failed-and-the-server-was-reverted)
 - [The restored version is not healthy either](#the-restored-version-is-not-healthy-either)
@@ -203,12 +204,22 @@ Server "one": sudo is not installed. Every remote command runs through sudo (as 
 
 ### AllowTcpForwarding is disabled on the server
 
+With the default `cometDeploy.transfer: 'auto'` this is a warning, and the deploy goes on:
+
 ```
-Server "one": SSH reverse port forwarding does not work (<reason from the server>). comet-deploy sends the image through it:
-set "AllowTcpForwarding yes" in /etc/ssh/sshd_config and reload sshd.
+Warning: Server "one": SSH port forwarding is off (<reason from the server>), so comet-deploy sends the whole image over SSH,
+which is slower. To send only the changed layers, set "AllowTcpForwarding yes" in /etc/ssh/sshd_config and reload sshd.
 ```
 
-comet-deploy sends the image layers through an SSH reverse tunnel: the server pulls from `127.0.0.1:<port>`, which leads back to a registry on your machine. Preflight opens and closes such a tunnel on every server before the build, so this is reported early.
+With `cometDeploy.transfer: 'tunnel'` it is a preflight error:
+
+```
+Server "one": SSH reverse port forwarding does not work (<reason from the server>). comet-deploy sends the image through it:
+set "AllowTcpForwarding yes" in /etc/ssh/sshd_config and reload sshd. Or set cometDeploy.transfer to "auto" to send the whole
+image over SSH instead.
+```
+
+comet-deploy sends the image layers through an SSH reverse tunnel: the server pulls from `127.0.0.1:<port>`, which leads back to a registry on your machine, so only the layers the server does not have travel. Preflight opens and closes such a tunnel on every server before the build. A server that refuses it gets the whole image as a compressed `docker save` archive over SSH instead (`[one] distribute ✓ 41.2s (whole image, 312 MB)`), on every deploy of a new version. That works, but takes longer. To use the tunnel, allow forwarding on the server:
 
 See the effective settings on the server:
 
@@ -231,7 +242,7 @@ sudo systemctl reload ssh     # Debian, Ubuntu
 sudo systemctl reload sshd    # most other distributions
 ```
 
-A transfer that does not need forwarding (`cometDeploy.transfer: 'stream'`) is planned for phase 2.
+If you cannot change `sshd_config` (shared hosting, a server another team manages), keep `transfer: 'auto'`, or set `transfer: 'stream'` to send the whole image to every server without checking forwarding.
 
 ### Docker is not installed or too old on the server
 
@@ -500,7 +511,18 @@ Image distribution failed:
 Hint: No server was changed.
 ```
 
-A server could not pull the image. All servers keep their old version, because activation starts only after every server has the image. Common causes: a full disk on the server, a network problem, Docker not running. Fix it and deploy again; the build is skipped if nothing changed.
+A server could not pull or load the image. All servers keep their old version, because activation starts only after every server has the image. Common causes: a full disk on the server, a network problem, Docker not running. Fix it and deploy again; the build is skipped if nothing changed.
+
+For a server that gets the whole image over SSH, the line says `Loading the image failed`, with the output of `sudo docker load` on that server.
+
+### Saving the image for the transfer over SSH failed
+
+```
+Saving mup-myapp:20261107-183005 for the transfer over SSH failed: <error>
+Hint: The archive is written to /tmp: check the free disk space there and that the local Docker runs.
+```
+
+For servers without SSH forwarding, comet-deploy saves the image with `docker save` into a compressed file in your temporary directory (`os.tmpdir()`, mode 600) before anything goes to the servers, so no server was changed. The file is about the size of the image's layers after gzip. Free disk space there, or point `TMPDIR` to a disk with more room, and deploy again. The file is removed after the deploy, also after an error or Ctrl+C.
 
 ### Timed out waiting for the registry lock
 

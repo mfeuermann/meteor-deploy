@@ -37,6 +37,7 @@ sequenceDiagram
     L->>R: docker push (only new layers)
     L->>S: Open a reverse SSH tunnel, run docker pull 127.0.0.1:port/...
     S->>R: Missing layers only, through the tunnel
+    Note over S: Without SSH forwarding: the whole image as a docker save archive<br/>over SSH into docker load instead
     Note over S: The running app is not touched yet
     L->>S: Activate by strategy: retag, write start.sh + env.list,<br/>restart, health check, revert on failure
     L->>S: History, prune old versions, unlock
@@ -85,7 +86,7 @@ On every server:
 | Deploy lock | error if another deploy holds it (skipped with `--force-unlock` or `cometDeploy.lock: false`) |
 | Reverse proxy (with a `proxy` section, on every proxy server) | error `Server "<name>": the reverse proxy is not set up (container mup-nginx-proxy is missing or stopped). Run "comet-deploy proxy setup" first.` |
 | MongoDB (with a `mongo` section; `deploy` only) | error `Server "<name>": MongoDB (container "mongodb") is not running. Start it with: comet-deploy mongo start` (or `Set it up with: comet-deploy setup`). `reconfig`, `restart`, `rollback` and `start` make the same check before they touch the app. |
-| SSH reverse port forwarding | error if `sshd` refuses it (`AllowTcpForwarding no`) |
+| SSH reverse port forwarding (not with `cometDeploy.transfer: 'stream'`) | `auto`: a warning, and the server gets the whole image over SSH; `tunnel`: error if `sshd` refuses it (`AllowTcpForwarding no`) |
 
 `meteor build` sends nothing to the servers, so it skips the app setup, lock and port forwarding checks. `meteor build` and `meteor push` start no app, so both skip the proxy and MongoDB checks. It still connects to every server to read its CPU architecture.
 
@@ -195,7 +196,18 @@ comet-deploy takes the deploy lock on every target server (see [Locks](#locks)).
 
 5. The tunnel closes, and the local registry stops at the end of the deploy (the container and the volume stay). One registry serves all deploys on your machine: each running deploy holds a lease on it, and the last one to finish stops it.
 
-The running app is **not touched** during the distribution: `start.sh`, `env.list` and `:latest` still point to the old version, so `mup restart` or a server reboot in the meantime keeps running the old version. If the pull fails on any server, the deploy stops before activation with `Image distribution failed: …` and `No server was changed.`
+### Servers without SSH forwarding
+
+A server whose `sshd` refuses forwarding (found by preflight; with `cometDeploy.transfer: 'stream'`, every server) gets the whole image over SSH instead of the tunnel:
+
+1. **Already there?** `sudo docker image inspect 'mup-myapp:<version>'` on each such server. A server that has the version gets nothing (`[two] distribute ✓ (already on the server)`), and when all of them have it, nothing is saved.
+2. **Save, once per platform.** `docker save mup-myapp:<version>` (with `--platform` when your Docker uses the containerd image store), compressed with gzip into a temporary file on your machine (`os.tmpdir()`, mode 600): `stream: mup-myapp:<version> (linux/amd64), 312 MB compressed`.
+3. **Load, per server, in parallel.** The file goes as stdin to `sudo docker load` over the SSH connection; nothing is written to a temporary file on the server. A multi-platform build's `mup-myapp:<version>-<arch>` tag is renamed to `mup-myapp:<version>`, so the server ends with the same tag as through the tunnel. `--verbose` prints `sent 96 MB of 312 MB` about every 10 %.
+4. **Clean up.** The file is removed at the end of the phase, also after an error or Ctrl+C.
+
+The local registry starts only when at least one server uses the tunnel. With `auto`, a tunnel the server refuses only now (after preflight passed) switches that server to this transfer, with the same warning as in preflight.
+
+The running app is **not touched** during the distribution: `start.sh`, `env.list` and `:latest` still point to the old version, so `mup restart` or a server reboot in the meantime keeps running the old version. If the pull or the load fails on any server, the deploy stops before activation with `Image distribution failed: …` and `No server was changed.`
 
 `comet-deploy meteor push` ends here.
 
@@ -472,4 +484,5 @@ Authentication is `pem`, then `password`, then the ssh agent. Host keys are not 
 - Env values and settings are written only to `env.list` on the servers (mode `600`), never into the image or the local registry. The exception is an env key that `docker.buildInstructions` references, which becomes a build argument (with a warning).
 - Output masks env values, SSH passwords, the SSH key passphrase, the settings JSON and its non-public string values (also those of per-server settings files) as `***`. This covers phase lines, `--verbose` output and error messages.
 - The local registry listens on `127.0.0.1` only. The tunnel listens on `127.0.0.1` on the server and exists only during the distribution.
+- The image archive for servers without SSH forwarding is a temporary file with mode `600`, removed after the distribution.
 - `validate --show` prints the config as it is; use `--scrub` to share it.

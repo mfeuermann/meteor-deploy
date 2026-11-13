@@ -51,7 +51,7 @@ The same as for MUP:
 | `root`, or a user with **passwordless sudo** | every remote command runs through `sudo` |
 | `bash`, `sudo`, `curl` | `curl` is used by the health check; `setup` installs it when it installs Docker |
 | Docker 18 or newer | `setup` installs it |
-| SSH TCP forwarding allowed | `AllowTcpForwarding yes` in `/etc/ssh/sshd_config`, which is the OpenSSH default |
+| SSH TCP forwarding allowed (recommended) | `AllowTcpForwarding yes` in `/etc/ssh/sshd_config`, which is the OpenSSH default. Without it the deploy sends the whole image over SSH, which is slower. |
 
 A quick check from your machine (replace user and address):
 

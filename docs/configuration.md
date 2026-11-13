@@ -136,7 +136,7 @@ servers: {
 
 **Host keys are not verified**, the same as MUP. See [Limitations](../README.md#limitations).
 
-**Port forwarding.** comet-deploy sends the image through an SSH reverse tunnel, so `sshd` on each server must allow TCP forwarding (`AllowTcpForwarding yes`, the OpenSSH default). Preflight checks this. See [Troubleshooting](troubleshooting.md#allowtcpforwarding-is-disabled-on-the-server).
+**Port forwarding.** comet-deploy sends the image through an SSH reverse tunnel, which needs TCP forwarding in `sshd` (`AllowTcpForwarding yes`, the OpenSSH default); only the changed layers travel. Preflight checks it on every server. A server that refuses it gets the whole image over SSH instead (with the default [`cometDeploy.transfer: 'auto'`](#cometdeploy)), which works but is slower. See [Troubleshooting](troubleshooting.md#allowtcpforwarding-is-disabled-on-the-server).
 
 ## `app` (or `meteor`)
 
@@ -390,7 +390,7 @@ comet-deploy 0.2.0 does not run these parts of a MUP config yet. They are valida
 | Section | `setup` | `deploy`, `reconfig`, `rollback`, `meteor push`, `meteor build`, `meteor envconfig` |
 |---|---|---|
 | `privateDockerRegistry` | - | stop: `"privateDockerRegistry" is not supported yet (planned for phase 2 of comet-deploy).` |
-| `cometDeploy.transfer: 'registry'` or `'stream'` | - | stop: `cometDeploy.transfer "registry" is not supported yet (planned for phase 2 of comet-deploy).` |
+| `cometDeploy.transfer: 'registry'` | - | stop: `cometDeploy.transfer "registry" is not supported yet (planned for phase 2 of comet-deploy).` |
 
 A base image without app-image support (the default `kadirahq/meteord`, or `docker.prepareBundle: false`) stops the build with `The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode). Bundle mode is planned for phase 2 of comet-deploy.` and the hint `Use a zodern/meteor image (app.docker.image), e.g. "zodern/meteor:root".`
 
@@ -549,7 +549,7 @@ New options live in their own top-level section, so they never change the meanin
 ```js
 cometDeploy: {
   strategy: 'canary',          // 'canary' | 'rolling' | 'parallel'
-  transfer: 'auto',            // 'auto' | 'tunnel' ('registry' and 'stream' are phase 2)
+  transfer: 'auto',            // 'auto' | 'tunnel' | 'stream' ('registry' is phase 2)
   platform: 'auto',            // 'auto' | 'linux/amd64' | 'linux/arm64'
   keepVersions: 5,             // version tags kept on each server for rollback
   zeroDowntime: true,          // behind the proxy: no gap on restart, drain with load balancing
@@ -564,13 +564,26 @@ cometDeploy: {
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `strategy` | `'canary'` \| `'rolling'` \| `'parallel'` | `'canary'` | How servers are activated. `canary`: the first server alone, then the rest in parallel if it is healthy. `rolling`: one by one, stop at the first unhealthy server. `parallel`: all at once. Applies to `deploy`, `reconfig`, `restart` and `rollback`. The `--strategy` flag overrides it. See [How it works](how-it-works.md#rollout-strategies). |
-| `transfer` | `'auto'` \| `'tunnel'` \| `'registry'` \| `'stream'` | `'auto'` | How the image reaches the servers. In phase 1, `auto` and `tunnel` both use the local registry and an SSH reverse tunnel. `registry` (through `privateDockerRegistry`) and `stream` (`docker save` over SSH, for servers without TCP forwarding) are phase 2 and stop the deploy. |
+| `transfer` | `'auto'` \| `'tunnel'` \| `'registry'` \| `'stream'` | `'auto'` | How the image reaches the servers; see the table below. `registry` (through `privateDockerRegistry`) is phase 2 and stops the deploy. |
 | `platform` | `'auto'` \| `'linux/amd64'` \| `'linux/arm64'` | `'auto'` | Target platform of the image. `auto` reads `uname -m` on each server (`x86_64`/`amd64` → `linux/amd64`, `aarch64`/`arm64` → `linux/arm64`) and builds once per platform found. A fixed value is used for all servers. |
 | `keepVersions` | integer ≥ 1 | `5` | How many version tags stay on each server for `rollback`. Old tags are removed after a successful deploy. Versions that never ran healthy on that server are removed and do not count. The images behind `:latest` and `:previous` are never removed. |
 | `zeroDowntime` | boolean | `true` | Behind the proxy (the `proxy` section), `deploy`, `reconfig`, `restart` and `rollback` replace the container without a gap; with `proxy.loadBalancing` they take each server out of the upstream while it restarts. `false` restarts the container in place, as MUP does. No effect without the proxy. See [How it works → Behind the proxy](how-it-works.md#behind-the-proxy). |
 | `healthCheck.path` | string starting with `/` | `'/'` | Path the health check requests. |
 | `healthCheck.maxStatus` | integer 100–599 | `499` | Highest HTTP status that counts as healthy. With the default, a 4xx counts as healthy (the app answers) and a 5xx does not. MUP accepts any HTTP answer, including 500. |
 | `lock` | boolean | `true` | Take a lock on every target server before changing anything, so two deploys cannot run at the same time. `false` turns locking (and the lock check in preflight) off. |
+
+**`transfer`** decides per server, from the forwarding check in preflight:
+
+| `transfer` | Server allows SSH forwarding | Server refuses it (`AllowTcpForwarding no`) |
+|---|---|---|
+| `'auto'` (default) | tunnel | whole image over SSH, with a warning |
+| `'tunnel'` | tunnel | preflight error |
+| `'stream'` | whole image over SSH | whole image over SSH |
+
+- **Tunnel:** the server pulls the image from a registry on your machine through an SSH reverse tunnel, so only the layers it does not have yet travel.
+- **Whole image over SSH:** comet-deploy saves the image once per platform (`docker save`, gzip) into a private temporary file on your machine, and every server that does not have this version yet loads it with `sudo docker load`. The server ends with the same `mup-<app>:<version>` tag as through the tunnel, so `rollback` and `history` work the same. A server that has the version already gets nothing. The file is removed at the end of the deploy, also after an error or Ctrl+C.
+- The local registry starts only when at least one server uses the tunnel.
+- With `auto`, a tunnel that the server refuses only at distribution (after preflight passed) also switches that server to the whole image.
 
 Related MUP options: the health check timeout is `app.deployCheckWaitTime` (default 60 s) and its port is `app.deployCheckPort` (default `app.docker.imagePort`).
 

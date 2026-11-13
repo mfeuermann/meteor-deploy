@@ -78,12 +78,12 @@ The full list of errors and warnings: [Configuration → Validation](configurati
 
 ### 3. Check the servers
 
-The server requirements are the ones MUP has, plus one:
+The server requirements are the ones MUP has:
 
 - SSH user `root` or a user with passwordless sudo (same as MUP).
 - Docker 18 or newer (MUP's `setup` installed it).
 - `curl` on the server (MUP's deploy check uses it too).
-- **SSH TCP forwarding must be allowed** (`AllowTcpForwarding yes`, the OpenSSH default). comet-deploy sends the image through an SSH reverse tunnel. MUP uploads the bundle with SFTP and does not need it.
+- SSH TCP forwarding is recommended (`AllowTcpForwarding yes`, the OpenSSH default). comet-deploy sends the image through an SSH reverse tunnel, so only changed layers travel. A server that refuses it gets the whole image over SSH, with a warning. MUP uploads the bundle with SFTP and does not need it.
 
 You do not have to check these by hand: the first step of every deploy (preflight) checks all of them on all servers and reports every problem before it builds anything.
 
@@ -152,7 +152,7 @@ Global options are the same: `--config`, `--settings`, `--servers`, `--verbose`,
 
 **The app keeps running during the build.** MUP stops the app on a server while it builds the image there (`docker.stopAppDuringPrepareBundle`, `true` by default), so the downtime includes the build. comet-deploy builds on your machine and sends the image while the old version keeps running. The downtime per server is one container restart, and behind the proxy there is none. `stopAppDuringPrepareBundle` is ignored.
 
-**SSH TCP forwarding.** The image travels through an SSH reverse tunnel, so the server must allow it (`AllowTcpForwarding yes`). See [Troubleshooting](troubleshooting.md#allowtcpforwarding-is-disabled-on-the-server).
+**SSH TCP forwarding.** The image travels through an SSH reverse tunnel when the server allows it (`AllowTcpForwarding yes`, the OpenSSH default). A server that does not, for example a hardened one, gets the whole image over SSH (`docker save` into `docker load`), which needs no change on the server but sends every layer on each new version. See [Troubleshooting](troubleshooting.md#allowtcpforwarding-is-disabled-on-the-server).
 
 **Only changed layers travel.** The first deploy to a server sends the app's dependency layer once. After that, a code-only change sends only the small app-code layers. MUP uploads the whole bundle and runs `npm install` on every server for every deploy.
 
@@ -267,7 +267,7 @@ On your machine, you can remove the local images `mup-myapp:<version>` and the l
 | `--servers` | space separated | space or comma separated |
 | Server CPU | any (built on the server) | `x86_64` or `aarch64`, detected per server |
 | Env values in the image | yes, as build argument defaults | only keys used in `buildInstructions` |
-| SSH TCP forwarding | not needed | required |
+| SSH TCP forwarding | not needed | recommended: without it the whole image is sent over SSH |
 | Reverse proxy (`proxy`) | supported | supported, with MUP's scripts and images |
 | The app's proxy files | written by `setup` and `proxy setup` | also brought up to date by every `deploy` and `reconfig` |
 | Proxy restart in `setup`, `proxy setup` | always | only when the proxy's own files changed |

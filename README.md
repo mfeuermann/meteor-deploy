@@ -84,7 +84,7 @@ Details: [How it works](docs/how-it-works.md).
 - **Drop-in for MUP 1.5.11.** The same `mup.js` / `mup.json`, the same `settings.json`, the same commands and options, the same `/opt/<name>` layout, container and image names, and `start.sh` from MUP's own template.
 - **Build once, locally.** One build for all servers, with BuildKit and a layer cache for `npm install`.
 - **Skip unchanged builds.** A content hash of the app decides whether a build is needed (`No changes since <version>`).
-- **Delta transfer.** Only missing layers travel, through an SSH tunnel, to all servers in parallel.
+- **Delta transfer.** Only missing layers travel, through an SSH tunnel, to all servers in parallel. A server whose `sshd` refuses forwarding gets the whole image over SSH instead.
 - **Rollout strategies.** `canary` (default), `rolling` or `parallel`.
 - **Strict health check.** HTTP status up to 499 counts as healthy (configurable); a crashed container fails at once.
 - **Automatic revert.** A failed server returns to its previous image, `start.sh` and `env.list`, and the restored version is checked again.
@@ -145,7 +145,7 @@ macOS and Linux. Windows with WSL2 is not tested.
 
 ### Servers
 
-The same as for MUP, plus SSH TCP forwarding:
+The same as for MUP:
 
 | What | Notes |
 |---|---|
@@ -154,7 +154,7 @@ The same as for MUP, plus SSH TCP forwarding:
 | `root`, or a user with passwordless sudo | every remote command runs through `sudo` |
 | `bash`, `sudo`, `curl` | `curl` is used by the health check |
 | Docker 18 or newer | `setup` installs it. MUP's proxy images were checked with Docker 27.5.1 and 29.9.3. |
-| `AllowTcpForwarding yes` in `sshd_config` | the OpenSSH default; the image travels through an SSH reverse tunnel |
+| `AllowTcpForwarding yes` in `sshd_config` (recommended) | the OpenSSH default; the image travels through an SSH reverse tunnel and only changed layers are sent. Without it the whole image goes over SSH, which is slower. |
 
 You also need a MongoDB: your own, which the servers can reach, or MUP's built-in one on the app's server (the [`mongo`](docs/configuration.md#mongo) section, for an app with one server).
 
@@ -259,7 +259,7 @@ The `cometDeploy` section:
 | `healthCheck.path` | `'/'` | Path the health check requests. |
 | `healthCheck.maxStatus` | `499` | Highest HTTP status that counts as healthy. MUP accepts any answer; set `599` for that. |
 | `platform` | `'auto'` | `auto` (detect per server), `'linux/amd64'` or `'linux/arm64'`. |
-| `transfer` | `'auto'` | `auto` or `tunnel` (both use the SSH tunnel). `registry` and `stream` are phase 2. |
+| `transfer` | `'auto'` | `auto`: the SSH tunnel, or the whole image over SSH where `sshd` refuses forwarding. `tunnel`: the tunnel only. `stream`: the whole image over SSH everywhere. `registry` is phase 2. |
 | `lock` | `true` | Deploy lock on the servers. |
 | `zeroDowntime` | `true` | Behind the proxy: replace the container without a gap, and with load balancing take each server out of the upstream while it restarts. `false`: restart in place, as MUP does. |
 
@@ -298,7 +298,7 @@ What stays the same: the config, the commands, the server layout, `start.sh` and
 What changes:
 
 - Docker with buildx is needed on your machine; the image is built there.
-- The server must allow SSH TCP forwarding.
+- The image travels through an SSH tunnel, so only changed layers are sent; a server that does not allow SSH TCP forwarding gets the whole image over SSH.
 - The app keeps running while the new image is built and sent.
 - Servers get the image in parallel; activation follows a strategy instead of one server after another.
 - The health check fails on 5xx answers and on a crashed container. MUP accepts any HTTP answer.
@@ -326,7 +326,7 @@ Not supported and not planned: Docker Swarm (`swarm`), MUP plugins (`plugins`).
 Other limits of this release:
 
 - Docker with buildx must run on the machine you deploy from. Building for another CPU architecture needs emulation, which is slow when the dependencies change.
-- The servers must allow SSH reverse port forwarding. A transfer without it is phase 2.
+- A server without SSH reverse port forwarding gets the whole image on every deploy (`transfer: 'stream'`), which is slower than the tunnel.
 - Server CPUs: `x86_64` and `aarch64`.
 - `setup` installs Docker only on apt-based systems (Debian, Ubuntu), as MUP does.
 - `rollback` changes only the image; the current `start.sh` and `env.list` stay.
@@ -344,7 +344,8 @@ Other limits of this release:
 - Done: the reverse proxy (nginx-proxy, Let's Encrypt, load balancing; the `proxy` section and commands) and zero-downtime deploys behind it (`cometDeploy.zeroDowntime`).
 - Done: MUP's built-in MongoDB (the `mongo` section and commands).
 - Done: hooks (`localCommand`, `remoteCommand`, `method` with MUP's api object) under MUP's names.
-- Image transfer through a private registry (`privateDockerRegistry`, `transfer: 'registry'`) and over plain SSH without forwarding (`transfer: 'stream'`).
+- Done: image transfer over plain SSH for servers without forwarding (`transfer: 'stream'`, automatic with `auto`).
+- Image transfer through a private registry (`privateDockerRegistry`, `transfer: 'registry'`).
 - MUP's bundle mode (`kadirahq/meteord`).
 - `meteor debug`, `ssh`, the full `status` report, and a command to prune the local build cache.
 
@@ -369,8 +370,8 @@ Yes. The proxy, its files and its containers are MUP's. comet-deploy changes onl
 **Why does it need Docker on my machine?**
 Because the image is built there, once. That is what makes the deploy fast: no `npm install` on the servers, and only the changed layers travel.
 
-**Why does it need `AllowTcpForwarding`?**
-Each server pulls the image from a registry on your machine through an SSH reverse tunnel. Nothing else is opened: the registry listens on `127.0.0.1` on your machine, and the tunnel on `127.0.0.1` on the server, only during the deploy.
+**Does it need `AllowTcpForwarding`?**
+No, but it is faster with it. Each server pulls the image from a registry on your machine through an SSH reverse tunnel, so only the changed layers travel. Nothing else is opened: the registry listens on `127.0.0.1` on your machine, and the tunnel on `127.0.0.1` on the server, only during the deploy. A server whose `sshd` refuses forwarding gets the whole image as a compressed `docker save` archive over SSH, with a warning.
 
 **I build on an Apple Silicon Mac and my servers are `x86_64`. Does that work?**
 Yes, with amd64 emulation (Rosetta in Docker Desktop, on by default in OrbStack). It is slower only when the dependency layer is rebuilt. See [Troubleshooting](docs/troubleshooting.md#building-on-an-arm64-mac-for-amd64-servers).
