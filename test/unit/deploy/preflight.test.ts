@@ -258,4 +258,28 @@ describe('runPreflight: forwarding probe', () => {
     expect((await run('auto')).streamServers).toEqual(['one']);
     expect(probes).toBe(1);
   });
+
+  it('registry: forwarding is not probed and no server is streamed', async () => {
+    const dir = tempDir({
+      '.deploy/mup.js': `module.exports = { servers: { one: { host: '192.0.2.1', username: 'root', password: 'pw' } }, app: { name: 'myapp', path: '../app', servers: { one: {} }, env: { ROOT_URL: 'http://a.com' }, docker: { image: 'zodern/meteor' } }, privateDockerRegistry: { host: 'reg.example.com', imagePrefix: 'reg.example.com/team' } };`,
+    });
+    let probes = 0;
+    const conn = {
+      name: 'one',
+      host: 'one',
+      exec: async () => ({ code: 0, stdout: 'arch=x86_64\ndocker=27.5.1\ndocker_running=1\nbash=1\napp_setup=1\n', stderr: '' }),
+      forwardIn: async () => {
+        probes++;
+        throw new Error('administratively prohibited');
+      },
+    };
+    const ctx = await createContext(
+      { config: '.deploy/mup.js' },
+      { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }), sshPoolFactory: () => ({ get: async () => conn as never, closeAll: async () => {} }) },
+    );
+    const r = await runPreflight(ctx, ['one'], { needsBuild: false, checkLocks: false, distributes: true });
+    expect(r.streamServers).toEqual([]);
+    expect(r.errors).toEqual([]);
+    expect(probes).toBe(0);
+  });
 });

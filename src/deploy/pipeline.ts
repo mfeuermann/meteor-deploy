@@ -9,13 +9,15 @@
  *     meteor; on every server in parallel SSH, sudo, Docker, architecture, disk space, reverse port
  *     forwarding and the deploy lock), the settings and one render of every server's env.list.
  *     Every problem is reported here, before anything is built or changed.
- *  2. Build: once per target platform, locally, or reused from the build cache.
- *     `meteor build` stops here.
+ *  2. Build: once per target platform, locally, or reused from the build cache. With a private
+ *     registry the local Docker logs in to it first. `meteor build` stops here.
  *  3. Lock: the deploy lock on every server (with load balancing on every app server, see
  *     `lockTargets`). Everything before this step only reads from the servers; everything after
  *     it runs in a `try` whose `finally` releases the locks.
- *  4. Distribute: push to the local registry, then every server pulls the missing layers through
- *     an SSH reverse tunnel. The running app is not touched yet. `meteor push` stops here.
+ *  4. Distribute (src/deploy/distribution.ts): push to the local registry, then every server
+ *     pulls the missing layers through an SSH reverse tunnel; a server without SSH forwarding
+ *     gets the whole image over SSH; with `privateDockerRegistry` the image is pushed there and
+ *     every server pulls it. The running app is not touched yet. `meteor push` stops here.
  *  5. Activate: server by server according to the strategy (canary, rolling or parallel); see
  *     `activateServer` for snapshot → retag → write config → start → health check → revert.
  *     Behind the reverse proxy a `ProxyRollout` (src/proxy/rollout.ts) wraps this phase: it
@@ -25,7 +27,8 @@
  *  7. Prune: old version tags and dangling images, on the servers that ended healthy.
  *  8. Unlock (`finally`): release the locks and this deploy's lease on the local registry.
  *  9. Summary: the per-server table, the log tails of failed servers and a warning when the
- *     servers ended on different versions.
+ *     servers ended on different versions. With a private registry, `:latest` there is then
+ *     moved to the new version for MUP (`updateRegistryLatest`).
  *
  * `reconfig`, `restart` and `rollback` share the proxy rollout → lock → strategy → history →
  * unlock part (`lockedRollout`). Every step runs inside `ctx.runner.run()` under MUP's command key and in MUP's
@@ -61,6 +64,7 @@ import { createProxyRollout, lockTargets, rolloutProxies } from '../proxy/rollou
 import type { SshConnection } from '../ssh/connection.js';
 import { distributeToServer } from '../transfer/distribute.js';
 import { ensureLocalRegistry, pushToLocalRegistry, stopLocalRegistry } from '../transfer/local-registry.js';
+import { assertRegistryPushable, pullFromRegistry, pushImage, registryLogin, registryRepo, usesRegistry } from '../transfer/registry.js';
 import { localImageStore, removeArchive, saveImageArchive, serverHasImage, streamToServer } from '../transfer/stream.js';
 import { activateServer, startServer, type ActivationResult } from './activate.js';
 import { distributeImages } from './distribution.js';
@@ -89,6 +93,10 @@ export interface PipelineDeps {
   removeArchive: typeof removeArchive;
   serverHasImage: typeof serverHasImage;
   streamToServer: typeof streamToServer;
+  /** The `registry` transfer (`privateDockerRegistry`): local login, push, pull on the servers. */
+  registryLogin: typeof registryLogin;
+  pushImage: typeof pushImage;
+  pullFromRegistry: typeof pullFromRegistry;
   activateServer: typeof activateServer;
   acquireLock: typeof acquireLock;
   releaseLock: typeof releaseLock;
@@ -153,19 +161,10 @@ const DEFAULT_DEPS: PipelineDeps = {
   createProxyRollout,
   checkMongo: assertMongoRunning,
   startShPullsRegistry,
+  registryLogin,
+  pushImage,
+  pullFromRegistry,
 };
-
-/**
- * Refuses the config sections this release cannot run yet (`privateDockerRegistry`, the
- * `registry` transfer) with a `CometError`. Called before anything else, so such a config fails
- * up front instead of halfway through a deploy.
- */
-export function assertPhase1Supported(ctx: CommandContext): void {
-  const c = ctx.config;
-  const phase2 = (what: string) => new CometError(`${what} is not supported yet (planned for phase 2 of comet-deploy).`);
-  if (c.privateDockerRegistry) throw phase2('"privateDockerRegistry"');
-  if (c.cometDeploy.transfer === 'registry') throw phase2('cometDeploy.transfer "registry"');
-}
 
 /**
  * Renders the env.list of every server once and discards it, so a config Docker could not read
@@ -378,9 +377,8 @@ export function summaryRows(
 }
 
 /**
- * `deploy`: preflight → build once → lock → push to the local registry → distribute through
- * tunnels → activate by strategy → history → prune → unlock → summary (the module header
- * describes each phase). `stopAfter: 'build'` / `'push'` implement the hidden `meteor build` /
+ * `deploy`: preflight → build once → lock → distribute → activate by strategy → history →
+ * prune → unlock → summary (the module header describes each phase). `stopAfter: 'build'` / `'push'` implement the hidden `meteor build` /
  * `meteor push`.
  *
  * Servers that fail their health check do not make it throw: they are in the returned outcome
@@ -404,7 +402,9 @@ export async function deployPipeline(
   const r = ctx.reporter;
   const c = ctx.config;
   const run = ctx.runner;
-  assertPhase1Supported(ctx);
+  // First of all: a registry config that would push somewhere else fails before any work
+  // (`meteor build` pushes nothing).
+  if (o.stopAfter !== 'build') assertRegistryPushable(c);
 
   const servers = ctx.appServers();
   if (servers.length === 0) throw new CometError('No app servers selected.');
@@ -457,6 +457,8 @@ export async function deployPipeline(
     // the build and the distribution (`meteor.prepareBundle`); `meteor.push` still starts before
     // the build and ends after the distribution, so its hooks run where MUP runs them.
     if (pushing) await run.enter('meteor.push');
+    // Before the build, so wrong credentials fail now and not after minutes of building.
+    if (usesRegistry(c) && pushing && (await d.registryLogin(c.privateDockerRegistry!))) r.info(`registry: logged in to ${c.privateDockerRegistry!.host}`);
     built = await step('meteor.build', () =>
       r.phase('Build', () =>
         d.buildApp(ctx, { platforms: pre.platforms, version, cachedBuild: o.cachedBuild, forceBuild: o.forceBuild, cacheFrom: o.cacheFrom, cacheTo: o.cacheTo }),
@@ -592,8 +594,39 @@ export async function deployPipeline(
     if (failure !== undefined) throw failure;
     aborted(d.signal);
     const ok = skipped.length === 0 && results.every((x) => x.status === 'healthy');
+    if (usesRegistry(c) && !o.stopAfter) await updateRegistryLatest(ctx, d, { ok, servers, built });
     return { version: deployedVersion, results, skipped, ok };
   });
+}
+
+/**
+ * Points `<imagePrefix>/mup-<app>:latest` in the registry at the version a deploy has just
+ * activated, for MUP: its start.sh (`mup reconfig`, `mup deploy`) pulls that tag, comet-deploy
+ * never reads it (registry design §4.6). Only after a deploy that ended healthy on every app
+ * server with one platform; otherwise an info line says why not. A failed push only warns.
+ */
+async function updateRegistryLatest(ctx: CommandContext, d: PipelineDeps, o: { ok: boolean; servers: string[]; built: BuiltImage[] }): Promise<void> {
+  const c = ctx.config;
+  const r = ctx.reporter;
+  const ref = `${registryRepo(c)}:latest`;
+  const notAll = Object.keys(c.app.servers ?? {}).some((s) => !o.servers.includes(s));
+  const why = !o.ok
+    ? 'the deploy did not succeed on every server'
+    : notAll
+      ? 'the deploy did not include every app server'
+      : o.built.length !== 1
+        ? 'the servers run images for several platforms'
+        : null;
+  if (why) {
+    r.info(`registry: ${ref} not updated (${why}).`);
+    return;
+  }
+  try {
+    await d.pushImage({ localTag: o.built[0].localTag, ref, reg: c.privateDockerRegistry!, onLine: (l) => r.verboseLine(null, l) });
+    r.info(`registry: ${ref} points to this version now (for MUP).`);
+  } catch (e) {
+    r.warn(`${(e as Error).message} The deploy itself succeeded; only MUP reads this tag ("mup reconfig" would run the previous version).`);
+  }
 }
 
 /** For the runner: a rollout whose outcome is not ok failed, so its post hooks do not run. */
@@ -692,7 +725,6 @@ async function lockedRollout(
  */
 export async function reconfigPipeline(ctx: CommandContext, o: { strategy?: CometOptions['strategy']; forceUnlock?: boolean }, deps: Partial<PipelineDeps> = {}): Promise<LifecycleOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
-  assertPhase1Supported(ctx);
   // MUP: `default.reconfig` › `meteor.envconfig` → `meteor.start`. The activation writes the
   // config on each server, so `meteor.envconfig` is an empty step before it (hooks design §4.3).
   return ctx.runner.run('default.reconfig', async () => {
@@ -813,7 +845,6 @@ export async function startAll(ctx: CommandContext, deps: Partial<Pick<PipelineD
  * MUP's does. No lock, no snapshot: the new files take effect on the next start.
  */
 export async function envconfigAll(ctx: CommandContext): Promise<void> {
-  assertPhase1Supported(ctx);
   await ctx.runner.run('meteor.envconfig', async () => {
     const settings = ctx.getSettings();
     const servers = ctx.appServers();
@@ -848,7 +879,6 @@ export async function rollbackPipeline(
   deps: Partial<PipelineDeps> = {},
 ): Promise<DeployOutcome> {
   const d: PipelineDeps = { ...DEFAULT_DEPS, ...deps };
-  assertPhase1Supported(ctx);
   // The target chosen on each server, for the summary table and the history entries.
   const targets = new Map<string, RollbackTarget>();
   // A server's target version tag; null for `:previous` (an image without a version tag, e.g.

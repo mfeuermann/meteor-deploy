@@ -155,9 +155,10 @@ export type Platform = 'linux/amd64' | 'linux/arm64';
 export interface CometOptions {
   strategy: Strategy;
   /**
-   * How the image reaches the servers. `auto` and `tunnel` both pull from a local registry
-   * through an SSH reverse tunnel; `registry` and `stream` are planned for phase 2 and stop
-   * the deploy.
+   * How the image reaches the servers. `tunnel`: from a local registry through an SSH reverse
+   * tunnel; `stream`: the whole image as an archive over SSH; `auto`: the tunnel, or the stream
+   * on a server that refuses forwarding. With `privateDockerRegistry` the image always goes
+   * through that registry (`auto` or `registry`; validation refuses the others).
    */
   transfer: 'auto' | 'tunnel' | 'registry' | 'stream';
   /** `auto` maps each server's `uname -m`; a fixed value is used for all servers. */
@@ -175,7 +176,7 @@ export interface CometOptions {
   lock: boolean;
 }
 
-/** `privateDockerRegistry` (MUP). Validated and normalized, but not supported yet (phase 2). */
+/** `privateDockerRegistry` (MUP): the `registry` transfer (src/transfer/registry.ts). */
 export interface RegistryConfig {
   host: string;
   /** Image name becomes `<imagePrefix>/mup-<lowercase app name>`. */

@@ -5,6 +5,7 @@
  * stream, and start.sh never pulls (registry design §4.1), so canary, revert and rollback work
  * server by server without the registry.
  */
+import type { BuiltImage } from '../build/index.js';
 import type { NormalizedConfig, RegistryConfig } from '../config/types.js';
 import { CometError } from '../core/errors.js';
 import { run as runLocal } from '../local/exec.js';
@@ -31,6 +32,14 @@ export function setupRegistry(c: NormalizedConfig): RegistryConfig | undefined {
 /** The image repository in the registry: `<imagePrefix>/mup-<lowercase app name>`, as in MUP. */
 export function registryRepo(c: NormalizedConfig): string {
   return `${c.privateDockerRegistry?.imagePrefix}/mup-${c.app.name.toLowerCase()}`;
+}
+
+/**
+ * The registry reference of a built image: the registry repository with the local tag's tag,
+ * so `<version>` for one platform and `<version>-<arch>` for several (registry design §4.3).
+ */
+export function registryRef(c: NormalizedConfig, b: BuiltImage): string {
+  return `${registryRepo(c)}${b.localTag.slice(b.localTag.lastIndexOf(':'))}`;
 }
 
 const DOCKER_HUB = new Set(['docker.io', 'index.docker.io', 'registry-1.docker.io']);

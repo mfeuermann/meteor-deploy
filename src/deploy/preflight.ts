@@ -12,6 +12,7 @@ import { resolveAppPath } from '../config/normalize.js';
 import { buildxPlatforms, dockerAvailable } from '../local/docker.js';
 import { run } from '../local/exec.js';
 import { readLock, serverFacts, type LockInfo, type ServerFacts } from '../remote/ops.js';
+import { usesRegistry } from '../transfer/registry.js';
 import { probeForwarding } from '../transfer/tunnel.js';
 import { PROXY_NAME, PROXY_NOT_SET_UP } from '../proxy/render.js';
 import { mongoNotRunningMessage } from '../mongo/check.js';
@@ -228,8 +229,8 @@ export async function runPreflight(
       const conn = await ctx.ssh.get(name);
       const facts = await serverFacts(conn, o.distributes ? appName : undefined, { proxyName: proxyName(name), mongoName: o.mongo ? MONGO_CONTAINER : undefined });
       const lock = o.checkLocks ? await readLock(conn, appName) : null;
-      // The tunnel needs reverse forwarding; `stream` and `meteor build` do not.
-      const forwardingError = o.distributes && transfer !== 'stream' ? await probeForwarding(conn) : null;
+      // The tunnel needs reverse forwarding; `stream`, the private registry and `meteor build` do not.
+      const forwardingError = o.distributes && transfer !== 'stream' && !usesRegistry(ctx.config) ? await probeForwarding(conn) : null;
       return { facts, lock, forwardingError };
     }),
   );

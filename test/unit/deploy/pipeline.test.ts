@@ -107,6 +107,18 @@ async function setup(o: { extra?: string; activate?: Record<string, ActivationRe
     removeArchive: (a) => {
       calls.push(`remove-archive:${a.localTag}`);
     },
+    registryLogin: async () => {
+      calls.push('login');
+      return true;
+    },
+    pushImage: async (x) => {
+      calls.push(`push:${x.ref}`);
+      return { durationMs: 1 };
+    },
+    pullFromRegistry: async (conn, x) => {
+      calls.push(`pull:${conn.name}:${x.ref}:${x.targetTag}`);
+      return { durationMs: 1 };
+    },
   };
   return { ctx, deps, calls, history, output: () => lines.join('') };
 }
@@ -444,6 +456,133 @@ describe('deployPipeline', () => {
       return { ok: true };
     };
     await expect(lockServers(s.ctx, ['one', 'two'], 'proxy setup', deps, { skipNotSetUp: true })).rejects.toThrow(/exit code 1/);
+  });
+});
+
+describe('deployPipeline: registry transfer', () => {
+  const REG = "privateDockerRegistry: { host: 'reg.example.com', imagePrefix: 'reg.example.com/team', username: 'u', password: 'registry-pw' },";
+  const V = '20261107-183005';
+  const REF = `reg.example.com/team/mup-myapp:${V}`;
+  const LATEST = 'reg.example.com/team/mup-myapp:latest';
+  const run = (s: Awaited<ReturnType<typeof setup>>, o: { stopAfter?: 'build' | 'push' } = {}) => deployPipeline(s.ctx, { cachedBuild: false, forceBuild: false, ...o }, s.deps);
+
+  it('registry deploy: login after preflight and before the build, then push, then pulls, no local registry, no forwarding', async () => {
+    const s = await setup({ extra: REG });
+    const out = await run(s);
+    expect(out.ok).toBe(true);
+    const order = ['preflight', 'login', 'build', `push:${REF}`, `pull:one:${REF}:mup-myapp:${V}`, `pull:two:${REF}:mup-myapp:${V}`, `activate:one:${V}`];
+    expect(order.map((c) => s.calls.indexOf(c))).toEqual([...order.map((c) => s.calls.indexOf(c))].sort((a, b) => a - b));
+    expect(order.every((c) => s.calls.includes(c))).toBe(true);
+    expect(s.calls.filter((c) => c === 'registry' || c === 'stop-registry' || c.startsWith('save:') || c.startsWith('distribute:'))).toEqual([]);
+    expect(s.output()).toContain('registry: logged in to reg.example.com');
+    expect(s.output()).toMatch(/\[one\] distribute ✓ .*\(from reg\.example\.com\)/);
+  });
+
+  it('skips the pull on a server that has the version', async () => {
+    const s = await setup({ extra: REG });
+    s.deps.serverHasImage = async (conn) => conn.name === 'one';
+    await run(s);
+    expect(s.calls.filter((c) => c.startsWith('pull:'))).toEqual([`pull:two:${REF}:mup-myapp:${V}`]);
+    expect(s.output()).toContain('[one] distribute ✓ (already on the server)');
+  });
+
+  it('pushes nothing when every server has it', async () => {
+    const s = await setup({ extra: REG });
+    s.deps.serverHasImage = async () => true;
+    await run(s);
+    expect(s.calls.filter((c) => c.startsWith('pull:'))).toEqual([]);
+    expect(s.calls.filter((c) => c.startsWith('push:'))).toEqual([`push:${LATEST}`]);
+  });
+
+  it('two platforms push one ref per architecture', async () => {
+    const s = await setup({ extra: REG });
+    const img = (arch: 'amd64' | 'arm64'): BuiltImage => ({ platform: `linux/${arch}`, version: V, localTag: `mup-myapp:${V}-${arch}`, imageId: 'x', nodeVersion: '24', depsHash: 'd', fromCache: false });
+    s.deps.preflight = async () => ({ errors: [], warnings: [], platformByServer: { one: 'linux/amd64', two: 'linux/arm64' }, platforms: ['linux/amd64', 'linux/arm64'], streamServers: [] });
+    s.deps.buildApp = async () => [img('amd64'), img('arm64')];
+    await run(s);
+    expect(s.calls).toContain(`push:${REF}-amd64`);
+    expect(s.calls).toContain(`push:${REF}-arm64`);
+    expect(s.calls).toContain(`pull:one:${REF}-amd64:mup-myapp:${V}`);
+    expect(s.calls).toContain(`pull:two:${REF}-arm64:mup-myapp:${V}`);
+    expect(s.calls).not.toContain(`push:${LATEST}`);
+    expect(s.output()).toMatch(/registry: .*:latest not updated \(the servers run images for several platforms\)/);
+  });
+
+  it('registry pull failure stops before activation', async () => {
+    const s = await setup({ extra: REG });
+    s.deps.pullFromRegistry = async (conn) => {
+      if (conn.name === 'two') throw new CometError('[two] Pulling x failed');
+      return { durationMs: 1 };
+    };
+    await expect(run(s)).rejects.toThrow('Image distribution failed:');
+    expect(s.calls.some((c) => c.startsWith('activate'))).toBe(false);
+    expect(s.calls).not.toContain(`push:${LATEST}`);
+  });
+
+  it('pushes :latest after a healthy deploy on every app server', async () => {
+    const s = await setup({ extra: REG });
+    await run(s);
+    expect(s.calls.at(-1)).toBe(`push:${LATEST}`);
+  });
+
+  it('does not push :latest for a subset of the servers', async () => {
+    const s = await setup({ extra: REG, servers: 'one' });
+    await run(s);
+    expect(s.calls).not.toContain(`push:${LATEST}`);
+    expect(s.output()).toMatch(/:latest not updated \(the deploy did not include every app server\)/);
+  });
+
+  it('pushes :latest when --servers names every app server', async () => {
+    const s = await setup({ extra: REG, servers: 'one,two' });
+    await run(s);
+    expect(s.calls).toContain(`push:${LATEST}`);
+  });
+
+  it('does not push :latest when a server reverted', async () => {
+    const s = await setup({ extra: REG, activate: { two: 'reverted' } });
+    const out = await run(s);
+    expect(out.ok).toBe(false);
+    expect(s.calls).not.toContain(`push:${LATEST}`);
+    expect(s.output()).toMatch(/:latest not updated \(the deploy did not succeed on every server\)/);
+  });
+
+  it('meteor push does not push :latest', async () => {
+    const s = await setup({ extra: REG });
+    await run(s, { stopAfter: 'push' });
+    expect(s.calls).toContain(`push:${REF}`);
+    expect(s.calls).not.toContain(`push:${LATEST}`);
+  });
+
+  it('a failing :latest push only warns', async () => {
+    const s = await setup({ extra: REG });
+    s.deps.pushImage = async (x) => {
+      if (x.ref === LATEST) throw new CometError(`Pushing ${LATEST} to the registry failed: denied`);
+      return { durationMs: 1 };
+    };
+    const out = await run(s);
+    expect(out.ok).toBe(true);
+    expect(s.output()).toContain(`Pushing ${LATEST} to the registry failed: denied`);
+    expect(s.output()).toContain('"mup reconfig" would run the previous version');
+  });
+
+  it('meteor build with a registry does not log in or check imagePrefix', async () => {
+    const s = await setup({ extra: "privateDockerRegistry: { host: 'reg.example.com', username: 'u', password: 'p' }," });
+    await run(s, { stopAfter: 'build' });
+    expect(s.calls).not.toContain('login');
+    expect(s.calls).toContain('build');
+  });
+
+  it('deploy without imagePrefix fails before preflight', async () => {
+    const s = await setup({ extra: "privateDockerRegistry: { host: 'reg.example.com', username: 'u', password: 'p' }," });
+    await expect(run(s)).rejects.toThrow('privateDockerRegistry.imagePrefix is required');
+    expect(s.calls).not.toContain('preflight');
+  });
+
+  it('a skipped login prints nothing about it', async () => {
+    const s = await setup({ extra: REG });
+    s.deps.registryLogin = async () => false;
+    await run(s);
+    expect(s.output()).not.toContain('logged in');
   });
 });
 

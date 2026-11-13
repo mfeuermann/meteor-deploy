@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createContext, type CommandContext } from '../../../src/core/context.js';
 import { CometError } from '../../../src/core/errors.js';
 import type { ActivationResult } from '../../../src/deploy/activate.js';
-import { assertPhase1Supported, deployPipeline, reconfigPipeline, restartPipeline, rollbackPipeline, startAll, type PipelineDeps } from '../../../src/deploy/pipeline.js';
+import { deployPipeline, reconfigPipeline, restartPipeline, rollbackPipeline, startAll, type PipelineDeps } from '../../../src/deploy/pipeline.js';
 import { assertMongoRunning, mongoNotRunningMessage } from '../../../src/mongo/check.js';
 import { createReporter } from '../../../src/output/reporter.js';
 import type { ImageVersions } from '../../../src/remote/ops.js';
@@ -136,7 +136,6 @@ describe('the app commands with a mongo section', () => {
 
   it('deploy with a mongo section is no longer refused', async () => {
     const s = await setup();
-    expect(() => assertPhase1Supported(s.ctx)).not.toThrow();
     const calls: string[] = [];
     let preflight: unknown;
     await expect(
@@ -156,13 +155,4 @@ describe('the app commands with a mongo section', () => {
     expect(preflight).toMatchObject({ mongo: true });
   });
 
-  it('transfer stream is accepted', async () => {
-    const stream = (await setup({ extra: "cometDeploy: { transfer: 'stream' }," })).ctx;
-    expect(() => assertPhase1Supported(stream)).not.toThrow();
-  });
-
-  it('privateDockerRegistry is still refused', async () => {
-    const s = await setup({ extra: "privateDockerRegistry: { host: 'reg.example.com' }," });
-    expect(() => assertPhase1Supported(s.ctx)).toThrow(/phase 2/);
-  });
 });

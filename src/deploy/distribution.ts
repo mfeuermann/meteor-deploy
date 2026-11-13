@@ -1,7 +1,8 @@
 /**
  * The Distribute phase of a deploy: every server gets the image of its platform under the
  * version tag, either through the reverse tunnel to the local registry (only the missing layers
- * travel) or, on servers whose sshd refuses forwarding, as a whole archive over SSH (`stream`).
+ * travel), on servers whose sshd refuses forwarding as a whole archive over SSH (`stream`), or,
+ * with `privateDockerRegistry`, pushed to that registry and pulled by every server.
  * Nothing of the running app changes here; a failure on any server fails the deploy before
  * activation.
  */
@@ -14,6 +15,7 @@ import type { SshConnection } from '../ssh/connection.js';
 import type { distributeToServer } from '../transfer/distribute.js';
 import type { ensureLocalRegistry, pushToLocalRegistry } from '../transfer/local-registry.js';
 import { formatBytes, type ImageStore, type localImageStore, type removeArchive, type saveImageArchive, type serverHasImage, type StreamArchive, type streamToServer } from '../transfer/stream.js';
+import { registryOfHost, registryRef, usesRegistry, type pullFromRegistry, type pushImage } from '../transfer/registry.js';
 import { TunnelUnavailableError } from '../transfer/tunnel.js';
 import { streamWarning } from './preflight.js';
 
@@ -27,6 +29,68 @@ export interface DistributionDeps {
   removeArchive: typeof removeArchive;
   serverHasImage: typeof serverHasImage;
   streamToServer: typeof streamToServer;
+  pushImage: typeof pushImage;
+  pullFromRegistry: typeof pullFromRegistry;
+}
+
+/** What `distributeImages` gets from the pipeline. */
+interface DistributionInput {
+  servers: string[];
+  streamServers: string[];
+  built: BuiltImage[];
+  imageFor: (server: string) => BuiltImage;
+  targetTag: (server: string) => string;
+  checkAbort: () => void;
+  onRegistryStarted: () => void;
+}
+
+/** Fails the phase when any server failed, listing all of them; marks each failed server. */
+function throwIfFailed(ctx: CommandContext, servers: string[], dist: PromiseSettledResult<unknown>[]): void {
+  const failed = dist.flatMap((x, i) => (x.status === 'rejected' ? [{ s: servers[i], e: x.reason as Error }] : []));
+  for (const f of failed) ctx.reporter.server(f.s, 'distribute', 'failed', f.e?.message);
+  if (failed.length) {
+    throw new CometError(`Image distribution failed:\n${failed.map((f) => `  - ${f.s}: ${f.e?.message ?? f.e}`).join('\n')}`, {
+      hint: 'No server was changed.',
+    });
+  }
+}
+
+/**
+ * The registry path: the servers that already have the version are found first, then one push
+ * per platform still needed (nothing is pushed when every server has it), `checkAbort`, and
+ * the pulls on all servers in parallel. No local registry, no archives.
+ */
+async function distributeViaRegistry(ctx: CommandContext, d: DistributionDeps, o: DistributionInput): Promise<void> {
+  const c = ctx.config;
+  const r = ctx.reporter;
+  const reg = c.privateDockerRegistry!;
+  const present = new Set<string>();
+  await Promise.all(
+    o.servers.map(async (s) => {
+      // A server that cannot be reached now fails below, in the distribution.
+      const conn = await ctx.ssh.get(s).catch(() => null);
+      if (conn && (await d.serverHasImage(conn, o.targetTag(s)).catch(() => false))) present.add(s);
+    }),
+  );
+  const refs = new Map<Platform, string>();
+  for (const b of new Set(o.servers.filter((s) => !present.has(s)).map((s) => o.imageFor(s)))) {
+    const ref = registryRef(c, b);
+    const res = await d.pushImage({ localTag: b.localTag, ref, reg, onLine: (l) => r.verboseLine(null, l) });
+    r.info(`registry: pushed ${ref} in ${formatDuration(res.durationMs)}`);
+    refs.set(b.platform, ref);
+  }
+  o.checkAbort();
+  const host = registryOfHost(reg.host);
+  const dist = await Promise.allSettled(
+    o.servers.map(async (s) => {
+      if (present.has(s)) return r.server(s, 'distribute', 'ok', '(already on the server)');
+      r.server(s, 'distribute', 'running');
+      const conn = await ctx.ssh.get(s);
+      const res = await d.pullFromRegistry(conn, { ref: refs.get(o.imageFor(s).platform)!, targetTag: o.targetTag(s), reg, onStatus: (l) => r.verboseLine(s, l) });
+      r.server(s, 'distribute', 'ok', `${formatDuration(res.durationMs)} (from ${host})`);
+    }),
+  );
+  throwIfFailed(ctx, o.servers, dist);
 }
 
 /**
@@ -40,24 +104,16 @@ export interface DistributionDeps {
  * only then does anything go to the servers, all in parallel. Every archive is removed at the
  * end, whatever happened.
  *
+ * With `privateDockerRegistry` every server gets the image through the registry instead (see
+ * `distributeViaRegistry`).
+ *
  * @param o.checkAbort Throws the abort error once the run was aborted.
  * @param o.onRegistryStarted Called once the local registry runs, so the caller stops it.
  * @throws CometError from `saveImageArchive` (before any server got anything) or
  *   `Image distribution failed:` listing every server that failed.
  */
-export async function distributeImages(
-  ctx: CommandContext,
-  d: DistributionDeps,
-  o: {
-    servers: string[];
-    streamServers: string[];
-    built: BuiltImage[];
-    imageFor: (server: string) => BuiltImage;
-    targetTag: (server: string) => string;
-    checkAbort: () => void;
-    onRegistryStarted: () => void;
-  },
-): Promise<void> {
+export async function distributeImages(ctx: CommandContext, d: DistributionDeps, o: DistributionInput): Promise<void> {
+  if (usesRegistry(ctx.config)) return distributeViaRegistry(ctx, d, o);
   const c = ctx.config;
   const r = ctx.reporter;
   const streamed = new Set(o.streamServers.filter((s) => o.servers.includes(s)));
@@ -134,13 +190,7 @@ export async function distributeImages(
         }
       }),
     );
-    const failed = dist.flatMap((x, i) => (x.status === 'rejected' ? [{ s: o.servers[i], e: x.reason as Error }] : []));
-    for (const f of failed) r.server(f.s, 'distribute', 'failed', f.e?.message);
-    if (failed.length) {
-      throw new CometError(`Image distribution failed:\n${failed.map((f) => `  - ${f.s}: ${f.e?.message ?? f.e}`).join('\n')}`, {
-        hint: 'No server was changed.',
-      });
-    }
+    throwIfFailed(ctx, o.servers, dist);
   } finally {
     // Waits for a save that is still running (another platform's save failed first).
     for (const p of archives.values()) {
