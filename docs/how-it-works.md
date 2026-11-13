@@ -89,7 +89,7 @@ On every server:
 
 `meteor build` sends nothing to the servers, so it skips the app setup, lock and port forwarding checks. `meteor build` and `meteor push` start no app, so both skip the proxy and MongoDB checks. It still connects to every server to read its CPU architecture.
 
-Hooks in the config are checked even before preflight: a command refuses a hook on any step it will run before it starts. See [Configuration → Hooks](configuration.md#hooks).
+Hooks run before and after the steps, under MUP's keys: `pre.default.deploy` before preflight, `pre.meteor.build` before the build, `pre.meteor.prepareBundle` after the lock and before the distribution, `pre.meteor.start` before the activation, `post.default.deploy` after the unlock. See [Configuration → Hooks](configuration.md#keys-and-nesting).
 
 ## 2. Build
 

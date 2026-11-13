@@ -391,7 +391,6 @@ comet-deploy 0.2.0 does not run these parts of a MUP config yet. They are valida
 |---|---|---|
 | `privateDockerRegistry` | - | stop: `"privateDockerRegistry" is not supported yet (planned for phase 2 of comet-deploy).` |
 | `cometDeploy.transfer: 'registry'` or `'stream'` | - | stop: `cometDeploy.transfer "registry" is not supported yet (planned for phase 2 of comet-deploy).` |
-| `hooks` | see [Hooks](#hooks) | see [Hooks](#hooks) |
 
 A base image without app-image support (the default `kadirahq/meteord`, or `docker.prepareBundle: false`) stops the build with `The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode). Bundle mode is planned for phase 2 of comet-deploy.` and the hint `Use a zodern/meteor image (app.docker.image), e.g. "zodern/meteor:root".`
 
@@ -399,40 +398,149 @@ If your deploy depends on any of these, keep using MUP for now. Both tools can w
 
 ## Hooks
 
-MUP hooks (`hooks: { 'pre.deploy': { ... } }`) are phase 2. comet-deploy does not silently skip them. A command checks every key it will enter (see the table below) before it does any work, so a hook on a late step stops `deploy` before preflight and the build, not after them. A `post.` hook is refused up front too. The message is
+Hooks run your own commands before and after the steps of a command, as in MUP. A `hooks` section written for MUP works unchanged:
 
+```js
+hooks: {
+  // Before the deploy, on your machine, in the config directory.
+  'pre.deploy': {
+    localCommand: 'npm test',
+  },
+  // After the deploy: on every server, and a function with MUP's api object.
+  'post.deploy': {
+    remoteCommand: 'docker image prune -f',
+    async method(api) {
+      const server = Object.values(api.getConfig().servers)[0];
+      const r = await api.runSSHCommand(server, 'curl -fsS http://localhost/health');
+      if (r.code !== 0) throw new Error(`health check failed on ${r.host}`);
+    },
+  },
+  // A function alone is the same as { method: fn }.
+  'pre.reconfig': (api) => {
+    api.settings.public.deployedAt = new Date().toISOString();
+  },
+},
 ```
-Error: Hook "pre.deploy" is not supported yet (hooks are planned for phase 2 of comet-deploy).
-Hint: Remove the hook from the config to use comet-deploy for this command, or keep using MUP for it.
-```
 
-comet-deploy runs its commands under the same keys as MUP, so the hook names are the same. For a key `default.<cmd>` the names are `pre.default.<cmd>`, `post.default.<cmd>`, `pre.<cmd>` and `post.<cmd>`; for any other key `pre.<key>` and `post.<key>`.
+### Names
 
-| Command | Keys, in order |
+A hook name is `pre.<key>` or `post.<key>`, where the key is one of the steps in the [table below](#keys-and-nesting). A name with exactly one dot gets `default` in the middle, as in MUP: `pre.deploy` is `pre.default.deploy`. Hooks that end up under the same name run in the order of the config.
+
+`validate` checks every hook:
+
+| Problem | Severity |
 |---|---|
-| `setup` | `default.setup`, `docker.setup`, `meteor.setup`, and with a `proxy` section `proxy.setup`, `proxy.start` |
-| `deploy` | `default.deploy`, `meteor.deploy`, `meteor.push`, `meteor.build`, `meteor.prepareBundle`, `default.reconfig`, `meteor.envconfig`, `meteor.start` |
-| `reconfig` | `default.reconfig`, `meteor.envconfig`, `meteor.start` |
-| `restart` | `default.restart`, `meteor.restart` |
-| `start` | `default.start`, `meteor.start` |
-| `stop` | `default.stop`, `meteor.stop` |
-| `logs` | `default.logs`, `meteor.logs` |
-| `status` | `default.status`, `meteor.status`, and with a `proxy` section `proxy.status` |
-| `rollback` | `default.rollback` |
-| `meteor deploy` | `meteor.deploy`, `meteor.push`, `meteor.build`, `meteor.prepareBundle`, `default.reconfig`, `meteor.envconfig`, `meteor.start` |
-| `meteor push` | `meteor.push`, `meteor.build`, `meteor.prepareBundle` |
+| A value that is not an object with `localCommand`, `remoteCommand` or `method`, or a function | error: `must be an object with localCommand, remoteCommand or method, or a function` |
+| `localCommand` or `remoteCommand` not a string, `method` not a function | error |
+| Another property in the object | warning: `is an unknown property` |
+| A name without `pre.` or `post.` | warning: `must start with "pre." or "post."` |
+| A key that is not a step of MUP or comet-deploy, for example `pre.deplyo` | warning: `does not match a command, so it never runs` |
+| A key of a command comet-deploy does not run (`default.init`, `default.validate`, `default.ssh`, `meteor.debug`, `docker.destroyCluster`, `proxy.envconfig`) | warning: `belongs to a command comet-deploy does not run (<key>), so it never runs` |
+
+### The three forms
+
+One hook object can have all three. They run in this order: `localCommand`, `method`, `remoteCommand`. If `localCommand` or `method` fails, the rest of the object and every later hook do not run.
+
+**`localCommand`** runs on your machine with `/bin/sh -c`, in the config directory, with your environment. It can ask questions: stdin is the terminal. Its output is printed line by line, with secrets masked. Before it starts, comet-deploy prints `> Running hook pre.default.deploy "npm test"`. A non-zero exit fails the step:
+
+```
+Error: Hook "pre.default.deploy" failed: "npm test" exited with code 1.
+```
+
+**`remoteCommand`** runs on every server in `servers`, not only on the app servers, as in MUP. `--servers` narrows the list. It runs on all of them in parallel, without sudo, in the login shell of the SSH user. Before it starts, comet-deploy prints `> Running hook post.default.deploy remote command "…"`, then for each server `=> output from <host>` and the output. **A remote command that fails only warns, and the command goes on**, as in MUP:
+
+```
+Warning: Hook "post.default.deploy": the remote command exited with code 3 on server "one".
+Warning: Hook "post.default.deploy": the remote command could not run on server "two": connect ECONNREFUSED
+```
+
+To make a check on a server stop the deploy, use a `localCommand` (for example `ssh deploy@203.0.113.10 /opt/check.sh`) or a `method` that checks the `code` of [`api.runSSHCommand`](#the-api-object) and throws.
+
+**`method`** is a function. comet-deploy calls `await method(api, nodemiral)`. If it throws or its promise rejects, the step fails with `Hook "<name>" failed: <message>` (the stack trace with `--verbose`). The second argument is a placeholder: comet-deploy has no nodemiral, and any use of it throws `nodemiral is not available in comet-deploy. Use api.runSSHCommand(server, command) instead.`
+
+### When hooks run and what a failure does
+
+- A `pre.` hook runs right before its step. A `post.` hook runs right after the step succeeds. A nested step runs inside the outer one, so `pre.meteor.build` runs after `pre.default.deploy` and `post.default.deploy` last.
+- **A failing hook fails its step.** After a failing `pre.` hook the step does not run. After a failing `post.` hook no later step runs.
+- **When a step fails**, its `post.` hooks and those of the outer steps do not run, and the command exits with code 1 (130 after Ctrl+C). In the commands that start the app (`deploy`, `reconfig`, `restart`, `rollback`, `start`), a server that is not healthy at the end, or was skipped, counts as a failure of that step.
+- **Clean-up always runs**: the deploy locks are released, the local registry is freed and a started proxy rollout is finished. The summary is printed if the activation ran.
+- **The deploy history is written right after the activation**, before `post.meteor.start`, so a failing `post.` hook does not lose the record of the version the servers run. Old versions are not pruned after a failing `post.` hook; the next deploy does it.
+- **Ctrl+C during a hook**: a `localCommand` gets the interrupt from the terminal and stops; a `method` and a `remoteCommand` are left to finish. Then comet-deploy stops at the next safe point, as without hooks.
+
+A hook that changes the config (`api.getConfig().app.env.X = 'y'`, `api.setConfig(…)`) or the settings (`api.settings…`) changes what the later steps of the same command use. `deploy` and `reconfig` read the settings and the env at the activation, so a change in `pre.deploy` or `pre.reconfig` reaches the app. The files on disk do not change.
+
+### Keys and nesting
+
+`›` means the steps after it run inside the step before it, `→` means one after the other.
+
+| Command | Keys |
+|---|---|
+| `deploy` | `default.deploy` › `meteor.deploy` › (`meteor.push` › `meteor.build` → `meteor.prepareBundle`) → (`default.reconfig` › `meteor.envconfig` → `meteor.start`) |
+| `meteor deploy` | the same without `default.deploy` |
+| `meteor push` | `meteor.push` › `meteor.build` → `meteor.prepareBundle` |
 | `meteor build` | `meteor.build` |
-| `meteor setup` | `meteor.setup` |
+| `reconfig` | `default.reconfig` › `meteor.envconfig` → `meteor.start` |
 | `meteor envconfig` | `meteor.envconfig` |
-| `meteor destroy` | `meteor.destroy` |
-| `docker setup`, `update`, `restart`, `ps`, `status` | `docker.setup`, `docker.update`, `docker.restart`, `docker.ps`, `docker.status` |
-| `proxy setup` | `proxy.setup`, `proxy.start` |
-| `proxy reconfig-shared` | `proxy.reconfig-shared`, `proxy.start` |
-| `proxy start`, `stop`, `logs`, `logs-le`, `nginx-config`, `status` | `proxy.start`, `proxy.stop`, `proxy.logs`, `proxy.logs-le`, `proxy.nginx-config`, `proxy.status` |
+| `restart`, `start`, `stop`, `logs` | `default.<command>` › `meteor.<command>` (the `meteor <command>` variants without `default.`) |
+| `status` | `default.status` › `docker.status` → `meteor.status` → (with `mongo`) `mongo.status` → (with `proxy`) `proxy.status` |
+| `setup` | `default.setup` › `docker.setup` → `meteor.setup` → (with `mongo`) `mongo.setup` → `mongo.start` → (with `proxy`) `proxy.setup` › `proxy.start` |
+| `rollback` | `default.rollback` (comet-deploy only) |
+| `meteor setup`, `meteor destroy` | `meteor.setup`, `meteor.destroy` |
+| `docker setup`, `update`, `restart`, `ps`, `status` | `docker.<command>` |
+| `mongo setup`, `start`, `stop`, `logs`, `shell`, `status` | `mongo.<command>` |
+| `proxy setup` | `proxy.setup` › `proxy.start` |
+| `proxy reconfig-shared` | `proxy.reconfigShared` › `proxy.start` |
+| `proxy logs-le`, `nginx-config` | `proxy.leLogs`, `proxy.nginxConfig` |
+| `proxy start`, `stop`, `logs`, `status` | `proxy.<command>` |
 
-The other `meteor …` variants (`restart`, `start`, `stop`, `logs`, `status`) run the same keys as the top-level command without the `default.` one. As in MUP, `meteor build` runs only under `meteor.build`, and `meteor push` under `meteor.push`, `meteor.build` and `meteor.prepareBundle`.
+The keys are MUP's: a hook on any key runs at the same point with both tools, and `--show-hook-names` prints the same names. Where a hook lands differs from MUP in these places:
 
-`--show-hook-names` prints `Hooks are not supported yet: they are planned for phase 2 of comet-deploy.` and does not run the command.
+- **The deploy lock.** `deploy` takes the lock after `post.meteor.build` and before `pre.meteor.prepareBundle`, and releases it after `post.default.reconfig`. The hooks from `pre.meteor.prepareBundle` to `post.default.reconfig` run under the lock; `post.meteor.deploy` and `post.default.deploy` run after the unlock and the summary.
+- **`meteor.prepareBundle`** is the distribution of the image to the servers (in MUP it builds the image on the server). It is the same point: the image is on the servers and the app still runs the old version.
+- **`meteor.envconfig` in `deploy` and `reconfig`.** comet-deploy writes `env.list` and `start.sh` in the activation of each server, so that the canary and the revert work per server. `pre.meteor.envconfig` and `post.meteor.envconfig` therefore run right after each other, before the activation: a hook that reads `env.list` on a server in `post.meteor.envconfig` still sees the old file. The `meteor envconfig` command writes the files inside its step, as MUP does.
+- **`meteor.start` in `deploy` and `reconfig`** is the whole activation by strategy: the start, the health check and the revert on every server. `post.meteor.start` runs once, after all servers.
+- **`docker.status`** in `status` is an empty step: the Docker state is part of the app's table. It is there for the hooks.
+- **`post.default.status`** runs after `proxy.status` has finished. MUP does not wait for `proxy.status` there, so its `post.default.status` hooks run while the proxy status is still being read.
+- **`default.rollback`** is a comet-deploy command; MUP has no such key.
+- The line before a `localCommand` always has the full name (`> Running hook pre.default.deploy …`); MUP leaves out `pre.`.
+
+### The api object
+
+The `api` argument of a method is the part of MUP's plugin API that works without MUP's nodemiral sessions. All hooks of one command get the same object.
+
+| Member | What it does |
+|---|---|
+| `getArgs()`, `args` | The command words and the options you typed, without `--config`, `--settings`, `--servers`, `--verbose`, `--show-hook-names` and `--help`, as in MUP. |
+| `getBasePath()`, `base` | The config directory. |
+| `getVerbose()`, `verbose` | `--verbose`. |
+| `getOptions()`, `program` | All options of the command. |
+| `getConfig()`, `config` | The normalized config. It is live: a change applies to the steps that read the config later. |
+| `setConfig(config)` | Replaces the config for the later steps, without validation, as in MUP. |
+| `validateConfig()` | The problems of the current config as strings `"<path> <message>"`. |
+| `scrubConfig()` | A copy of the config with the secrets hidden, as `validate --scrub`. |
+| `getSettings()`, `settings` | The Meteor settings. Assigning `api.settings = {…}` replaces them for the later steps. |
+| `getSettingsFromPath(path)` | Reads a JSON file with the same rules as `--settings`. |
+| `runCommand(key)` | Runs the step of a key with its hooks, inside the running command (see below). |
+| `runSSHCommand(server, command)` | Runs `command` on `server` and resolves with `{ code, output, host }` (stdout and stderr together). `server` is an object from `config.servers`; for one of them comet-deploy reuses its connection, for any other object it opens its own. It never throws for a non-zero exit: check `code`. |
+| `resolvePath(...paths)` | `path.resolve` with `~` expanded. |
+| `hasMeteorPackage(name)` | Whether `.meteor/versions` of the app (`app.path`) lists the package. |
+| `swarmEnabled()` | Always `false`. |
+| `commandHistory` | The keys entered so far, as `{ name }`, in order. |
+| `configPath`, `settingsPath` | The paths of the config and the settings file. |
+
+**`api.runCommand(key)`** runs the comet-deploy command behind a key, with the same config, settings and hooks, and only the global options (`--config`, `--settings`, `--servers`, `--verbose`, `--show-hook-names`). It throws:
+
+- `Unknown command name: <key>` for a key MUP does not have, as MUP;
+- `api.runCommand("<key>") is not supported by comet-deploy.` for `meteor.prepareBundle` (a distribution without a build), `meteor.debug`, `default.ssh` and the other keys comet-deploy does not run;
+- for a command that takes the deploy lock (`deploy`, `reconfig`, `restart`, `rollback`, `setup`, `meteor deploy`, `meteor push`, `meteor restart`, `mongo setup`, `start` and `stop`, `proxy setup`, `reconfig-shared`, `start` and `stop`) called from a hook that runs under the lock of the running command: `api.runCommand("default.restart") cannot run while comet-deploy holds the deploy lock (from a hook inside a locked step). Run it from a post.default.deploy hook instead.`
+
+These members need MUP's nodemiral sessions or Docker Swarm and throw `api.<name>() is not supported by comet-deploy (it needs MUP's nodemiral sessions). Use api.runSSHCommand(server, command) or a remoteCommand hook.`: `getSessions`, `getSessionsForServers`, `getManagerSession`, `runTaskList`, `getDockerLogs`, `getServerInfo`, `serverInfoStale`, `swarmInfo`, `dockerServiceInfo`, `forwardPort`, and everything in `api.tasks` and `api.statusHelpers`.
+
+### `--show-hook-names`
+
+Prints `Hook: pre.<key>` before each step and `Hook: post.<key>` after it succeeds, with the full name, also for nested steps. The command and its hooks run as usual.
+
+The names are the same as MUP's, but MUP prints `Hook: post.default.<command>` (and in `deploy` also `Hook: post.default.reconfig`) right after the `pre.` line, before the nested steps: MUP does its own work for the command inside that hook, before the hooks of the config. comet-deploy prints the line where the hooks of your config run, after the nested steps. Your `post.default.<command>` hooks run last with both tools.
 
 ## `cometDeploy`
 

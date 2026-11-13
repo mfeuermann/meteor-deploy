@@ -55,6 +55,14 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [Nothing to roll back to](#nothing-to-roll-back-to)
 - [Leftover local images and the registry volume](#leftover-local-images-and-the-registry-volume)
 
+**Hooks**
+
+- [A hook failed](#a-hook-failed)
+- [A remote command failed but the deploy went on](#a-remote-command-failed-but-the-deploy-went-on)
+- [A hook never runs](#a-hook-never-runs)
+- [api.runCommand cannot run while comet-deploy holds the deploy lock](#apiruncommand-cannot-run-while-comet-deploy-holds-the-deploy-lock)
+- [api.getSessions() is not supported](#apigetsessions-is-not-supported)
+
 **MongoDB**
 
 - [MongoDB is not running](#mongodb-is-not-running)
@@ -338,13 +346,10 @@ docker: {
 ### Not supported yet (phase 2)
 
 ```
-Hook "pre.deploy" is not supported yet (hooks are planned for phase 2 of comet-deploy).
 "ssh one" is not supported yet: it is planned for phase 2 of comet-deploy.
 ```
 
-The `privateDockerRegistry` and `hooks` parts of a MUP config, and the `ssh` and `meteor debug` commands, are phase 2. Remove the part from the config if you do not need it, or keep using MUP for that app. See [Configuration → Planned for phase 2](configuration.md#planned-for-phase-2) and [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
-
-Hooks are checked before the command does anything: a hook on any step the command will run, for example `pre.meteor.start` for `deploy`, stops it before preflight and the build. Nothing changes on the servers.
+The `privateDockerRegistry` part of a MUP config, and the `ssh` and `meteor debug` commands, are phase 2. Remove the part from the config if you do not need it, or keep using MUP for that app. See [Configuration → Planned for phase 2](configuration.md#planned-for-phase-2) and [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
 
 ### app.ssl is a deprecated MUP option
 
@@ -599,6 +604,59 @@ docker volume rm comet-deploy-registry-data
 The next deploy creates both again and pushes the full image once. The servers are not affected: they keep their own copies of the layers.
 
 To clear the BuildKit cache (the next build runs `npm install` again): `docker builder prune`.
+
+## Hooks
+
+### A hook failed
+
+```
+Error: Hook "pre.default.deploy" failed: "npm test" exited with code 1.
+Error: Hook "post.meteor.start" failed: notify failed
+```
+
+A failing `localCommand` or `method` fails its step: the step (for a `pre.` hook) and every later step do not run, and no other hook runs. The deploy locks are always released. What the servers run depends on where the hook was:
+
+- **before the activation** (`pre.default.deploy` to `pre.meteor.start`): nothing changed on the servers, the old version still runs;
+- **after the activation** (`post.meteor.start`, `post.default.reconfig` and later): the new version runs and the deploy history has it, but old versions were not pruned; the next deploy does that.
+
+Run the command from the hook by hand in the config directory to see why it failed. With `--verbose`, a failing `method` also prints its stack trace.
+
+### A remote command failed but the deploy went on
+
+```
+Warning: Hook "post.default.deploy": the remote command exited with code 3 on server "one".
+```
+
+As in MUP, a `remoteCommand` never fails the command. For a check that must stop the deploy, use a `localCommand` that runs `ssh` itself, or a `method` that checks `code`:
+
+```js
+'pre.meteor.start': async (api) => {
+  for (const server of Object.values(api.getConfig().servers)) {
+    const r = await api.runSSHCommand(server, '/opt/check.sh');
+    if (r.code !== 0) throw new Error(`check failed on ${r.host}: ${r.output}`);
+  }
+},
+```
+
+### A hook never runs
+
+`comet-deploy validate` warns about a name that does not match a step (`hooks."pre.deplyo" does not match a command, so it never runs`), a name without `pre.` or `post.`, and a hook on a command comet-deploy does not have (`default.ssh`, `meteor.debug`, …). Run the command with `--show-hook-names` to see every name it enters, in order. A name with one dot is short for `default`: `pre.deploy` is `pre.default.deploy`, and it runs only for `deploy`, not for `meteor deploy`. See [Configuration → Keys and nesting](configuration.md#keys-and-nesting).
+
+### api.runCommand cannot run while comet-deploy holds the deploy lock
+
+```
+Error: api.runCommand("default.restart") cannot run while comet-deploy holds the deploy lock (from a hook inside a locked step). Run it from a post.default.deploy hook instead.
+```
+
+The hook runs while the command holds the deploy lock (in `deploy`, from `pre.meteor.prepareBundle` to `post.default.reconfig`), and the command it calls would take the same lock again. Move the hook to `post.default.deploy` or `post.meteor.deploy`, which run after the unlock.
+
+### api.getSessions() is not supported
+
+```
+Error: Hook "pre.default.deploy" failed: api.getSessions() is not supported by comet-deploy (it needs MUP's nodemiral sessions). Use api.runSSHCommand(server, command) or a remoteCommand hook.
+```
+
+comet-deploy has no nodemiral sessions. Run the remote part with `api.runSSHCommand(server, command)`, which resolves with `{ code, output, host }`, or as a `remoteCommand`. The list of what the api object has is in [Configuration → The api object](configuration.md#the-api-object).
 
 ## MongoDB
 

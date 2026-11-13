@@ -4,7 +4,7 @@ Fast deploys for Meteor apps, compatible with Meteor Up (MUP) 1.5.11.
 
 comet-deploy builds the Docker image of your app **once, on your machine**, and sends each server **only the image layers it does not have yet**, to all servers in parallel. It reads your existing `mup.js`, has the same commands, and leaves the servers in the same state as MUP. You can switch an app from MUP to comet-deploy and back without touching the servers.
 
-**Status:** version 0.2.0: phase 1 of the [roadmap](#roadmap) and the first parts of the next phase, MUP's reverse proxy and MUP's built-in MongoDB. Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
+**Status:** version 0.2.0: phase 1 of the [roadmap](#roadmap) and the first parts of the next phase, MUP's reverse proxy and MUP's built-in MongoDB. Hooks are in the next release. Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
 
 > **Important: comet-deploy needs Docker on your machine**, with BuildKit and buildx: Docker Desktop, OrbStack, or Docker Engine on Linux. This is new compared to MUP, which builds the image on each server. To build for `x86_64` servers on an Apple Silicon Mac, amd64 emulation must be on. See [Requirements](#requirements).
 
@@ -93,6 +93,7 @@ Details: [How it works](docs/how-it-works.md).
 - **Deploy lock.** Two people cannot deploy the same app at once. `unlock` releases a stale lock.
 - **MUP's reverse proxy.** nginx-proxy with Let's Encrypt or your own certificate, and load balancing, run with MUP's own scripts and images. `deploy` and `reconfig` keep the app's proxy files up to date and never restart the proxy, which other apps on the server share.
 - **No gap behind the proxy.** The new container starts beside the old one, which stops only when nginx routes to the new one. With load balancing, each server leaves the upstream while it restarts.
+- **MUP's hooks.** `pre.` and `post.` hooks with `localCommand`, `remoteCommand` and `method`, under the same names as MUP, with MUP's api object for methods (without its nodemiral sessions).
 - **MUP's built-in MongoDB.** The `mongo` section and commands, with MUP's own scripts. comet-deploy checks that MongoDB runs before it touches the app, and refuses a MongoDB version change that the data cannot take.
 - **Mixed CPU architectures.** Detects `x86_64` and `aarch64` per server and builds once per platform.
 - **Secrets stay secret.** Env values are masked in all output, never baked into the image, and `env.list` is written with mode `600`.
@@ -202,7 +203,7 @@ comet-deploy validate          # warnings about useBuildKit and similar are fine
 comet-deploy deploy            # no "setup" needed on servers MUP set up
 ```
 
-Check first that your config does not use a part that is still phase 2 (hooks, `privateDockerRegistry`, the default `kadirahq/meteord` image): [Migrating from MUP](docs/migrating-from-mup.md).
+Check first that your config does not use a part that is still phase 2 (`privateDockerRegistry`, the default `kadirahq/meteord` image): [Migrating from MUP](docs/migrating-from-mup.md).
 
 ## Configuration
 
@@ -308,6 +309,7 @@ What changes:
 - Behind the proxy: `deploy` and `reconfig` bring the app's proxy files up to date (MUP does it only in `setup`); the switch has no gap; with load balancing a server leaves the upstream while it restarts; the proxy containers restart only when their own files changed.
 - With the `mongo` section: the app commands stop early when MongoDB does not run, a MongoDB version change that skips a release series or goes back is refused, `setup` says why it skips MongoDB instead of skipping it silently, and `mongo shell` opens the app's database.
 - Env values are not written into the image.
+- Hooks: the api object has no nodemiral sessions (use `api.runSSHCommand`); in `deploy` the hooks from `pre.meteor.prepareBundle` to `post.default.reconfig` run under the deploy lock.
 
 The full list and a side-by-side table: [Migrating from MUP](docs/migrating-from-mup.md).
 
@@ -315,7 +317,6 @@ The full list and a side-by-side table: [Migrating from MUP](docs/migrating-from
 
 comet-deploy does not include these MUP features yet. A config that uses them stops with a clear message, and MUP keeps working on the same config:
 
-- hooks (`hooks` in the config). A command with a hook on one of its steps stops before it does anything;
 - `privateDockerRegistry`;
 - MUP's bundle mode, used by the default `kadirahq/meteord` image. Set `docker.image: 'zodern/meteor:root'`;
 - the commands `ssh`, `meteor debug`, and the full `status` report.
@@ -342,7 +343,7 @@ Other limits of this release:
 
 - Done: the reverse proxy (nginx-proxy, Let's Encrypt, load balancing; the `proxy` section and commands) and zero-downtime deploys behind it (`cometDeploy.zeroDowntime`).
 - Done: MUP's built-in MongoDB (the `mongo` section and commands).
-- Hooks and MUP's plugin API for hooks.
+- Done: hooks (`localCommand`, `remoteCommand`, `method` with MUP's api object) under MUP's names.
 - Image transfer through a private registry (`privateDockerRegistry`, `transfer: 'registry'`) and over plain SSH without forwarding (`transfer: 'stream'`).
 - MUP's bundle mode (`kadirahq/meteord`).
 - `meteor debug`, `ssh`, the full `status` report, and a command to prune the local build cache.

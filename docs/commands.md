@@ -26,7 +26,7 @@ These work with every command.
 | `--settings <path>` | Path to the Meteor settings file, relative to the current directory. Default: `settings.json` in the base path. |
 | `--servers <names>` | Only these servers, by their names in `servers`. Space or comma separated: `--servers one,two` or `--servers "one two"`. An unknown name is an error (`Unknown server in --servers: <name>`). It filters the app servers for all app commands; `docker` and `proxy` commands filter their own server lists. |
 | `--verbose` | Stream the output of remote commands and of the local `meteor build` and `docker buildx build`, line by line. |
-| `--show-hook-names` | Print `Hooks are not supported yet: they are planned for phase 2 of comet-deploy.` and exit without running the command. |
+| `--show-hook-names` | Print `Hook: pre.<key>` before each step and `Hook: post.<key>` after it, as MUP does. The command runs as usual. See [Configuration → Hooks](configuration.md#hooks). |
 | `-v`, `--version` | Print the version (`0.2.0`). |
 | `-h`, `--help` | Show help. `comet-deploy meteor --help` and `comet-deploy docker --help` list the commands of those groups; `--help` after a command (for example `comet-deploy meteor destroy --help`) shows its options. |
 
@@ -161,12 +161,14 @@ comet-deploy deploy [--strategy canary|rolling|parallel] [--cached-build | --for
 
 Builds the app once on your machine and deploys it to the app servers:
 
-1. **Preflight**, local and on every server in parallel: local Docker, buildx and its platforms, the Meteor command; per server SSH, passwordless sudo, bash, Docker (version 18 or newer, running), CPU architecture, free disk space for Docker, the app directories from `setup` (`/opt/<name>/config`), SSH reverse port forwarding, and the deploy lock. All problems are reported at once, before anything is built. (Hooks in the config are refused even earlier, before preflight; see [Configuration → Hooks](configuration.md#hooks).)
+1. **Preflight**, local and on every server in parallel: local Docker, buildx and its platforms, the Meteor command; per server SSH, passwordless sudo, bash, Docker (version 18 or newer, running), CPU architecture, free disk space for Docker, the app directories from `setup` (`/opt/<name>/config`), SSH reverse port forwarding, and the deploy lock. All problems are reported at once, before anything is built.
 2. **Build**, once per target platform: `meteor build`, then `docker buildx build` into `mup-<name>:<version>`. Skipped when nothing changed since a previous build (`No changes since <version>: reusing mup-<name>:<version>`).
 3. **Lock** every target server.
 4. **Distribute**: push to a local registry, then every server pulls only the layers it does not have, through an SSH reverse tunnel, in parallel. The running app is not touched. If any server fails here, the deploy stops and no server is changed.
 5. **Activate** by strategy: per server, save the current `start.sh` and `env.list`, retag the image, write the new files, restart the container and run the health check. A server that fails is reverted to its previous image and config.
 6. Write the deploy history, remove old versions on the healthy servers, release the locks.
+
+Hooks run around these steps under MUP's keys (`pre.deploy`, `pre.meteor.build`, `post.meteor.start`, …); see [Configuration → Hooks](configuration.md#keys-and-nesting) for where each one lands.
 
 The full description is in [How it works](how-it-works.md).
 

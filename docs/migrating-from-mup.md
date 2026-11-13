@@ -30,7 +30,6 @@ comet-deploy covers phase 1, MUP's reverse proxy and MUP's built-in MongoDB. If 
 | In your config | What comet-deploy does | What you can do |
 |---|---|---|
 | `privateDockerRegistry` | stop: `"privateDockerRegistry" is not supported yet …` | Keep MUP. |
-| `hooks` | A command that has a hook on any of its steps stops before it does anything: `Hook "pre.deploy" is not supported yet …` | Remove the hooks, or keep MUP. See [Configuration → Hooks](configuration.md#hooks). |
 | No `docker.image`, or `kadirahq/meteord`, or `docker.prepareBundle: false` (MUP bundle mode) | The build stops: `The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode).` | Set `docker.image: 'zodern/meteor:root'`. This is also the image in MUP's own `mup init` sample, so the config keeps working with MUP. |
 | `swarm.enabled: true` | Error: `swarm.enabled Docker Swarm is not supported by comet-deploy` | Keep MUP. Swarm is not planned. |
 | `app.ssl`, `app.nginx`, `app.docker.imageFrontendServer` (deprecated since MUP 1.4) | Error, for example `app.ssl is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section: move the domain and certificate settings there, or keep deploying this app with MUP.` | Move the settings to the [`proxy`](configuration.md#proxy) section, which MUP uses too, or keep MUP. |
@@ -274,5 +273,6 @@ On your machine, you can remove the local images `mup-myapp:<version>` and the l
 | Proxy restart in `setup`, `proxy setup` | always | only when the proxy's own files changed |
 | App restart behind the proxy | a gap while the container is recreated | no gap; with load balancing the server leaves the upstream first |
 | Built-in MongoDB (`mongo`) | supported | supported, with MUP's scripts; checked before the app commands, version changes guarded |
-| Hooks, private registry, bundle mode | supported | phase 2 |
+| Hooks (`hooks`) | supported | supported, the same names; `remoteCommand` failures only warn in both; the api object without nodemiral sessions |
+| Private registry, bundle mode | supported | phase 2 |
 | Docker Swarm, MUP plugins | supported | not planned |
