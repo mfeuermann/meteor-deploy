@@ -103,6 +103,7 @@ async function setup(versions: Record<string, ImageVersions>) {
     },
     startServer: async (d) => ({ server: d.serverName, status: 'healthy', durationMs: 1 }),
     appendHistory: async (_c, _a, e) => void history.push(e),
+    startShPullsRegistry: async () => false,
   };
   return { ctx, deps, calls, history, out: () => out.join('') };
 }
@@ -140,6 +141,20 @@ describe('rollbackPipeline', () => {
     const canary = await rollbackPipeline(c.ctx, {}, c.deps);
     expect(canary.skipped).toEqual(['two']);
     expect(c.calls.some((x) => x.startsWith('activate:'))).toBe(false);
+  });
+
+  it('refuses a server whose start.sh MUP wrote with a registry, before changing it', async () => {
+    const s = await setup({ one: three, two: three });
+    s.deps.startShPullsRegistry = async (c) => c.name === 'one';
+    const out = await rollbackPipeline(s.ctx, {}, s.deps);
+    expect(out.ok).toBe(false);
+    expect(out.results.find((r) => r.server === 'one')).toMatchObject({
+      status: 'failed',
+      error:
+        'Server "one" was last deployed by MUP with privateDockerRegistry: its start.sh pulls :latest from the registry, so a rollback would not change the version. Run "comet-deploy reconfig" first, then the rollback.',
+    });
+    expect(out.skipped).toEqual(['two']);
+    expect(s.calls.some((x) => x.startsWith('activate:'))).toBe(false);
   });
 
   it('skips a version whose deploy failed on that server (M2)', async () => {

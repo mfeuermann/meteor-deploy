@@ -339,6 +339,36 @@ export async function retagRestore(conn: SshConnection, localRepo: string, tags:
   await conn.runScriptOrThrow(await comet('retag.sh', { mode: 'restore', repo: localRepo, ...tags }), `Restoring ${localRepo}:latest`);
 }
 
+// --- servers MUP deployed with a private registry ---
+
+/**
+ * The line of MUP's start.sh that only its registry variant has: it pulls `<prefix>/mup-<app>:latest`
+ * on every start (POSIX ERE for `grep -E`). comet-deploy's start.sh never has it.
+ */
+const MUP_REGISTRY_PULL = '^[[:space:]]*sudo docker pull \\$IMAGE[[:space:]]*$';
+
+/**
+ * Whether the server's start.sh is MUP's registry variant, i.e. MUP with
+ * `privateDockerRegistry` configured the app last. False when there is no start.sh.
+ */
+export async function startShPullsRegistry(conn: SshConnection, appName: string): Promise<boolean> {
+  const r = await conn.exec(`if sudo grep -qE ${shq(MUP_REGISTRY_PULL)} ${shq(`${configDir(appName)}/start.sh`)} 2>/dev/null; then echo pulls-registry; fi`);
+  return r.stdout.includes('pulls-registry');
+}
+
+/**
+ * On a server whose start.sh is MUP's registry variant, tags `<repo>:latest` to the image the
+ * app container runs, which MUP pulled from the registry (registry design §4.5). Nothing
+ * happens elsewhere or without an app container.
+ *
+ * @returns Whether it tagged.
+ */
+export async function adoptMupRegistryImage(conn: SshConnection, o: { appName: string; container: string; repo: string }): Promise<boolean> {
+  const script = await comet('registry-adopt.sh', { startSh: `${configDir(o.appName)}/start.sh`, container: o.container, repo: o.repo, pattern: MUP_REGISTRY_PULL });
+  const r = await conn.runScriptOrThrow(script, 'Taking over the image MUP runs');
+  return r.stdout.includes('adopted');
+}
+
 // --- config snapshot ---
 
 /**

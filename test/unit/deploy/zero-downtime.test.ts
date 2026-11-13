@@ -87,6 +87,7 @@ describe('zeroDowntimeBlocker', () => {
 function label(s: string): string {
   if (s.includes('COMET_HEALTH')) return /CONTAINER='?myapp-next'?/.test(s) ? 'health next' : 'health app';
   if (s.includes('Copies the current start.sh')) return 'snapshot';
+  if (s.includes('echo "adopted"')) return 'adopt';
   if (s.includes('cp -p "$CONFIG_DIR/.prev/start.sh"')) return 'restore';
   if (s.includes('echo "activated"') && s.includes('VERSION=')) return 'retag-activate';
   if (s.includes('echo "restored"')) return 'retag-restore';
@@ -167,6 +168,7 @@ describe('activateServer with the zero-downtime switch', () => {
     const r = await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy', switch: ZD, pickupTimeoutMs: 0 });
     expect(r.status).toBe('healthy');
     expect(m.calls).toEqual([
+      'adopt',
       'snapshot',
       'retag-activate',
       'write /opt/myapp/config/start.sh',

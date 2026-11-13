@@ -17,6 +17,7 @@ const settings = { public: {} };
 function label(script: string): string {
   if (script.includes('COMET_HEALTH')) return 'health';
   if (script.includes('Copies the current start.sh')) return 'snapshot';
+  if (script.includes('echo "adopted"')) return 'adopt';
   if (script.includes('cp -p "$CONFIG_DIR/.prev/start.sh"')) return 'restore';
   if (script.includes('echo "activated"') && script.includes('VERSION=')) return 'retag-activate';
   if (script.includes('echo "restored"')) return 'retag-restore';
@@ -79,6 +80,7 @@ describe('activateServer', () => {
     expect(r.status).toBe('healthy');
     expect(r.health).toEqual({ ok: true, status: 200, seconds: 4 });
     expect(m.calls).toEqual([
+      'adopt',
       'snapshot',
       'retag-activate',
       'write /opt/myapp/config/start.sh',
@@ -95,7 +97,8 @@ describe('activateServer', () => {
     const r = await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy' });
     expect(r.status).toBe('reverted');
     expect(r.logsTail).toContain('app crashed: boom');
-    expect(m.calls.slice(6)).toEqual(['sudo docker logs --tail 100 myapp 2>&1', 'restore', 'retag-restore', 'sudo bash /opt/myapp/config/start.sh', 'health']);
+    // After adopt, snapshot, retag, the two config writes, the start and the health check.
+    expect(m.calls.slice(7)).toEqual(['sudo docker logs --tail 100 myapp 2>&1', 'restore', 'retag-restore', 'sudo bash /opt/myapp/config/start.sh', 'health']);
   });
 
   it('reconfig: no retag, and the revert restores only the config', async () => {
@@ -179,5 +182,30 @@ describe('activateServer', () => {
     expect(r.status).toBe('failed');
     expect(r.error).toMatch(/64 KiB.*not changed/s);
     expect(m.calls).toEqual([]);
+  });
+});
+
+describe('activateServer takes over a server MUP deployed with a registry', () => {
+  it('reconfig adopts before the snapshot', async () => {
+    const m = mockConn('COMET_HEALTH ok 200 4\n');
+    await activateServer(deps(m.conn), { version: null, mode: 'reconfig' });
+    expect(m.calls.indexOf('adopt')).toBe(0);
+    expect(m.calls.indexOf('snapshot')).toBe(1);
+  });
+
+  it('rollback does not adopt', async () => {
+    const m = mockConn('COMET_HEALTH ok 200 4\n');
+    await activateServer(deps(m.conn), { version: null, mode: 'rollback' });
+    expect(m.calls).not.toContain('adopt');
+  });
+
+  it('takeover happens before the retag, so a failed deploy restores the adopted :latest', async () => {
+    const m = mockConn(['COMET_HEALTH fail crashed - 2\n', 'COMET_HEALTH ok 200 3\n']);
+    const r = await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy' });
+    expect(r.status).toBe('reverted');
+    // retag.sh captures the tags it restores when it runs, so they include the adopted :latest.
+    expect(m.calls.indexOf('adopt')).toBe(0);
+    expect(m.calls.indexOf('adopt')).toBeLessThan(m.calls.indexOf('retag-activate'));
+    expect(m.calls).toContain('retag-restore');
   });
 });

@@ -9,7 +9,7 @@ import { appDir, containerName, localImageRepo } from '../core/naming.js';
 import { verboseOutput } from '../output/lines.js';
 import type { Reporter } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStart, renderStartSh } from '../remote/app-files.js';
-import { restoreConfigSnapshot, retagActivate, retagRestore, retagSwap, shArg, snapshotConfig, type ImageTags } from '../remote/ops.js';
+import { adoptMupRegistryImage, restoreConfigSnapshot, retagActivate, retagRestore, retagSwap, shArg, snapshotConfig, type ImageTags } from '../remote/ops.js';
 import type { ExecOptions, SshConnection } from '../ssh/connection.js';
 import { appHealthOptions, healthCheck, type HealthResult } from './health-check.js';
 import { containerRunning, switchContainer, type SwitchMode, type SwitchResult } from './zero-downtime.js';
@@ -193,6 +193,12 @@ export async function activateServer(
       o.mode === 'rollback'
         ? null
         : { startSh: await renderStartSh(config, server), envList: await renderEnvList(config, d.settings, server, { cwd: d.cwd, basePath: d.basePath }) };
+    // MUP with a private registry configured the app last (its start.sh pulls :latest from the
+    // registry): `:latest` is made the image that runs, so the retag below turns it into
+    // `:previous` and a failure restores it (registry design §4.5). The running app is not touched.
+    if (o.mode !== 'rollback' && (await adoptMupRegistryImage(conn, { appName: app.name, container: containerName(config), repo: localImageRepo(config) }))) {
+      r.verboseLine(server, 'took over the image MUP runs as :latest');
+    }
     // The snapshot (config/.prev) is what a failed deploy or reconfig restores. `snapshotTaken`
     // is false when the server has no start.sh yet; the config is then not restored on failure.
     if (o.mode !== 'rollback') snapshotTaken = await snapshotConfig(conn, app.name);

@@ -53,6 +53,7 @@ import {
   readLock,
   releaseLock,
   SetupMissingError,
+  startShPullsRegistry,
   type HistoryEntry,
   type LockInfo,
 } from '../remote/ops.js';
@@ -102,6 +103,8 @@ export interface PipelineDeps {
   createProxyRollout: typeof createProxyRollout;
   /** Refuses to go on when the app is linked to a `mongodb` container that does not run. */
   checkMongo: typeof assertMongoRunning;
+  /** Whether MUP with a private registry wrote the server's start.sh (rollback refuses such a server). */
+  startShPullsRegistry: typeof startShPullsRegistry;
   /**
    * Aborted by the CLI on the first Ctrl+C / SIGTERM: the running step finishes, no further
    * server is started, the locks are released and the command exits with code 130.
@@ -149,6 +152,7 @@ const DEFAULT_DEPS: PipelineDeps = {
   readGitInfo,
   createProxyRollout,
   checkMongo: assertMongoRunning,
+  startShPullsRegistry,
 };
 
 /**
@@ -861,6 +865,15 @@ export async function rollbackPipeline(
       async (s, through) => {
         const started = Date.now();
         const conn = await ctx.ssh.get(s);
+        // MUP's registry start.sh would pull :latest from the registry and run that, whatever the
+        // rollback tagged: refused like a server without a target (registry design §4.5).
+        if (await d.startShPullsRegistry(conn, ctx.config.app.name)) {
+          const error =
+            `Server "${s}" was last deployed by MUP with privateDockerRegistry: its start.sh pulls :latest from the registry, so a rollback would not change the version. ` +
+            'Run "comet-deploy reconfig" first, then the rollback.';
+          ctx.reporter.server(s, 'rollback', 'failed', error);
+          return { server: s, status: 'failed', durationMs: Date.now() - started, error };
+        }
         // The history is only needed for the automatic choice, which skips versions that never
         // ran healthy on this server; an explicit `--to` is taken as given.
         const [versions, outcomes] = await Promise.all([

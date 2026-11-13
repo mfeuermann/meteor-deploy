@@ -3,6 +3,7 @@ import { makeVersion, VERSION_RE } from '../../../src/build/version.js';
 import { CometError } from '../../../src/core/errors.js';
 import {
   acquireLock,
+  adoptMupRegistryImage,
   appendHistory,
   parseFacts,
   parseVersions,
@@ -11,6 +12,7 @@ import {
   readLock,
   retagActivate,
   shq,
+  startShPullsRegistry,
   type HistoryEntry,
   type LockInfo,
 } from '../../../src/remote/ops.js';
@@ -238,5 +240,32 @@ describe('selectVersionsToRemove', () => {
     expect(selectVersionsToRemove(v, 3, new Set(['20261102-000000']))).toEqual(['20261102-000000']);
     // a failed version behind :previous stays and does not use a slot either
     expect(selectVersionsToRemove(v, 3, new Set(['20261103-000000']))).toEqual([]);
+  });
+});
+
+describe('servers MUP deployed with a private registry (registry design §4.5)', () => {
+  it('startShPullsRegistry is true only on the marker', async () => {
+    const yes = fakeConn(() => 'pulls-registry\n');
+    expect(await startShPullsRegistry(yes.conn, 'myapp')).toBe(true);
+    expect(yes.calls[0].text).toContain("'/opt/myapp/config/start.sh'");
+    expect(yes.calls[0].text).toContain('sudo docker pull \\$IMAGE');
+    const no = fakeConn(() => '');
+    expect(await startShPullsRegistry(no.conn, 'myapp')).toBe(false);
+  });
+
+  it('adoptMupRegistryImage tags the image the app container runs as :latest', async () => {
+    const f = fakeConn(() => 'adopted\n');
+    expect(await adoptMupRegistryImage(f.conn, { appName: 'myapp', container: 'myapp', repo: 'mup-myapp' })).toBe(true);
+    const script = f.calls[0].text;
+    expect(script).toContain('sudo docker pull \\$IMAGE');
+    expect(script).toContain("CONTAINER='myapp'");
+    expect(script).toContain('docker inspect');
+    expect(script).toContain('sudo docker tag "$IMAGE_ID" "$REPO:latest"');
+    expect(script).toContain("REPO='mup-myapp'");
+  });
+
+  it('adoptMupRegistryImage is false without the marker', async () => {
+    const f = fakeConn(() => '');
+    expect(await adoptMupRegistryImage(f.conn, { appName: 'myapp', container: 'myapp', repo: 'mup-myapp' })).toBe(false);
   });
 });
