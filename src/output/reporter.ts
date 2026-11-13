@@ -38,6 +38,8 @@ export interface Reporter {
   error(msg: string): void;
   /** Prints one line of command output in verbose mode only. `server` null: local, no prefix. */
   verboseLine(server: string | null, line: string): void;
+  /** `--show-hook-names`: prints `Hook: pre.<key>`, yellow in a terminal like MUP. */
+  hookName(line: string): void;
   summary(rows: SummaryRow[]): void;
   /** Durations of the phases run so far, in order (failed phases included). */
   phaseTimings(): Array<{ name: string; durationMs: number }>;
@@ -124,6 +126,9 @@ export function createReporter(opts: {
     },
     error(msg) {
       out(color.red(`Error: ${msg}`));
+    },
+    hookName(line) {
+      out(color.yellow(line));
     },
     verboseLine(server, line) {
       if (!opts.verbose) return;

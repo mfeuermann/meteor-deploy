@@ -52,6 +52,15 @@ describe('reporter (plain mode)', () => {
     expect(lines.join('')).not.toMatch(/\u001b\[/);
   });
 
+  it('hookName prints the line, colored only in a terminal', () => {
+    const { r, lines } = setup();
+    r.hookName('Hook: pre.default.deploy');
+    expect(lines).toEqual(['Hook: pre.default.deploy\n']);
+    const colored: string[] = [];
+    createReporter({ verbose: false, tty: true, write: (s) => colored.push(s) }).hookName('Hook: post.meteor.start');
+    expect(colored[0]).toContain('Hook: post.meteor.start');
+  });
+
   it('suppresses verbose lines unless verbose', () => {
     const { r, lines } = setup(false);
     r.verboseLine(null, 'hidden');

@@ -135,7 +135,6 @@ async function runProxyStart(ctx: CommandContext, servers: string[], o: { force:
 export async function proxySetup(ctx: CommandContext, d: ProxyLockDeps = LOCK_DEPS): Promise<void> {
   const p = requireProxy(ctx);
   const c = ctx.config;
-  ctx.runner.refuseHooks(['proxy.setup', 'proxy.start']);
   const servers = proxyServers(c, ctx.serverFilter);
   // A file the config names but that cannot be read stops the command before any server is asked.
   if (p.shared) await renderSharedFiles(c, { basePath: ctx.basePath, cwd: ctx.cwd });
@@ -200,7 +199,6 @@ export async function proxySetup(ctx: CommandContext, d: ProxyLockDeps = LOCK_DE
 /** `proxy start`: recreates the proxy containers, server by server (`force: true` for the command). */
 export async function proxyStart(ctx: CommandContext, o: { force: boolean }, d: ProxyLockDeps = LOCK_DEPS): Promise<void> {
   requireProxy(ctx);
-  ctx.runner.refuseHooks(['proxy.start']);
   const servers = proxyServers(ctx.config, ctx.serverFilter);
   await withAppLock(ctx, 'proxy start', d, () => runProxyStart(ctx, servers, { force: o.force, parallel: false }));
 }
@@ -208,7 +206,6 @@ export async function proxyStart(ctx: CommandContext, o: { force: boolean }, d: 
 /** `proxy stop`: removes both proxy containers on every proxy server. */
 export async function proxyStop(ctx: CommandContext, d: ProxyLockDeps = LOCK_DEPS): Promise<void> {
   requireProxy(ctx);
-  ctx.runner.refuseHooks(['proxy.stop']);
   const servers = proxyServers(ctx.config, ctx.serverFilter);
   await withAppLock(ctx, 'proxy stop', d, () =>
     ctx.runner.run('proxy.stop', async () => {
@@ -228,7 +225,6 @@ export async function proxyStop(ctx: CommandContext, d: ProxyLockDeps = LOCK_DEP
 export async function proxyReconfigShared(ctx: CommandContext, d: ProxyLockDeps = LOCK_DEPS): Promise<void> {
   const p = requireProxy(ctx);
   const c = ctx.config;
-  ctx.runner.refuseHooks(['proxy.reconfig-shared', 'proxy.start']);
   const shared = (p.shared ?? {}) as Record<string, unknown>;
   const servers = proxyServers(c, ctx.serverFilter);
   await withAppLock(ctx, 'proxy reconfig-shared', d, async () => {

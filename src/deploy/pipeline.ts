@@ -382,13 +382,11 @@ export async function deployPipeline(
   const strategy = o.strategy ?? c.cometDeploy.strategy;
 
   // The MUP command keys this run enters: `meteor build` is only `meteor.build` and
-  // `meteor push` stops after `meteor.prepareBundle`, as in MUP. All of them are checked for
-  // hooks now, so a hook on a late step never fails the deploy after the build and the upload.
+  // `meteor push` stops after `meteor.prepareBundle`, as in MUP.
   const keys =
     o.stopAfter === 'build'
       ? ['meteor.build']
       : ['meteor.push', 'meteor.build', 'meteor.prepareBundle', ...(o.stopAfter === 'push' ? [] : ['meteor.deploy', 'default.reconfig', 'meteor.envconfig', 'meteor.start'])];
-  run.refuseHooks(keys);
   const step = <T>(key: string, fn: () => Promise<T>): Promise<T> => (keys.includes(key) ? run.run(key, fn) : fn());
 
   return step('meteor.deploy', async () => {

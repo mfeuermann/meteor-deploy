@@ -68,10 +68,6 @@ export async function meteorSetup(ctx: CommandContext): Promise<void> {
 
 /** `setup` (MUP `default.setup` → `docker.setup` → `meteor.setup` → `mongo.*` → `proxy.*`). */
 export async function setupAll(ctx: CommandContext, o: { allowMongoVersionChange?: boolean } = {}): Promise<void> {
-  // All keys now, so a hook on a later step does not stop setup after Docker was set up.
-  const mongoKeys = ctx.config.mongo ? ['mongo.setup', 'mongo.start'] : [];
-  const proxyKeys = ctx.config.proxy ? ['proxy.setup', 'proxy.start'] : [];
-  ctx.runner.refuseHooks(['default.setup', 'docker.setup', 'meteor.setup', ...mongoKeys, ...proxyKeys]);
   await ctx.runner.run('default.setup', async () => {
     await dockerSetup(ctx);
     await meteorSetup(ctx);

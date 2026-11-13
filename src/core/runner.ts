@@ -1,63 +1,92 @@
 /**
- * Runs the steps of a command under MUP's command keys (`default.deploy`, `meteor.push`, ...),
- * so the hook names a MUP config uses refer to the same points in comet-deploy.
+ * Runs the steps of a command under MUP's command keys (`default.deploy`, `meteor.push`, ...)
+ * with the config's hooks around them, as MUP's `api.runCommand` does (hooks design §4.2).
  */
-import { CometError } from './errors.js';
+import type { HookHandler, HookTable } from '../hooks/registry.js';
+
+/** Runs one handler of the hook `name` (src/hooks/run.ts); throws when the hook fails. */
+export type HookExecutor = (name: string, handler: HookHandler) => Promise<void>;
 
 /**
- * MUP hook names that belong to a command key: `pre.<key>` / `post.<key>`, plus the short
- * form `pre.<cmd>` / `post.<cmd>` for `default.<cmd>` (MUP reads a hook name with one dot as
- * a `default.` hook).
- */
-function hookNamesFor(key: string): string[] {
-  const names = [`pre.${key}`, `post.${key}`];
-  if (key.startsWith('default.')) {
-    const short = key.slice('default.'.length);
-    names.push(`pre.${short}`, `post.${short}`);
-  }
-  return names;
-}
-
-/**
- * Runs MUP-style commands by key (e.g. `meteor.push`) and records them, like
- * MUP's `api.runCommand` / `commandHistory`. Hooks are planned for phase 2: a command
- * that has one is refused instead of silently running without it.
+ * Enters MUP command keys and records them, like MUP's `runCommand` / `commandHistory`.
+ * `pre.<key>` hooks run before a step and `post.<key>` hooks after its success. After the
+ * first failure (a throw through a step or a hook, or a result the step calls failed) no hook
+ * runs any more: MUP exits the process at that point.
  */
 export class CommandRunner {
-  /** Keys in the order their commands started, like MUP's `commandHistory`. */
+  /** Keys in the order their steps started, like MUP's `commandHistory`. */
   readonly history: string[] = [];
-
-  /** @param hooks The config's `hooks` section. */
-  constructor(private readonly hooks: Record<string, unknown> = {}) {}
+  private readonly hooks: HookTable;
+  private readonly exec?: HookExecutor;
+  private readonly showHookNames?: (line: string) => void;
+  private hasFailed = false;
 
   /**
-   * Runs `fn` as the command `key`. Nested calls work like MUP's nested `runCommand`.
-   *
-   * @throws CometError before `fn` runs when the config has a pre or post hook for this key.
-   *   A post hook is refused up front too, so the command never does its work and then skips
-   *   the hook.
+   * @param o.hooks The config's hooks by normalized name (`hookTable`).
+   * @param o.exec Runs one handler; required when `hooks` has any.
+   * @param o.showHookNames `--show-hook-names`: receives `Hook: pre.<key>` / `Hook: post.<key>`.
    */
-  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    this.refuseHooks([key]);
+  constructor(o: { hooks?: HookTable; exec?: HookExecutor; showHookNames?: (line: string) => void } = {}) {
+    this.hooks = o.hooks ?? new Map();
+    this.exec = o.exec;
+    this.showHookNames = o.showHookNames;
+  }
+
+  /** Whether a step or a hook of this command failed; no hook runs after that. */
+  get failed(): boolean {
+    return this.hasFailed;
+  }
+
+  /** Records a failure that did not throw (e.g. an unhealthy server), so no further hook runs. */
+  markFailed(): void {
+    this.hasFailed = true;
+  }
+
+  /** Starts the step `key`: records it and runs its `pre` hooks. */
+  async enter(key: string): Promise<void> {
     this.history.push(key);
-    return fn();
+    await this.fire(`pre.${key}`);
+  }
+
+  /** Ends the step `key` successfully: runs its `post` hooks. */
+  async leave(key: string): Promise<void> {
+    await this.fire(`post.${key}`);
   }
 
   /**
-   * Throws for the first of `keys` that has a hook. A command calls this with every key it
-   * will enter, so a hook on a late step (e.g. `pre.meteor.start` of a deploy) is refused
-   * before the build and the upload, not after them.
+   * Runs `fn` as the step `key`. Nested calls work like MUP's nested `runCommand`.
    *
-   * @throws CometError naming the hook.
+   * @param o.failed Decides from the result whether the step failed without throwing; then
+   *   its post hooks do not run.
    */
-  refuseHooks(keys: string[]): void {
-    for (const key of keys) {
-      const hook = hookNamesFor(key).find((n) => Object.prototype.hasOwnProperty.call(this.hooks ?? {}, n));
-      if (hook) {
-        throw new CometError(`Hook "${hook}" is not supported yet (hooks are planned for phase 2 of comet-deploy).`, {
-          hint: 'Remove the hook from the config to use comet-deploy for this command, or keep using MUP for it.',
-        });
-      }
+  async run<T>(key: string, fn: () => Promise<T>, o: { failed?: (result: T) => boolean } = {}): Promise<T> {
+    await this.enter(key);
+    let result: T;
+    try {
+      result = await fn();
+    } catch (err) {
+      this.hasFailed = true;
+      throw err;
+    }
+    if (o.failed?.(result)) {
+      this.hasFailed = true;
+      return result;
+    }
+    await this.leave(key);
+    return result;
+  }
+
+  private async fire(name: string): Promise<void> {
+    if (this.hasFailed) return;
+    this.showHookNames?.(`Hook: ${name}`);
+    const handlers = this.hooks.get(name);
+    if (!handlers?.length) return;
+    if (!this.exec) throw new Error(`No hook executor for ${name}`);
+    try {
+      for (const h of handlers) await this.exec(name, h);
+    } catch (err) {
+      this.hasFailed = true;
+      throw err;
     }
   }
 }
