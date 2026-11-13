@@ -41,13 +41,14 @@ import { resolveAppPath } from '../config/normalize.js';
 import type { CometOptions } from '../config/types.js';
 import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
-import { appDir, localImageRepo } from '../core/naming.js';
+import { appDir, containerName, localImageRepo } from '../core/naming.js';
 import { TOOL_ID } from '../core/version.js';
 import { verboseOutput } from '../output/lines.js';
 import type { ServerStatus, SummaryRow } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStop, renderStartSh } from '../remote/app-files.js';
 import {
   acquireLock,
+  adoptMupRegistryImage,
   appendHistory,
   listVersions,
   pruneImages,
@@ -842,7 +843,9 @@ export async function startAll(ctx: CommandContext, deps: Partial<Pick<PipelineD
 
 /**
  * Hidden `meteor envconfig`: writes start.sh/env.list on all app servers without restarting, as
- * MUP's does. No lock, no snapshot: the new files take effect on the next start.
+ * MUP's does. No lock, no snapshot: the new files take effect on the next start. A server where
+ * MUP's registry start.sh is gets taken over first, as in an activation (registry design §4.5):
+ * otherwise the next start would run an older `mup-<app>:latest` than the app runs now.
  */
 export async function envconfigAll(ctx: CommandContext): Promise<void> {
   await ctx.runner.run('meteor.envconfig', async () => {
@@ -858,6 +861,9 @@ export async function envconfigAll(ctx: CommandContext): Promise<void> {
     );
     for (const f of files) {
       const conn = await ctx.ssh.get(f.s);
+      if (await adoptMupRegistryImage(conn, { appName: ctx.config.app.name, container: containerName(ctx.config), repo: localImageRepo(ctx.config) })) {
+        ctx.reporter.verboseLine(f.s, 'took over the image MUP runs as :latest');
+      }
       await conn.writeFile(`${appDir(ctx.config)}/config/start.sh`, f.startSh);
       // env.list carries the settings and other secrets: readable by its owner only.
       await conn.writeFile(`${appDir(ctx.config)}/config/env.list`, f.envList, 0o600);

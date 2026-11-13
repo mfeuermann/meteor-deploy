@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createContext, type CommandContext } from '../../../src/core/context.js';
 import { CometError } from '../../../src/core/errors.js';
 import type { ActivationResult } from '../../../src/deploy/activate.js';
-import { reconfigPipeline, restartPipeline, startAll, stopAll, type PipelineDeps } from '../../../src/deploy/pipeline.js';
+import { envconfigAll, reconfigPipeline, restartPipeline, startAll, stopAll, type PipelineDeps } from '../../../src/deploy/pipeline.js';
 import { createReporter } from '../../../src/output/reporter.js';
 import type { ExecResult, SshConnection } from '../../../src/ssh/connection.js';
 import { tempDir } from '../../helpers/fs.js';
@@ -15,7 +15,7 @@ const MUP = `module.exports = {
 /** Fake connection: records scripts by a short label, health answer configurable, 10 ms per call. */
 function fakeConn(name: string, health: string, log: string[], timeline: Array<[string, 'start' | 'end']>) {
   const label = (s: string) =>
-    s.includes('COMET_HEALTH') ? 'health' : s.includes('# start app') ? 'meteor-start' : s.includes('docker stop') || s.includes('docker rm -f') ? 'meteor-stop' : s.includes('echo "activated"') ? 'retag' : s.trim().slice(0, 40);
+    s.includes('COMET_HEALTH') ? 'health' : s.includes('# start app') ? 'meteor-start' : s.includes('docker stop') || s.includes('docker rm -f') ? 'meteor-stop' : s.includes('echo "activated"') ? 'retag' : s.includes('echo "adopted"') ? 'adopt' : s.trim().slice(0, 40);
   const res = async (s: string): Promise<ExecResult> => {
     const l = label(s);
     log.push(`${name}:${l}`);
@@ -49,6 +49,20 @@ async function setup(health = 'COMET_HEALTH ok 200 1\n') {
   };
   return { ctx, deps, calls, log, timeline, out: () => out.join('') };
 }
+
+describe('envconfigAll', () => {
+  it('takes over a server MUP deployed with a registry before it writes start.sh', async () => {
+    // Without the takeover, comet's start.sh would replace MUP's registry start.sh and the
+    // next start would run an older mup-<app>:latest (registry design §4.5).
+    const s = await setup();
+    await envconfigAll(s.ctx);
+    for (const n of ['one', 'two']) {
+      const mine = s.log.filter((l) => l.startsWith(`${n}:`));
+      expect(mine.indexOf(`${n}:adopt`)).toBeGreaterThanOrEqual(0);
+      expect(mine.indexOf(`${n}:adopt`)).toBeLessThan(mine.indexOf(`${n}:write`));
+    }
+  });
+});
 
 describe('reconfigPipeline', () => {
   it('activates in reconfig mode with the MUP command keys', async () => {

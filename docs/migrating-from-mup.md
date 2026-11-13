@@ -226,7 +226,7 @@ Things to know:
 - With the `mongo` section, both tools write the same MongoDB start script, so neither recreates the container the other one started. Mind the version: `mup setup` starts whatever `mongo.version` says, without comet-deploy's check.
 - Behind the proxy, `mup proxy setup` clears the `down` marks of drained servers; see [The reverse proxy](#the-reverse-proxy).
 - **With `privateDockerRegistry`**, `mup deploy` and `mup reconfig` write MUP's `start.sh`, which pulls `<imagePrefix>/mup-<name>:latest` from the registry on every start. On such a server:
-  - `comet-deploy deploy` and `reconfig` first tag `mup-<name>:latest` to the image the app runs, so `:previous` and a later rollback know MUP's version, then they write comet-deploy's `start.sh`.
+  - `comet-deploy deploy`, `reconfig` and `meteor envconfig` first tag `mup-<name>:latest` to the image the app runs, so `:previous` and a later rollback know MUP's version, then they write comet-deploy's `start.sh`.
   - `comet-deploy rollback` refuses the server (`… was last deployed by MUP with privateDockerRegistry …`): MUP's `start.sh` would pull `:latest` again and run the same version. Run `comet-deploy reconfig` first.
   - `comet-deploy restart`, `start` and `stop` run the `start.sh` that is there, so they pull `:latest`, as MUP does.
   - `mup reconfig` after a comet-deploy deploy runs comet-deploy's version, because comet-deploy pushes `:latest` after every healthy deploy to all app servers.
@@ -254,7 +254,7 @@ sudo rm -rf /opt/myapp/config/.prev /opt/myapp/config/deploy-history.jsonl /opt/
 
 `docker rmi` on a tag only removes the tag when `:latest` or `:previous` points to the same image.
 
-With `privateDockerRegistry`, `mup deploy` writes MUP's `start.sh` again, which pulls `:latest` from the registry. Until then, `mup restart` runs comet-deploy's `start.sh`, which starts the server's own `mup-<name>:latest`.
+With `privateDockerRegistry`, `mup deploy` and `mup reconfig` write MUP's `start.sh` again, which pulls `:latest` from the registry. Until one of them runs, `mup restart` runs comet-deploy's `start.sh`, which starts the server's own `mup-<name>:latest`.
 
 On your machine, you can remove the local images `mup-myapp:<version>` and the local registry (see [Troubleshooting → Leftover local images](troubleshooting.md#leftover-local-images-and-the-registry-volume)).
 

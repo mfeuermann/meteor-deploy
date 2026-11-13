@@ -495,7 +495,7 @@ Things to know:
 
 **With a private registry**, MUP keeps its images as `<imagePrefix>/mup-<name>` and its `start.sh` pulls `:latest` from the registry, while comet-deploy keeps `mup-<name>` and its `start.sh` never pulls. The integration tests check this sequence too: `mup deploy`, then `comet-deploy deploy` (MUP's image becomes `:previous`), `mup reconfig` (runs comet-deploy's version, because `:latest` in the registry points to it), `comet-deploy rollback` (refused, see below), `comet-deploy reconfig` and `rollback` (back to MUP's version), then `mup deploy` and `comet-deploy deploy` again.
 
-- When MUP wrote `start.sh` last (its registry variant), `deploy` and `reconfig` first tag `mup-<name>:latest` to the image the app container runs, so a revert and a later rollback know MUP's version. Then they write comet-deploy's `start.sh`.
+- When MUP wrote `start.sh` last (its registry variant), `deploy`, `reconfig` and `meteor envconfig` first tag `mup-<name>:latest` to the image the app container runs, so a revert and a later rollback know MUP's version. Then they write comet-deploy's `start.sh`.
 - `rollback` refuses such a server before changing it: `Server "one" was last deployed by MUP with privateDockerRegistry: its start.sh pulls :latest from the registry, so a rollback would not change the version. Run "comet-deploy reconfig" first, then the rollback.`
 - `restart`, `start` and `stop` use the `start.sh` that is on the server, so with MUP's they pull `:latest` from the registry, as MUP does.
 

@@ -603,7 +603,7 @@ comet-deploy never reads `:latest` in the registry; it is there for MUP, whose `
 Server "one" was last deployed by MUP with privateDockerRegistry: its start.sh pulls :latest from the registry, so a rollback would not change the version. Run "comet-deploy reconfig" first, then the rollback.
 ```
 
-MUP's `start.sh` with a registry pulls `<imagePrefix>/mup-<name>:latest` on every start, so any image a rollback tagged on the server would be replaced by the registry's. `comet-deploy reconfig` writes comet-deploy's `start.sh` (it first tags `mup-<name>:latest` to the image that runs, so nothing changes for the app), and then `rollback` works. The other servers of the rollback are not affected.
+MUP's `start.sh` with a registry pulls `<imagePrefix>/mup-<name>:latest` on every start, so any image a rollback tagged on the server would be replaced by the registry's. `comet-deploy reconfig` writes comet-deploy's `start.sh` (it first tags `mup-<name>:latest` to the image that runs, so nothing changes for the app), and then `rollback` works. The rollout strategy counts the refused server as failed: with `rolling`, and with `canary` when it is the first server, the servers after it are skipped; the others roll back.
 
 ### Health check failed and the server was reverted
 

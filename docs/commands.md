@@ -166,7 +166,7 @@ Builds the app once on your machine and deploys it to the app servers:
 3. **Lock** every target server.
 4. **Distribute**: push to a local registry, then every server pulls only the layers it does not have, through an SSH reverse tunnel, in parallel. A server without SSH forwarding gets the whole image as a `docker save` archive over SSH instead, unless it has this version already. With [`privateDockerRegistry`](configuration.md#privatedockerregistry), comet-deploy logs in to the registry before the build, pushes the version there, and every server pulls it (`(from <registry>)`). The running app is not touched. If any server fails here, the deploy stops and no server is changed.
 5. **Activate** by strategy: per server, save the current `start.sh` and `env.list`, retag the image, write the new files, restart the container and run the health check. A server that fails is reverted to its previous image and config.
-6. Write the deploy history, remove old versions on the healthy servers, release the locks. With a private registry, a deploy that ended healthy on every app server then pushes `<imagePrefix>/mup-<name>:latest` for MUP.
+6. Write the deploy history, remove old versions on the healthy servers, release the locks. With a private registry, a deploy that ended healthy on every app server, with one CPU architecture, then pushes `<imagePrefix>/mup-<name>:latest` for MUP.
 
 Hooks run around these steps under MUP's keys (`pre.deploy`, `pre.meteor.build`, `post.meteor.start`, …); see [Configuration → Hooks](configuration.md#keys-and-nesting) for where each one lands.
 
