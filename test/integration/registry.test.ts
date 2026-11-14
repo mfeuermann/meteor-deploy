@@ -56,7 +56,9 @@ describe('deploy through a private registry', () => {
     const r = await cli(['deploy', ...config()], p.root);
     expect(r.code, r.output).toBe(0);
     expect(r.output).toContain(`registry: logged in to ${reg.host}`);
-    expect(r.output).toMatch(new RegExp(`\\[s1\\] distribute .*\\(from 127\\.0\\.0\\.1:${reg.port}\\)`));
+    // s1 pulled the version in the failed deploy above (the pulls all settle), so only s2 pulls now.
+    expect(r.output).toContain('[s1] distribute ✓ (already on the server)');
+    expect(r.output).toMatch(new RegExp(`\\[s2\\] distribute .*\\(from 127\\.0\\.0\\.1:${reg.port}\\)`));
     for (const s of servers) expect(await curlApp(s, '/native')).toBe('60');
     // The servers keep the image as mup-<app> only; the registry has the version and :latest.
     for (const s of servers) expect((await s.exec(`docker images --format '{{.Repository}}:{{.Tag}}'`)).stdout).not.toContain(reg.host);
