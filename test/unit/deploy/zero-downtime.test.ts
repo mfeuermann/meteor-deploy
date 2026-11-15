@@ -202,6 +202,29 @@ describe('activateServer with the zero-downtime switch', () => {
     expect(finish).toMatch(/trap unroute EXIT/);
   });
 
+  it('zd-start no longer removes current', async () => {
+    // MUP's old bundle-mode container runs from /opt/<app>/current until zd-finish removes it.
+    const m = zdConn({ health: ['COMET_HEALTH ok 200 4\n'], routed: true, startSh: await renderStartSh(zdConfig, 'one') });
+    await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy', switch: ZD, pickupTimeoutMs: 0 });
+    const start = m.texts['zd-start'];
+    expect(start).not.toMatch(/rm -rf current/);
+    expect(start).toContain('sudo rm -rf last');
+  });
+
+  it('zd-finish removes current after the old container is gone and only if the new one does not mount it', async () => {
+    const m = zdConn({ health: ['COMET_HEALTH ok 200 4\n'], routed: true, startSh: await renderStartSh(zdConfig, 'one') });
+    await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy', switch: ZD, pickupTimeoutMs: 0 });
+    const finish = m.texts['zd-finish'];
+    const at = (s: string) => finish.indexOf(s);
+    expect(finish).toContain("APP_DIR='/opt/myapp'");
+    expect(at('sudo rm -rf "$APP_DIR/current"')).toBeGreaterThan(at('docker rename'));
+    expect(at('sudo rm -rf "$APP_DIR/current"')).toBeGreaterThan(at('docker rm -f "$NAME"'));
+    // Guarded by the mount list of the renamed container.
+    const guard = finish.slice(at('{{range .Mounts}}'), at('sudo rm -rf "$APP_DIR/current"'));
+    expect(guard).toContain('"$APP_DIR/current"');
+    expect(at('{{range .Mounts}}')).toBeGreaterThan(at('docker rename'));
+  });
+
   it('a failed health check keeps the old container: logs of next, rm next, restore, no start.sh', async () => {
     const m = zdConn({ health: ['COMET_HEALTH fail crashed - 2\n', 'COMET_HEALTH ok 200 1\n'], routed: true, startSh: await renderStartSh(zdConfig, 'one') });
     const r = await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy', switch: ZD, pickupTimeoutMs: 0 });
@@ -212,6 +235,8 @@ describe('activateServer with the zero-downtime switch', () => {
     expect(m.calls).not.toContain('start.sh');
     expect(m.calls).not.toContain('meteor-start');
     expect(m.calls).not.toContain('zd-finish');
+    // current stays for the old container (bundle mode design §4.4).
+    expect(Object.values(m.texts).some((t) => /rm -rf[^\n]*current/.test(t))).toBe(false);
   });
 
   it('nginx not routing to the new container in time is a failure with the same revert', async () => {

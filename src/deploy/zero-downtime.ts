@@ -152,7 +152,7 @@ export async function switchContainer(
     const timeoutMs = o.pickupTimeoutMs ?? NGINX_PICKUP_TIMEOUT_MS;
     const route = await waitForNginx(conn, next, Number(c.app.docker.imagePort ?? 3000), timeoutMs);
     if (!route) return await failed(health, `nginx did not route to the new container within ${Math.round(timeoutMs / 1000)}s`);
-    const finish = await cometScript('zd-finish.sh', { name, next, proxyName: PROXY_NAME, domains: proxyDomains(c), route });
+    const finish = await cometScript('zd-finish.sh', { appDir: appDir(c), name, next, proxyName: PROXY_NAME, domains: proxyDomains(c), route });
     await conn.runScriptOrThrow(finish, 'Replacing the old container', out);
     return { health, switched: true };
   } catch (err) {

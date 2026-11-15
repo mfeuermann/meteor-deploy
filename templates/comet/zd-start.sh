@@ -4,8 +4,8 @@
 set -e
 cd <%- q(appDir) %>
 IMAGE=<%- q(image) %>
-# meteor-start.sh's image branch: comet-deploy always runs the distributed image.
-sudo rm -rf current || true
+# meteor-start.sh's image branch: comet-deploy always runs the distributed image. Removing the
+# current directory waits for zd-finish.sh: an old container of MUP's bundle mode runs from it.
 if sudo docker image inspect $IMAGE:previous >/dev/null 2>&1; then
   sudo rm -rf last
 fi

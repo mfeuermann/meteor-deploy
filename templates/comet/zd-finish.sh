@@ -6,8 +6,12 @@
 # stops, and a request nginx sent there would hang until a timeout. Then the old container stops
 # (10 s for its in-flight requests) and is removed, the next container gets the app's name, and
 # the files are removed again (also when the script ends early or the connection drops), which
-# gives the config docker-gen generates from the containers.
+# gives the config docker-gen generates from the containers. Last, /opt/<app>/current goes, as
+# in MUP's meteor-start.sh: only now, because an old container of MUP's bundle mode runs (and
+# serves its client files) from there until it is removed, and only when the new container does
+# not mount it.
 set -e
+APP_DIR=<%- q(appDir) %>
 NAME=<%- q(name) %>
 NEXT=<%- q(next) %>
 PROXYNAME=<%- q(proxyName) %>
@@ -48,5 +52,9 @@ for c in "$NAME-frontend" "$NAME-nginx-letsencrypt" "$NAME-nginx-proxy"; do
   sudo docker rm -f "$c" >/dev/null 2>&1 || true
 done
 sudo docker rename "$NEXT" "$NAME"
+if MOUNTS=$(sudo docker inspect -f '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$NAME" 2>/dev/null) &&
+  ! printf '%s\n' "$MOUNTS" | grep -qxF "$APP_DIR/current"; then
+  sudo rm -rf "$APP_DIR/current"
+fi
 unroute
 echo switched
