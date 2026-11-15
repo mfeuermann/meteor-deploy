@@ -20,7 +20,7 @@ comet-deploy reads the same config file as Meteor Up (MUP) 1.5.11: `mup.js` or `
 - [`privateDockerRegistry`](#privatedockerregistry)
 - [Accepted but ignored](#accepted-but-ignored)
 - [Rejected options](#rejected-options)
-- [Planned for phase 2](#planned-for-phase-2)
+- [Bundle mode](#bundle-mode)
 - [Hooks](#hooks)
 - [`cometDeploy`](#cometdeploy)
 - [Environment variables](#environment-variables)
@@ -213,13 +213,13 @@ Env values are never baked into the image (with one exception, see [`docker.buil
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `image` | string | `'kadirahq/meteord'` | Base image. **Set this.** comet-deploy builds an app image on top of it, which needs an image with MUP's "prepare bundle" support: `zodern/meteor` (for example `zodern/meteor:root` or `zodern/meteor:latest`) or `abernix/meteord`. The default `kadirahq/meteord` only supports MUP's older bundle mode, which is [phase 2](#planned-for-phase-2). Any reference works, including a registry with a port (`registry.example.com:5000/org/image:tag`). |
-| `prepareBundle` | boolean | `true` for `zodern/meteor*` and `abernix/meteord*`, otherwise `false` | Whether the image can build an app image. Set `true` to use another image that works like `zodern/meteor` (installs Node from the `NODE_VERSION` build argument and runs `/built_app`). `false` means bundle mode, which stops the deploy (phase 2). |
+| `image` | string | `'kadirahq/meteord'` | Base image. With MUP's "prepare bundle" support (`zodern/meteor`, for example `zodern/meteor:root` or `zodern/meteor:latest`, or `abernix/meteord`) comet-deploy builds an app image on top of it with the npm dependencies installed. Any other image, including the default `kadirahq/meteord`, runs in MUP's [bundle mode](#bundle-mode). Any reference works, including a registry with a port (`registry.example.com:5000/org/image:tag`). |
+| `prepareBundle` | boolean | `true` for `zodern/meteor*` and `abernix/meteord*`, otherwise `false` | Whether the image can build an app image. Set `true` to use another image that works like `zodern/meteor` (installs Node from the `NODE_VERSION` build argument and runs `/built_app`). `false` means [bundle mode](#bundle-mode). |
 | `imagePort` | number | `3000` | Port the app listens on inside the container. |
 | `bind` | string | `'0.0.0.0'` | Host address the port is published on (`--publish=<bind>:<PORT>:<imagePort>`). |
 | `args` | string[] | - | Extra `docker run` arguments, inserted as they are. Example: `['--memory=1g', '-v /etc/timezone:/etc/timezone:ro']`. |
 | `networks` | string[] | - | Docker networks the container is connected to after it starts. |
-| `buildInstructions` | string[] | - | Dockerfile lines added right after `FROM`. comet-deploy always applies them, because it always builds an image. If a line references an `app.env` key as `$KEY`, `${KEY}` or with a modifier such as `${KEY:-default}`, that key becomes a build argument and comet-deploy warns `build args are visible in image history: KEY`. Changing its value triggers a new build. No other env value reaches the image. |
+| `buildInstructions` | string[] | - | Dockerfile lines added right after `FROM`. In [bundle mode](#bundle-mode) there is no Dockerfile and they are ignored, as in MUP. If a line references an `app.env` key as `$KEY`, `${KEY}` or with a modifier such as `${KEY:-default}`, that key becomes a build argument and comet-deploy warns `build args are visible in image history: KEY`. Changing its value triggers a new build. No other env value reaches the image. |
 | `prepareBundleLocally` | boolean | - | Ignored, with a warning. comet-deploy always builds locally. |
 | `useBuildKit` | boolean | - | Ignored, with a warning. comet-deploy always uses BuildKit. |
 | `stopAppDuringPrepareBundle` | boolean | `true` | Ignored. There is no build on the server, so the app is never stopped for one. |
@@ -422,11 +422,21 @@ These stop every command that needs the config (and make `validate` exit 1):
 
 MUP deprecated `app.ssl`, `app.nginx` and `imageFrontendServer` in version 1.4 in favour of the [`proxy`](#proxy) section, which comet-deploy supports.
 
-## Planned for phase 2
+## Bundle mode
 
-comet-deploy does not run MUP's bundle mode yet. A base image without app-image support (the default `kadirahq/meteord`, or `docker.prepareBundle: false`) stops the build with `The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode). Bundle mode is planned for phase 2 of comet-deploy.` and the hint `Use a zodern/meteor image (app.docker.image), e.g. "zodern/meteor:root".`
+MUP runs an app in bundle mode when its base image cannot build an app image: with `docker.prepareBundle: false`, or without `docker.prepareBundle` and with an image that does not start with `zodern/meteor` or `abernix/meteord`. That includes the default `kadirahq/meteord`, so every config without `docker.image` uses bundle mode. comet-deploy follows the same rule, and such a config works unchanged.
 
-If your deploy depends on any of these, keep using MUP for now. Both tools can work on the same servers; see [Migrating from MUP](migrating-from-mup.md).
+In bundle mode the container unpacks the bundle when it starts, installs its npm dependencies and runs `node main.js`. MUP uploads `bundle.tar.gz` and mounts it into the base image at `/bundle`. comet-deploy builds the version image `mup-<app>:<version>` as the base image plus one layer with `/bundle/bundle.tar.gz` (owner `root`, modes as in MUP), so a version is still an image: distribution, `rollback`, history and `status` work as with every other image. The base image is not changed and none of its build steps run, so the build needs neither buildx nor emulation of the server's architecture.
+
+What follows from it:
+
+- **Slower start.** The npm dependencies are installed every time the container starts, as in MUP. The health check gives a bundle-mode container 12 s more than `deployCheckWaitTime`, the time MUP's `start.sh` waits on its own after starting the container with the bundle mounted.
+- **`docker.buildInstructions` are ignored**, as in MUP, with the warning `app.docker.buildInstructions are ignored in bundle mode, as in MUP: the base image "kadirahq/meteord" runs the bundle as it is. Set docker.prepareBundle: true (or use a zodern/meteor image) to apply them.`
+- **`zodern/meteor` needs a root variant.** A `zodern/meteor` image whose tag does not contain `root` (`zodern/meteor`, `:latest`, `:slim`) cannot unpack the bundle in bundle mode, with MUP or comet-deploy, and `validate` warns: `app.docker.image "zodern/meteor:latest" cannot unpack the bundle in bundle mode: its app user cannot write to /bundle, with MUP as with comet-deploy. Use "zodern/meteor:root", or remove docker.prepareBundle: false.`
+- **The base image must exist for the server's platform.** `kadirahq/meteord` exists only for `linux/amd64`; see [Troubleshooting](troubleshooting.md#the-base-image-is-not-available-for-the-servers-platform).
+- **`--cache-from` and `--cache-to` are ignored** (with a warning): no BuildKit build runs.
+
+Prefer prepare mode when you can: set `docker.image: 'zodern/meteor:root'` (or another prepare-bundle image). The npm dependencies are then installed once at build time, in a layer of their own that later deploys reuse, and the app starts at once.
 
 ## Hooks
 

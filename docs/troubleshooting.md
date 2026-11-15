@@ -28,7 +28,7 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 
 - [Config or settings not found](#config-or-settings-not-found)
 - [validate exits with code 1](#validate-exits-with-code-1)
-- [The docker image cannot build an app image](#the-docker-image-cannot-build-an-app-image)
+- [zodern/meteor cannot unpack the bundle in bundle mode](#zodernmeteor-cannot-unpack-the-bundle-in-bundle-mode)
 - [Not supported yet (phase 2)](#not-supported-yet-phase-2)
 - [imagePrefix does not point to the registry](#imageprefix-does-not-point-to-the-registry)
 - [app.ssl is a deprecated MUP option](#appssl-is-a-deprecated-mup-option)
@@ -38,6 +38,7 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 
 - [Not a Meteor app](#not-a-meteor-app)
 - [meteor build failed](#meteor-build-failed)
+- [The base image is not available for the server's platform](#the-base-image-is-not-available-for-the-servers-platform)
 - [docker buildx build failed](#docker-buildx-build-failed)
 - [It builds every time](#it-builds-every-time)
 - [npm install runs again](#npm-install-runs-again)
@@ -58,6 +59,7 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [:latest in the private registry was not updated](#latest-in-the-private-registry-was-not-updated)
 - [Rollback refused after a MUP deploy with a registry](#rollback-refused-after-a-mup-deploy-with-a-registry)
 - [Health check failed and the server was reverted](#health-check-failed-and-the-server-was-reverted)
+- [A bundle-mode app runs out of time while it starts](#a-bundle-mode-app-runs-out-of-time-while-it-starts)
 - [The restored version is not healthy either](#the-restored-version-is-not-healthy-either)
 - [Mixed versions after a partial failure](#mixed-versions-after-a-partial-failure)
 - [Nothing to roll back to](#nothing-to-roll-back-to)
@@ -344,22 +346,13 @@ Warning: app.docker.useBuildKit ignored: comet-deploy always builds locally with
 
 Which problems are errors: [Configuration → Validation](configuration.md#validation).
 
-### The docker image cannot build an app image
+### zodern/meteor cannot unpack the bundle in bundle mode
 
 ```
-The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode). Bundle mode is planned for phase 2 of comet-deploy.
-Hint: Use a zodern/meteor image (app.docker.image), e.g. "zodern/meteor:root".
+Warning: app.docker.image "zodern/meteor:latest" cannot unpack the bundle in bundle mode: its app user cannot write to /bundle, with MUP as with comet-deploy. Use "zodern/meteor:root", or remove docker.prepareBundle: false.
 ```
 
-Without `app.docker.image`, MUP's default `kadirahq/meteord` is used, which only supports MUP's bundle mode. Set:
-
-```js
-docker: {
-  image: 'zodern/meteor:root',
-},
-```
-
-`validate` does not catch this; the build does.
+With `docker.prepareBundle: false` the app runs in [bundle mode](configuration.md#bundle-mode): the container unpacks the bundle in `/bundle` when it starts. The `zodern/meteor` images without `root` in the tag run as the user `app`, which cannot write there, so the container fails at start with `tar: bundle/programs: Cannot mkdir`. The same happens with MUP. Use `zodern/meteor:root`, or remove `prepareBundle: false`: `zodern/meteor` images then build an app image, which is also faster to start.
 
 ### Not supported yet (phase 2)
 
@@ -367,7 +360,7 @@ docker: {
 "ssh one" is not supported yet: it is planned for phase 2 of comet-deploy.
 ```
 
-The `ssh` and `meteor debug` commands, and MUP's bundle mode, are phase 2. Use MUP for them meanwhile; it works on the same config and servers. See [Configuration → Planned for phase 2](configuration.md#planned-for-phase-2) and [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
+The `ssh` and `meteor debug` commands are phase 2. Use MUP for them meanwhile; it works on the same config and servers. See [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
 
 ### imagePrefix does not point to the registry
 
@@ -422,6 +415,15 @@ meteor build --directory /tmp/build-test --server-only
 ```
 
 Exit code 127 means the command was not found (`buildOptions.executable`).
+
+### The base image is not available for the server's platform
+
+```
+The docker image "kadirahq/meteord" is not available for linux/arm64: no matching manifest for linux/arm64/v8 in the manifest list entries
+Hint: In bundle mode the servers run this image itself. Use an image that exists for linux/arm64, or a zodern/meteor image.
+```
+
+In [bundle mode](configuration.md#bundle-mode) the version image is the base image (`docker.image`) plus the bundle, for the platform of the servers. `kadirahq/meteord` exists only for `linux/amd64`, so it cannot run on an arm64 server; with MUP the container would fail there with `exec format error`. Use an image that has a variant for that platform, for example `zodern/meteor:root`. The pull of the base image may also have failed (offline, rate limit): see [Docker Hub rate limits](#docker-hub-rate-limits).
 
 ### docker buildx build failed
 
@@ -639,6 +641,10 @@ ssh root@192.0.2.10
 IP=$(sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' myapp)
 curl -sS -o /dev/null -w '%{http_code}\n' "http://$IP:3000/"
 ```
+
+### A bundle-mode app runs out of time while it starts
+
+In [bundle mode](configuration.md#bundle-mode) the container unpacks the bundle and installs its npm dependencies each time it starts; a `zodern/meteor` image may also download the Node version of the bundle first. The health check allows `deployCheckWaitTime` plus 12 s for that (`… within 72s` with the default 60). When an app with many dependencies or a slow network needs more, raise `app.deployCheckWaitTime`. MUP needs the same time, so a value that works with MUP works here too. To install the dependencies only once, at build time, switch to prepare mode: `docker.image: 'zodern/meteor:root'` without `prepareBundle: false`.
 
 ### The restored version is not healthy either
 

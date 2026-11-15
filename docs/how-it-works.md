@@ -106,6 +106,7 @@ Before building, comet-deploy computes a hash of everything that can change the 
 - every file under `app.path`, by relative path and **content** (modification times do not matter), except `.meteor/local`, `node_modules`, `.git`, the build directory, and the config directory (the folder with `mup.js`) when it is a dot folder inside the app, such as `.deploy/`; symlinks are followed;
 - `node_modules` as a list of `name@version` for every top-level and scoped package (a symlinked package, for example a workspace package, is hashed by content);
 - `buildOptions`, the target platform, the comet-deploy version, `docker.image`, `docker.buildInstructions` and the Dockerfile format version;
+- in [bundle mode](#bundle-mode) also the mode and the format version of the bundle image, so an image of one mode is never reused for the other;
 - the values of the `env` keys that `docker.buildInstructions` use, because they become build args (only a digest of them is stored, not the values).
 
 If the hash matches an earlier build for the same platform and that image is still in your local Docker, both `meteor build` and `docker build` are skipped:
@@ -166,6 +167,23 @@ docker buildx build --load --progress plain --platform linux/amd64 -t mup-myapp:
 ```
 
 Before the build, comet-deploy runs `docker pull --platform <platform> <docker.image>` locally; a failed pull is ignored (as in MUP) and the build reports real problems.
+
+### Bundle mode
+
+Without a prepare-bundle image (no `docker.image`, `kadirahq/meteord`, or `docker.prepareBundle: false`; see [Configuration → Bundle mode](configuration.md#bundle-mode)) there is no Dockerfile. After `meteor build`, comet-deploy packs `bundle/` into `<buildLocation>/bundle.tar.gz` the way MUP does (node-tar, gzip level 9) and makes the image without running anything in it:
+
+1. `docker create --platform <platform> <docker.image>`: a container that never starts;
+2. `docker cp -` of a tar stream with exactly `/bundle/` (`root:root`, `755`) and `/bundle/bundle.tar.gz` (`root:root`, `644`), as MUP's `meteor-start.sh` creates them in `/opt/<name>/current`;
+3. `docker commit` with the labels `comet-deploy.version=<version>` and `comet-deploy.bundle=1`, tagged `mup-<name>:<version>`;
+4. the container is removed, also after an error.
+
+The base image's ENTRYPOINT, ENV, USER and WORKDIR stay as they are, and its ONBUILD steps never run (`kadirahq/meteord` has some that would build Meteor from source). Nothing runs under emulation and buildx is not used, so preflight skips the buildx and emulation checks. The info line says what happened:
+
+```
+bundle mode: mup-myapp:20261115-120000-3f2a1c9 is "kadirahq/meteord" with the bundle in /bundle; the app installs its npm dependencies each time the container starts.
+```
+
+A base image that does not exist for the platform stops the build: `The docker image "kadirahq/meteord" is not available for linux/arm64: …`. On the server the image starts like a MUP bundle-mode container, only with the bundle in the image instead of a mount: the base image unpacks it, runs `npm install` and starts `main.js`. Because that takes time at every start, the [health check](#health-check) of a container with the label `comet-deploy.bundle=1` waits 12 s longer.
 
 ### Several platforms
 
@@ -238,6 +256,7 @@ The running app is **not touched** during the distribution: `start.sh`, `env.lis
 The servers are activated by the [rollout strategy](#rollout-strategies). On each server:
 
 1. **Render** `start.sh` and `env.list` from the config. A config that cannot be rendered (for example an `env.list` line over 64 KiB) fails here, before anything changes on the server.
+   If MUP deployed the server last in bundle mode, its version is first taken over as `mup-<name>:latest` (see [Working side by side with MUP](#working-side-by-side-with-mup)), so the retag below makes it `:previous`.
 2. **Snapshot**: copy the current `start.sh` and `env.list` to `/opt/<name>/config/.prev/`.
 3. **Retag**: `mup-<name>:latest` → `:previous` (when it is a different image), then `mup-<name>:<version>` → `:latest`. `:latest` changes last. If moving `:latest` fails, `:previous` is put back too, so both tags stay as they were.
 4. **Write** the new `start.sh` and `env.list`. `env.list` gets mode `600` on every write, also when the file already existed with other permissions (for example `644` from an earlier MUP deploy).
@@ -270,7 +289,7 @@ The health check runs on the server. It polls `http://<container IP>:<port><path
 | Outcome | Condition |
 |---|---|
 | healthy | an HTTP status ≤ `cometDeploy.healthCheck.maxStatus` (default 499) |
-| `no healthy answer within <n>s` | `app.deployCheckWaitTime` (default 60 s) passed without such an answer |
+| `no healthy answer within <n>s` | `app.deployCheckWaitTime` (default 60 s) passed without such an answer; 12 s more for a container of a [bundle-mode](#bundle-mode) image (label `comet-deploy.bundle=1`), which MUP's `start.sh` would have waited on its own |
 | `the container stopped or is restarting` | the container is `exited`, `restarting`, `dead` or gone: fails at once instead of waiting for the timeout |
 | `the container got no IP address` | no IP after 10 tries |
 
@@ -411,7 +430,7 @@ Without load balancing, the app publishes no port on the host (MUP uses `--expos
 2. Run the health check on `<app>-next`.
 3. Wait until nginx routes to it (docker-gen adds it to the config; up to 15 s).
 4. Make nginx route only to `<app>-next`: a file `vhost.d/<domain>_upstream` with its address, which MUP's nginx template uses instead of the containers (the mechanism of MUP's load balancing). Without it, any regeneration of the nginx config, for example by the Let's Encrypt companion, would list the old container again, and a request nginx sends to it after it stopped would hang until a timeout: the stopped container's address no longer exists.
-5. Stop the old container (`docker stop`, 10 s for the requests in flight), remove it, and rename `<app>-next` to `<app>`.
+5. Stop the old container (`docker stop`, 10 s for the requests in flight), remove it, and rename `<app>-next` to `<app>`. Only now `/opt/<name>/current` is removed, as MUP's `meteor-start.sh` does, and only when the new container does not mount it: an old container of MUP's bundle mode runs, and serves its client files, from that directory until it is gone.
 6. Remove the `_upstream` files again and regenerate the nginx config, which then lists the renamed container as before. The files are removed also when the step fails or the SSH connection drops; a file left by a killed process is recognized by its first line (`# comet-deploy zero-downtime switch`) and replaced by the next switch.
 
 The result looks exactly like a container that `start.sh` created. If the health check fails, `<app>-next` is removed, the tags and the config go back as in a normal [revert](#automatic-revert), and the old container, which never stopped, keeps serving: the server ends `reverted` without a gap.
@@ -458,10 +477,12 @@ comet-deploy keeps the server layout of MUP 1.5.11 and adds a few files that MUP
 |---|---|---|
 | `/opt/<name>/config/start.sh` | yes | Rendered from MUP 1.5.11's template with the same template engine (`@zodern/ejs` 2.7.5) and the same variables, so the file is the same as MUP writes. One difference: per-server values (`bind`, `env.PORT`) never leak into the file of another server, which can happen in MUP because it reuses one variables object for all hosts. |
 | `/opt/<name>/config/env.list` | yes | Same format. Mode `600`, set on every write. |
-| `/opt/<name>/tmp/` | yes | Created by `setup`; comet-deploy does not upload a bundle there. |
+| `/opt/<name>/tmp/` | yes | Created by `setup`; comet-deploy does not upload a bundle there. A takeover of MUP's bundle mode uses `tmp/comet-bundle-adopt/` for a moment. |
+| `/opt/<name>/current/` | yes | MUP's bundle mode runs the bundle from here. comet-deploy never writes it; MUP's `meteor-start.sh` removes it when an image runs. |
 | Container `<name>` | yes | `--restart=always`, `--env-file`, published port, log options, `docker.args`, as in MUP. |
 | Image `mup-<lower-case name>:latest` and `:previous` | yes | `:latest` runs; `:previous` is the one before. |
 | Image tags `mup-<lower-case name>:<version>` | added | One per kept version, for `rollback`. |
+| Image tag `mup-<lower-case name>:mup-bundle` | added | Only after a takeover of MUP's bundle mode: MUP's last version as an image. At most one; not a version, so not in `status`, `history` or `rollback`. |
 | `/opt/<name>/config/deploy-history.jsonl` | added | Deploy history. |
 | `/opt/<name>/config/deploy.lock/` | added | Only while a command runs. |
 | `/opt/<name>/config/.prev/` | added | Snapshot of the previous `start.sh` and `env.list`, for the automatic revert. |
@@ -491,7 +512,15 @@ Things to know:
 - MUP does not respect comet-deploy's lock. Do not run both at the same time.
 - `mup proxy setup` clears the `down` marks of servers that are out of load balancing.
 - MUP prints `cometDeploy is an unknown property` as a validation message and continues.
-- `mup meteor destroy` removes `/opt/<name>/` (including the history) but leaves comet-deploy's version tags; `comet-deploy meteor destroy --force` removes them too.
+- `mup meteor destroy` removes `/opt/<name>/` (including the history) but leaves comet-deploy's version tags; `comet-deploy meteor destroy --force` removes them too, and `:mup-bundle`.
+
+**In bundle mode** (no `docker.image`, `kadirahq/meteord`, `docker.prepareBundle: false`), `mup deploy` removes `mup-<name>:latest` and `:previous`, puts the bundle in `/opt/<name>/current` and runs the base image with that directory mounted at `/bundle`. MUP's version then exists only as `current/bundle.tar.gz`. When the app container has that mount and the file exists, `deploy`, `meteor deploy`, `reconfig`, `rollback` and `restart` first take it over (`bundle-adopt.sh`):
+
+1. `docker create` from the image the app container runs, `docker cp` of `bundle/` and a copy of `bundle.tar.gz` (owned by root, as in comet-deploy's own bundle images), `docker commit` with the label `comet-deploy.bundle=1`;
+2. the result is tagged `mup-<name>:latest`, so the activation makes it `:previous` and a revert or `rollback` returns to it, and `mup-<name>:mup-bundle`, because MUP's next `docker rmi mup-<name>:latest` would otherwise fail on the last tag of a running image and MUP would keep running this version;
+3. the image `:mup-bundle` pointed to before is removed once nothing uses it.
+
+The running app is not touched; `restart` takes over before it stops the app, because the container is what the bundle is recognized by. Without a takeover in `rollback` there would be no `:latest` to fall back on, and a `restart` behind the proxy would start a second container on the same `current` directory. `start` and `stop` do not take over: after `stop` there is no container, and `start` runs MUP's bundle from `current` as MUP does. The integration tests check: `mup setup` and `mup deploy`, `comet-deploy deploy` (MUP's version becomes `:previous`), `comet-deploy rollback` (back to it), `mup deploy`, `comet-deploy deploy` and `mup reconfig` (runs comet-deploy's version), then `mup deploy` and `comet-deploy restart` (the same MUP version, from the taken-over image).
 
 **With a private registry**, MUP keeps its images as `<imagePrefix>/mup-<name>` and its `start.sh` pulls `:latest` from the registry, while comet-deploy keeps `mup-<name>` and its `start.sh` never pulls. The integration tests check this sequence too: `mup deploy`, then `comet-deploy deploy` (MUP's image becomes `:previous`), `mup reconfig` (runs comet-deploy's version, because `:latest` in the registry points to it), `comet-deploy rollback` (refused, see below), `comet-deploy reconfig` and `rollback` (back to MUP's version), then `mup deploy` and `comet-deploy deploy` again.
 

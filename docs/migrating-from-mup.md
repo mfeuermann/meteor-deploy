@@ -25,13 +25,12 @@ comet-deploy is a drop-in replacement for Meteor Up (MUP) 1.5.11. It reads the s
 
 ## Check first: what does not work yet
 
-comet-deploy covers phase 1, MUP's reverse proxy, MUP's built-in MongoDB, the hooks and MUP's private registry. If your config uses one of these, keep using MUP for that app for now:
+comet-deploy covers phase 1, MUP's reverse proxy, MUP's built-in MongoDB, the hooks, MUP's private registry and MUP's bundle mode. If your config uses one of these, keep using MUP for that app for now:
 
 | In your config | What comet-deploy does | What you can do |
 |---|---|---|
 | `privateDockerRegistry` without `imagePrefix`, or with an `imagePrefix` that does not start with the registry in `host` (MUP would push to Docker Hub) | `deploy` stops before preflight: `privateDockerRegistry.imagePrefix is required …` or `… would push to docker.io, not to the registry …` | Set `imagePrefix` to `<host>/<path>`, for example `registry.example.com/team`. MUP uses the same prefix. |
 | `privateDockerRegistry` with `cometDeploy.transfer: 'tunnel'` or `'stream'` | Config error | Remove `transfer` or set it to `'registry'`. |
-| No `docker.image`, or `kadirahq/meteord`, or `docker.prepareBundle: false` (MUP bundle mode) | The build stops: `The docker image "kadirahq/meteord" cannot build an app image (MUP bundle mode).` | Set `docker.image: 'zodern/meteor:root'`. This is also the image in MUP's own `mup init` sample, so the config keeps working with MUP. |
 | `swarm.enabled: true` | Error: `swarm.enabled Docker Swarm is not supported by comet-deploy` | Keep MUP. Swarm is not planned. |
 | `app.ssl`, `app.nginx`, `app.docker.imageFrontendServer` (deprecated since MUP 1.4) | Error, for example `app.ssl is a deprecated MUP option that comet-deploy does not support. MUP replaced it with the "proxy" section: move the domain and certificate settings there, or keep deploying this app with MUP.` | Move the settings to the [`proxy`](configuration.md#proxy) section, which MUP uses too, or keep MUP. |
 | `plugins` | Warning; the plugins do not run. | Make sure your deploy does not depend on them. |
@@ -155,6 +154,8 @@ Global options are the same: `--config`, `--settings`, `--servers`, `--verbose`,
 
 **SSH TCP forwarding.** The image travels through an SSH reverse tunnel when the server allows it (`AllowTcpForwarding yes`, the OpenSSH default). A server that does not, for example a hardened one, gets the whole image over SSH (`docker save` into `docker load`), which needs no change on the server but sends every layer on each new version. See [Troubleshooting](troubleshooting.md#allowtcpforwarding-is-disabled-on-the-server).
 
+**Bundle mode is an image too.** Without a prepare-bundle image (no `docker.image`, `kadirahq/meteord`, or `docker.prepareBundle: false`) MUP uploads `bundle.tar.gz` over SFTP and runs the base image with the bundle mounted from `/opt/<name>/current`. comet-deploy puts the same file into the image, at `/bundle/bundle.tar.gz`, and the base image unpacks and starts it in the same way, with the same `npm install` at every start. The bundle is one layer, so it travels whole with each version, as MUP's upload does. See [Configuration → Bundle mode](configuration.md#bundle-mode).
+
 **Only changed layers travel.** The first deploy to a server sends the app's dependency layer once. After that, a code-only change sends only the small app-code layers. MUP uploads the whole bundle and runs `npm install` on every server for every deploy.
 
 **All servers at once.** MUP deploys one server after another. comet-deploy distributes the image to all servers in parallel and then activates them by a rollout strategy: `canary` by default (the first server in `app.servers`, then the rest in parallel if it is healthy), or `rolling` or `parallel`. See [How it works → Rollout strategies](how-it-works.md#rollout-strategies).
@@ -223,6 +224,9 @@ Things to know:
 - `mup deploy` moves `:latest` to `:previous` as usual. comet-deploy's version tags stay on the server.
 - MUP 1.5.11 reports the `cometDeploy` section as `cometDeploy is an unknown property` and continues. Only `mup validate` exits with code 1 because of it.
 - For the commands that are phase 2 in comet-deploy (`mup ssh`, `mup meteor debug`), use MUP on the same config.
+- **In bundle mode**, MUP's `mup deploy` removes `mup-<name>:latest` and `:previous` and runs the base image with the bundle from `/opt/<name>/current`. comet-deploy recognizes that container in `deploy`, `reconfig`, `rollback` and `restart` and first turns MUP's bundle into an image, tagged `mup-<name>:latest` (so it becomes `:previous`, and a revert or `rollback` returns to it) and `mup-<name>:mup-bundle`. The second tag keeps MUP's next `docker rmi mup-<name>:latest` from failing and stays out of `status`, `history` and the `rollback` candidates; there is at most one. `mup reconfig` and `mup restart` after comet-deploy run comet-deploy's version; `mup deploy` works as before. `comet-deploy start` and `stop` change nothing here: after `stop` there is no container to recognize, and `start` runs MUP's bundle from `current`, as MUP does.
+
+  The integration tests check this sequence: `mup setup` and `mup deploy`, `comet-deploy deploy`, `comet-deploy rollback` back to MUP's version, `mup deploy`, `comet-deploy deploy` and `mup reconfig`, then `mup deploy` and `comet-deploy restart`.
 - With the `mongo` section, both tools write the same MongoDB start script, so neither recreates the container the other one started. Mind the version: `mup setup` starts whatever `mongo.version` says, without comet-deploy's check.
 - Behind the proxy, `mup proxy setup` clears the `down` marks of drained servers; see [The reverse proxy](#the-reverse-proxy).
 - **With `privateDockerRegistry`**, `mup deploy` and `mup reconfig` write MUP's `start.sh`, which pulls `<imagePrefix>/mup-<name>:latest` from the registry on every start. On such a server:
@@ -287,5 +291,5 @@ On your machine, you can remove the local images `mup-myapp:<version>` and the l
 | Built-in MongoDB (`mongo`) | supported | supported, with MUP's scripts; checked before the app commands, version changes guarded |
 | Hooks (`hooks`) | supported | supported, the same names; `remoteCommand` failures only warn in both; the api object without nodemiral sessions |
 | Private registry (`privateDockerRegistry`) | images as `<imagePrefix>/mup-<name>:latest`; `start.sh` pulls on every start | pushed per version, pulled once per server and kept as `mup-<name>:<version>`; `start.sh` never pulls; `:latest` pushed for MUP |
-| Bundle mode | supported | phase 2 |
+| Bundle mode (`kadirahq/meteord`, `prepareBundle: false`) | bundle uploaded, mounted from `/opt/<name>/current` | bundle in the version image at `/bundle`; started the same way; MUP's last version taken over as `:mup-bundle` |
 | Docker Swarm, MUP plugins | supported | not planned |

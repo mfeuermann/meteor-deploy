@@ -4,7 +4,7 @@ Fast deploys for Meteor apps, compatible with Meteor Up (MUP) 1.5.11.
 
 comet-deploy builds the Docker image of your app **once, on your machine**, and sends each server **only the image layers it does not have yet**, to all servers in parallel. It reads your existing `mup.js`, has the same commands, and leaves the servers in the same state as MUP. You can switch an app from MUP to comet-deploy and back without touching the servers.
 
-**Status:** version 0.4.0: phase 1 of the [roadmap](#roadmap) and the first parts of the next phase: MUP's reverse proxy, MUP's built-in MongoDB, hooks, the image transfer over plain SSH for servers without SSH forwarding, and the image transfer through MUP's private registry. Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
+**Status:** version 0.4.0: phase 1 of the [roadmap](#roadmap) and the first parts of the next phase: MUP's reverse proxy, MUP's built-in MongoDB, hooks, the image transfer over plain SSH for servers without SSH forwarding, the image transfer through MUP's private registry, and MUP's bundle mode (the default `kadirahq/meteord` image). Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
 
 > **Important: comet-deploy needs Docker on your machine**, with BuildKit and buildx: Docker Desktop, OrbStack, or Docker Engine on Linux. This is new compared to MUP, which builds the image on each server. To build for `x86_64` servers on an Apple Silicon Mac, amd64 emulation must be on. See [Requirements](#requirements).
 
@@ -138,7 +138,7 @@ BENCH_OUT=/tmp/comet-bench BENCH_SERVERS=2 npx vite-node test/bench/acceptance.t
 |---|---|---|
 | Node.js | 20 or newer | |
 | Meteor | the one your app uses | `meteor build` runs locally, as with MUP |
-| Docker with BuildKit and buildx | a current Docker Desktop, OrbStack, or Docker Engine with the buildx plugin | **new compared to MUP**; `docker buildx inspect` must list your servers' platform |
+| Docker with BuildKit and buildx | a current Docker Desktop, OrbStack, or Docker Engine with the buildx plugin | **new compared to MUP**; `docker buildx inspect` must list your servers' platform (buildx is not used in MUP's bundle mode) |
 | git | optional | the commit goes into the version name and the history |
 
 macOS and Linux. Windows with WSL2 is not tested.
@@ -203,7 +203,7 @@ comet-deploy validate          # warnings about useBuildKit and similar are fine
 comet-deploy deploy            # no "setup" needed on servers MUP set up
 ```
 
-Check first that your config does not use a part that is still phase 2 (the default `kadirahq/meteord` image): [Migrating from MUP](docs/migrating-from-mup.md).
+Check first that your config does not use a part comet-deploy does not support yet: [Migrating from MUP](docs/migrating-from-mup.md#check-first-what-does-not-work-yet).
 
 ## Configuration
 
@@ -229,7 +229,7 @@ module.exports = {
     },
 
     docker: {
-      image: 'zodern/meteor:root',      // needed: the default kadirahq/meteord is phase 2
+      image: 'zodern/meteor:root',      // recommended: the default kadirahq/meteord runs in bundle mode
     },
 
     deployCheckWaitTime: 120,
@@ -317,14 +317,14 @@ The full list and a side-by-side table: [Migrating from MUP](docs/migrating-from
 
 comet-deploy does not include these MUP features yet. A config that uses them stops with a clear message, and MUP keeps working on the same config:
 
-- MUP's bundle mode, used by the default `kadirahq/meteord` image. Set `docker.image: 'zodern/meteor:root'`;
 - the commands `ssh`, `meteor debug`, and the full `status` report.
 
 Not supported and not planned: Docker Swarm (`swarm`), MUP plugins (`plugins`).
 
 Other limits of this release:
 
-- Docker with buildx must run on the machine you deploy from. Building for another CPU architecture needs emulation, which is slow when the dependencies change.
+- Docker with buildx must run on the machine you deploy from (in MUP's bundle mode buildx is not needed). Building for another CPU architecture needs emulation, which is slow when the dependencies change.
+- In MUP's bundle mode (the default `kadirahq/meteord`, or `docker.prepareBundle: false`) the app installs its npm dependencies at every start, as with MUP, and `kadirahq/meteord` runs only on `x86_64` servers. A `zodern/meteor` image builds the dependencies into the image instead. See [Configuration → Bundle mode](docs/configuration.md#bundle-mode).
 - A server without SSH reverse port forwarding gets the whole image on every deploy (`transfer: 'stream'`), which is slower than the tunnel.
 - Server CPUs: `x86_64` and `aarch64`.
 - `setup` installs Docker only on apt-based systems (Debian, Ubuntu), as MUP does.
@@ -345,7 +345,7 @@ Other limits of this release:
 - Done: hooks (`localCommand`, `remoteCommand`, `method` with MUP's api object) under MUP's names.
 - Done: image transfer over plain SSH for servers without forwarding (`transfer: 'stream'`, automatic with `auto`).
 - Done: image transfer through MUP's private registry (`privateDockerRegistry`, `transfer: 'registry'`).
-- MUP's bundle mode (`kadirahq/meteord`).
+- Done: MUP's bundle mode (the default `kadirahq/meteord`, `docker.prepareBundle: false`).
 - `meteor debug`, `ssh`, the full `status` report, and a command to prune the local build cache.
 
 **Phase 3: done.** The npm package, CI on GitHub Actions, releases from a version tag, and [deploying from CI](docs/ci.md) with a build cache that survives between runs (`--cache-from` / `--cache-to`).
@@ -355,7 +355,7 @@ Other limits of this release:
 ## FAQ
 
 **Do I have to change my `mup.js`?**
-Usually not. Set `docker.image` to a `zodern/meteor` image if you use the default, and check the [phase 2 list](docs/migrating-from-mup.md#check-first-what-does-not-work-yet).
+Usually not. A config that deploys with MUP deploys with comet-deploy, also without `docker.image` (MUP's bundle mode). Setting `docker.image: 'zodern/meteor:root'` makes the app start faster, because the npm dependencies are then installed once at build time. Check the [list of what is not supported yet](docs/migrating-from-mup.md#check-first-what-does-not-work-yet).
 
 **Can I go back to MUP?**
 Yes. Run `mup deploy` again. The servers have the same layout; MUP ignores the files comet-deploy adds. See [Going back to MUP](docs/migrating-from-mup.md#going-back-to-mup).
