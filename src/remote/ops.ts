@@ -369,6 +369,18 @@ export async function adoptMupRegistryImage(conn: SshConnection, o: { appName: s
   return r.stdout.includes('adopted');
 }
 
+/**
+ * Takes over a server MUP last deployed in bundle mode (bundle-adopt.sh, bundle mode design
+ * §4.5): the bundle the app container runs from `/opt/<app>/current` becomes an image tagged
+ * `:latest` and `:mup-bundle`. True when it took over; a server without such a container is
+ * left as it is.
+ */
+export async function adoptMupBundle(conn: SshConnection, o: { appName: string; container: string; repo: string }): Promise<boolean> {
+  const script = await comet('bundle-adopt.sh', { appDir: `/opt/${o.appName}`, container: o.container, repo: o.repo });
+  const r = await conn.runScriptOrThrow(script, 'Taking over the bundle MUP runs');
+  return r.stdout.includes('adopted');
+}
+
 // --- config snapshot ---
 
 /**

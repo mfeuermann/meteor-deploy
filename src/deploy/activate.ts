@@ -9,7 +9,7 @@ import { appDir, containerName, localImageRepo } from '../core/naming.js';
 import { verboseOutput } from '../output/lines.js';
 import type { Reporter } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStart, renderStartSh } from '../remote/app-files.js';
-import { adoptMupRegistryImage, restoreConfigSnapshot, retagActivate, retagRestore, retagSwap, shArg, snapshotConfig, type ImageTags } from '../remote/ops.js';
+import { adoptMupBundle, adoptMupRegistryImage, restoreConfigSnapshot, retagActivate, retagRestore, retagSwap, shArg, snapshotConfig, type ImageTags } from '../remote/ops.js';
 import type { ExecOptions, SshConnection } from '../ssh/connection.js';
 import { appHealthOptions, healthCheck, type HealthResult } from './health-check.js';
 import { containerRunning, switchContainer, type SwitchMode, type SwitchResult } from './zero-downtime.js';
@@ -198,6 +198,13 @@ export async function activateServer(
     // `:previous` and a failure restores it (registry design §4.5). The running app is not touched.
     if (o.mode !== 'rollback' && (await adoptMupRegistryImage(conn, { appName: app.name, container: containerName(config), repo: localImageRepo(config) }))) {
       r.verboseLine(server, 'took over the image MUP runs as :latest');
+    }
+    // MUP in bundle mode deployed last (the app runs its bundle from /opt/<app>/current, and
+    // :latest and :previous are gone): the bundle becomes :latest, so the retag below turns it
+    // into :previous, a failure returns to it, and a rollback has a :latest to fall back on
+    // (bundle mode design §4.5). In every mode; the running app is not touched.
+    if (await adoptMupBundle(conn, { appName: app.name, container: containerName(config), repo: localImageRepo(config) })) {
+      r.verboseLine(server, 'took over the bundle MUP runs as :latest');
     }
     // The snapshot (config/.prev) is what a failed deploy or reconfig restores. `snapshotTaken`
     // is false when the server has no start.sh yet; the config is then not restored on failure.

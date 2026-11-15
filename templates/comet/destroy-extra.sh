@@ -8,5 +8,7 @@ for tag in $(sudo docker images --format '{{.Tag}}' "$REPO" 2>/dev/null | grep -
 done
 # Left behind only when a rollback swap was interrupted between its tag commands.
 sudo docker rmi --force "$REPO:comet-swap" >/dev/null 2>&1 || true
+# The version taken over from MUP's bundle mode (bundle-adopt.sh).
+sudo docker rmi --force "$REPO:mup-bundle" >/dev/null 2>&1 || true
 # Normally already removed with /opt/<app>; listed so this script also cleans up on its own.
 sudo rm -rf "$CONFIG_DIR/deploy-history.jsonl" "$CONFIG_DIR/deploy.lock" "$CONFIG_DIR/.prev"

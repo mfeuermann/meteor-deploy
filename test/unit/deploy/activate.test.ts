@@ -17,6 +17,7 @@ const settings = { public: {} };
 function label(script: string): string {
   if (script.includes('COMET_HEALTH')) return 'health';
   if (script.includes('Copies the current start.sh')) return 'snapshot';
+  if (script.includes('# bundle-adopt.sh')) return 'bundle-adopt';
   if (script.includes('echo "adopted"')) return 'adopt';
   if (script.includes('cp -p "$CONFIG_DIR/.prev/start.sh"')) return 'restore';
   if (script.includes('echo "activated"') && script.includes('VERSION=')) return 'retag-activate';
@@ -30,13 +31,13 @@ function label(script: string): string {
 const BEFORE = 'before-latest=sha256:aaaaaaaaaaaa\nbefore-previous=sha256:bbbbbbbbbbbb\n';
 
 /** `health`: one answer for every check, or one per check (the last one repeats). */
-function mockConn(health: string | string[]) {
+function mockConn(health: string | string[], answers: Record<string, string> = {}) {
   const healthAnswers = Array.isArray(health) ? [...health] : [health];
   const nextHealth = () => (healthAnswers.length > 1 ? healthAnswers.shift()! : healthAnswers[0]);
   const calls: string[] = [];
   const writes: Record<string, string> = {};
   const answer = (l: string): string =>
-    ({ health: l === 'health' ? nextHealth() : '', snapshot: 'ok\n', restore: 'ok\n', 'retag-revert': 'reverted\n', 'retag-activate': BEFORE + 'activated\n', 'retag-swap': BEFORE + 'swapped\n', 'retag-restore': 'restored\n' })[l] ?? '';
+    ({ health: l === 'health' ? nextHealth() : '', snapshot: 'ok\n', restore: 'ok\n', 'retag-revert': 'reverted\n', 'retag-activate': BEFORE + 'activated\n', 'retag-swap': BEFORE + 'swapped\n', 'retag-restore': 'restored\n', ...answers })[l] ?? '';
   const res = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: '' });
   const conn = {
     name: 'one',
@@ -74,6 +75,24 @@ const deps = (conn: SshConnection): ActivateDeps => ({
 });
 
 describe('activateServer', () => {
+  it('takes over a MUP bundle before the snapshot and the retag, in every mode', async () => {
+    for (const [mode, version, next] of [
+      ['deploy', '20261107-183005', 'snapshot'],
+      ['reconfig', null, 'snapshot'],
+      ['rollback', '20261101-100000', 'retag-activate'],
+      ['rollback', null, 'retag-swap'],
+    ] as const) {
+      const m = mockConn('COMET_HEALTH ok 200 1\n', { 'bundle-adopt': 'adopted\n' });
+      const out: string[] = [];
+      const reporter = createReporter({ verbose: true, tty: false, write: (s) => out.push(s) });
+      await activateServer({ ...deps(m.conn), reporter }, { version, mode });
+      const at = m.calls.indexOf('bundle-adopt');
+      expect(at, `${mode} ${version}`).toBeGreaterThanOrEqual(0);
+      expect(m.calls.indexOf(next)).toBeGreaterThan(at);
+      expect(out.join('')).toContain('took over the bundle MUP runs as :latest');
+    }
+  });
+
   it('deploy: snapshot → retag → config files → start → health', async () => {
     const m = mockConn('COMET_HEALTH ok 200 4\n');
     const r = await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy' });
@@ -81,6 +100,7 @@ describe('activateServer', () => {
     expect(r.health).toEqual({ ok: true, status: 200, seconds: 4 });
     expect(m.calls).toEqual([
       'adopt',
+      'bundle-adopt',
       'snapshot',
       'retag-activate',
       'write /opt/myapp/config/start.sh',
@@ -97,8 +117,8 @@ describe('activateServer', () => {
     const r = await activateServer(deps(m.conn), { version: '20261107-183005', mode: 'deploy' });
     expect(r.status).toBe('reverted');
     expect(r.logsTail).toContain('app crashed: boom');
-    // After adopt, snapshot, retag, the two config writes, the start and the health check.
-    expect(m.calls.slice(7)).toEqual(['sudo docker logs --tail 100 myapp 2>&1', 'restore', 'retag-restore', 'sudo bash /opt/myapp/config/start.sh', 'health']);
+    // After both takeovers, snapshot, retag, the two config writes, the start and the health check.
+    expect(m.calls.slice(8)).toEqual(['sudo docker logs --tail 100 myapp 2>&1', 'restore', 'retag-restore', 'sudo bash /opt/myapp/config/start.sh', 'health']);
   });
 
   it('reconfig: no retag, and the revert restores only the config', async () => {
@@ -114,7 +134,7 @@ describe('activateServer', () => {
     const m = mockConn('COMET_HEALTH ok 200 1\n');
     const r = await activateServer(deps(m.conn), { version: '20261101-100000', mode: 'rollback' });
     expect(r.status).toBe('healthy');
-    expect(m.calls).toEqual(['retag-activate', 'meteor-start', 'health']);
+    expect(m.calls).toEqual(['bundle-adopt', 'retag-activate', 'meteor-start', 'health']);
   });
 
   it('rollback that fails the health check returns to the image that ran, never to an old config snapshot', async () => {
@@ -130,7 +150,7 @@ describe('activateServer', () => {
     const m = mockConn('COMET_HEALTH ok 200 1\n');
     const r = await activateServer(deps(m.conn), { version: null, mode: 'rollback' });
     expect(r.status).toBe('healthy');
-    expect(m.calls).toEqual(['retag-swap', 'meteor-start', 'health']);
+    expect(m.calls).toEqual(['bundle-adopt', 'retag-swap', 'meteor-start', 'health']);
   });
 
   it('checks the health of the restored version too: reverted only when it answers', async () => {
@@ -190,7 +210,8 @@ describe('activateServer takes over a server MUP deployed with a registry', () =
     const m = mockConn('COMET_HEALTH ok 200 4\n');
     await activateServer(deps(m.conn), { version: null, mode: 'reconfig' });
     expect(m.calls.indexOf('adopt')).toBe(0);
-    expect(m.calls.indexOf('snapshot')).toBe(1);
+    expect(m.calls.indexOf('bundle-adopt')).toBe(1);
+    expect(m.calls.indexOf('snapshot')).toBe(2);
   });
 
   it('rollback does not adopt', async () => {

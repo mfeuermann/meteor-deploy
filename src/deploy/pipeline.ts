@@ -48,6 +48,7 @@ import type { ServerStatus, SummaryRow } from '../output/reporter.js';
 import { renderEnvList, renderMeteorStop, renderStartSh } from '../remote/app-files.js';
 import {
   acquireLock,
+  adoptMupBundle,
   adoptMupRegistryImage,
   appendHistory,
   listVersions,
@@ -103,6 +104,8 @@ export interface PipelineDeps {
   releaseLock: typeof releaseLock;
   readLock: typeof readLock;
   listVersions: typeof listVersions;
+  /** The takeover of a server MUP runs in bundle mode, before `restart` stops the app. */
+  adoptMupBundle: typeof adoptMupBundle;
   appendHistory: typeof appendHistory;
   pruneVersions: typeof pruneVersions;
   pruneImages: typeof pruneImages;
@@ -154,6 +157,7 @@ const DEFAULT_DEPS: PipelineDeps = {
   releaseLock,
   readLock,
   listVersions,
+  adoptMupBundle,
   appendHistory,
   pruneVersions,
   pruneImages,
@@ -781,6 +785,12 @@ export async function restartPipeline(ctx: CommandContext, o: { strategy?: Comet
         through(async (mode) => {
           const conn = await ctx.ssh.get(s);
           const deps = { conn, config: ctx.config, serverName: s, reporter: ctx.reporter };
+          // Before the stop, which removes the container the bundle is recognized by. Without it
+          // the restart would start MUP's bundle from /opt/<app>/current again, and behind the
+          // proxy a second container would unpack into the same directory (bundle mode design §4.5).
+          if (await d.adoptMupBundle(conn, { appName: ctx.config.app.name, container: containerName(ctx.config), repo: localImageRepo(ctx.config) })) {
+            ctx.reporter.verboseLine(s, 'took over the bundle MUP runs as :latest');
+          }
           if (mode?.kind === 'zero-downtime') return d.startServer(deps, { switch: mode });
           ctx.reporter.server(s, 'stop', 'running');
           await conn.runScriptOrThrow(stopScript, 'Stopping the app', verboseOutput(ctx.reporter, s));

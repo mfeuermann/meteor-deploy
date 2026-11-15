@@ -52,6 +52,8 @@ async function setup(o: { extra?: string; activate?: Record<string, ActivationRe
       calls.push('build');
       return [built];
     },
+    // The stub connections run no scripts; no server here was last deployed by MUP in bundle mode.
+    adoptMupBundle: async () => false,
     acquireLock: async (conn) => {
       calls.push(`lock:${conn.name}`);
       return { ok: true };

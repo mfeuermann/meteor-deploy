@@ -15,7 +15,7 @@ const MUP = `module.exports = {
 /** Fake connection: records scripts by a short label, health answer configurable, 10 ms per call. */
 function fakeConn(name: string, health: string, log: string[], timeline: Array<[string, 'start' | 'end']>) {
   const label = (s: string) =>
-    s.includes('COMET_HEALTH') ? 'health' : s.includes('# start app') ? 'meteor-start' : s.includes('docker stop') || s.includes('docker rm -f') ? 'meteor-stop' : s.includes('echo "activated"') ? 'retag' : s.includes('echo "adopted"') ? 'adopt' : s.trim().slice(0, 40);
+    s.includes('# bundle-adopt.sh') ? 'bundle-adopt' : s.includes('COMET_HEALTH') ? 'health' : s.includes('# start app') ? 'meteor-start' : s.includes('docker stop') || s.includes('docker rm -f') ? 'meteor-stop' : s.includes('echo "activated"') ? 'retag' : s.includes('echo "adopted"') ? 'adopt' : s.trim().slice(0, 40);
   const res = async (s: string): Promise<ExecResult> => {
     const l = label(s);
     log.push(`${name}:${l}`);
@@ -103,6 +103,19 @@ describe('restartPipeline', () => {
     expect(s.log.some((l) => l.endsWith(':retag'))).toBe(false);
     expect(s.calls).toContain('history:one:restart:failed');
     expect(s.calls).toEqual(expect.arrayContaining(['release:one', 'release:two']));
+  });
+});
+
+describe('restartPipeline and MUP bundle mode', () => {
+  it('restart takes over a MUP bundle before stopping the app', async () => {
+    // Stopping removes the container the takeover recognizes the bundle by (bundle mode design §4.5).
+    const s = await setup();
+    await restartPipeline(s.ctx, {}, s.deps);
+    for (const n of ['one', 'two']) {
+      const mine = s.log.filter((l) => l.startsWith(`${n}:`));
+      expect(mine.indexOf(`${n}:bundle-adopt`)).toBeGreaterThanOrEqual(0);
+      expect(mine.indexOf(`${n}:bundle-adopt`)).toBeLessThan(mine.indexOf(`${n}:meteor-stop`));
+    }
   });
 });
 

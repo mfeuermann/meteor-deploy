@@ -3,7 +3,9 @@ import { makeVersion, VERSION_RE } from '../../../src/build/version.js';
 import { CometError } from '../../../src/core/errors.js';
 import {
   acquireLock,
+  adoptMupBundle,
   adoptMupRegistryImage,
+  cometScript,
   appendHistory,
   parseFacts,
   parseVersions,
@@ -125,6 +127,28 @@ describe('parseVersions', () => {
 
   it('handles an empty listing', () => {
     expect(parseVersions('')).toEqual({ latestId: null, previousId: null, versions: [] });
+  });
+});
+
+describe('servers MUP deployed in bundle mode (bundle mode design §4.5)', () => {
+  it('parseVersions leaves out :mup-bundle', () => {
+    expect(parseVersions('latest aaa\nmup-bundle aaa\n20261115-120000 bbb').versions).toEqual([{ tag: '20261115-120000', id: 'bbb' }]);
+  });
+
+  it('adoptMupBundle runs bundle-adopt.sh for the app and is true when it took over', async () => {
+    const f = fakeConn(() => 'adopted\n');
+    expect(await adoptMupBundle(f.conn, { appName: 'myapp', container: 'myapp', repo: 'mup-myapp' })).toBe(true);
+    const script = f.calls[0].text;
+    expect(script).toContain('# bundle-adopt.sh');
+    expect(script).toContain("APP_DIR='/opt/myapp'");
+    expect(script).toContain("CONTAINER='myapp'");
+    expect(script).toContain("REPO='mup-myapp'");
+    expect(await adoptMupBundle(fakeConn(() => '').conn, { appName: 'myapp', container: 'myapp', repo: 'mup-myapp' })).toBe(false);
+  });
+
+  it('destroy-extra.sh removes :mup-bundle', async () => {
+    const s = await cometScript('destroy-extra.sh', { repo: 'mup-myapp', configDir: '/opt/myapp/config' });
+    expect(s).toContain('sudo docker rmi --force "$REPO:mup-bundle"');
   });
 });
 
