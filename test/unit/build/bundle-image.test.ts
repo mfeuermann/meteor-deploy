@@ -100,13 +100,14 @@ describe('createBundleImage', () => {
     const r = await createBundleImage(opts(f.run));
     expect(r).toEqual({ imageId: 'sha256:img' });
     expect(f.calls.map((c) => [c.cmd, ...c.args])).toEqual([
+      ['docker', 'image', 'inspect', '--format', '{{json .Config.Volumes}}', 'kadirahq/meteord'],
       ['docker', 'create', '--platform', 'linux/amd64', 'kadirahq/meteord'],
       ['docker', 'cp', '-', 'cid123:/'],
       ['docker', 'commit', '--change', 'LABEL comet-deploy.version=v1', '--change', 'LABEL comet-deploy.bundle=1', 'cid123', 'mup-a:v1'],
       ['docker', 'image', 'inspect', '--format', '{{.Id}}', 'mup-a:v1'],
       ['docker', 'rm', '-f', 'cid123'],
     ]);
-    const input = f.calls[1].input;
+    const input = f.calls[2].input;
     expect(Buffer.isBuffer(input)).toBe(true);
     const entries = await parseTar(input as Buffer);
     expect(entries.map((e) => e.path)).toEqual(['bundle/', 'bundle/bundle.tar.gz']);
@@ -123,12 +124,35 @@ describe('createBundleImage', () => {
     expect(f.calls.at(-1)?.args).toEqual(['rm', '-f', 'cid123']);
   });
 
+  it('refuses a base image that declares /bundle as a volume', async () => {
+    // docker commit leaves volume content out: the image would have no bundle.
+    for (const volumes of ['{"/bundle":{}}', '{"/bundle/":{}}', '{"/":{}}']) {
+      const f = fakeRun((_c, args) => (args[0] === 'image' && args.includes('{{json .Config.Volumes}}') ? { stdout: `${volumes}\n` } : {}));
+      const err = await createBundleImage(opts(f.run)).catch((e: unknown) => e);
+      expect(err, volumes).toBeInstanceOf(CometError);
+      expect((err as CometError).message).toMatch(/^The docker image "kadirahq\/meteord" declares \/(bundle\/?)? as a volume, so the bundle cannot be part of the app image/);
+      expect(f.calls.some((c) => c.args[0] === 'create'), volumes).toBe(false);
+    }
+  });
+
+  it('accepts other volumes of the base image', async () => {
+    const f = fakeRun((_c, args) => {
+      if (args.includes('{{json .Config.Volumes}}')) return { stdout: '{"/data":{}}\n' };
+      if (args[0] === 'create') return { stdout: 'cid123\n' };
+      if (args[0] === 'image') return { stdout: 'sha256:img\n' };
+      return {};
+    });
+    await expect(createBundleImage(opts(f.run))).resolves.toEqual({ imageId: 'sha256:img' });
+  });
+
   it('reports a base image missing for the platform', async () => {
     const f = fakeRun((_c, args) => (args[0] === 'create' ? { code: 1, stderr: 'no matching manifest for linux/arm64\n' } : {}));
     const err = await createBundleImage(opts(f.run, 'linux/arm64')).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(CometError);
     expect((err as CometError).message).toBe('The docker image "kadirahq/meteord" is not available for linux/arm64: no matching manifest for linux/arm64');
-    expect((err as CometError).hint).toBe('In bundle mode the servers run this image itself. Use an image that exists for linux/arm64, or a zodern/meteor image.');
+    expect((err as CometError).hint).toBe(
+      'In bundle mode the servers run this image itself. Use an image that exists for linux/arm64 ("docker buildx imagetools inspect kadirahq/meteord" lists its platforms).',
+    );
     expect(f.calls.some((c) => c.args[0] === 'rm')).toBe(false);
   });
 });

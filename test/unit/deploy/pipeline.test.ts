@@ -870,6 +870,22 @@ describe('pipelines behind the proxy', () => {
     expect(f.output()).toContain('loadBalancing was not enabled on the proxies because two did not deploy; run the deploy again');
   });
 
+  it('restart with the zero-downtime switch takes over a MUP bundle before it starts the next container', async () => {
+    // Otherwise <app>-next would unpack into the same /opt/<app>/current as MUP's container.
+    const s = await setup({ extra: LE });
+    await withProxies(s, 'off');
+    s.deps.adoptMupBundle = async (c) => (s.calls.push(`adopt:${c.name}`), true);
+    s.deps.startServer = async (d, x) => {
+      s.calls.push(`start:${d.serverName}:${x?.switch?.kind ?? 'none'}`);
+      return { server: d.serverName, status: 'healthy', durationMs: 1 };
+    };
+    await restartPipeline(s.ctx, {}, s.deps);
+    for (const n of ['one', 'two']) {
+      expect(s.calls.indexOf(`adopt:${n}`), n).toBeGreaterThanOrEqual(0);
+      expect(s.calls.indexOf(`adopt:${n}`), n).toBeLessThan(s.calls.indexOf(`start:${n}:zero-downtime`));
+    }
+  });
+
   it('restart with the zero-downtime switch does not stop the app first', async () => {
     const s = await setup({ extra: LE });
     await withProxies(s, 'off');

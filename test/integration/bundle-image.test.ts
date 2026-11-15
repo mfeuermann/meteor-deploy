@@ -15,6 +15,7 @@ import { tempDir } from '../helpers/fs.js';
 const FROM = 'busybox:1.36';
 const BASE = `comet-test-bundle-base:${process.pid}`;
 const TAG = `comet-test-bundle-app:${process.pid}`;
+const VOLUME_BASE = `comet-test-bundle-volume:${process.pid}`;
 const PLATFORM = arch() === 'arm64' ? 'linux/arm64' : 'linux/amd64';
 
 const DOCKERFILE = `FROM ${FROM}
@@ -46,7 +47,7 @@ describe('bundle image on the local Docker', () => {
   });
 
   afterAll(async () => {
-    await run('docker', ['rmi', '-f', TAG, BASE]);
+    await run('docker', ['rmi', '-f', TAG, BASE, VOLUME_BASE]);
   });
 
   it('gives /bundle and bundle.tar.gz the owner and mode of MUP, over the base image /bundle', async () => {
@@ -62,6 +63,12 @@ describe('bundle image on the local Docker', () => {
   it('holds the archive unchanged', async () => {
     const inImage = await docker(['run', '--rm', '--entrypoint', 'sha256sum', TAG, '/bundle/bundle.tar.gz']);
     expect(inImage.split(/\s+/)[0]).toBe(createHash('sha256').update(readFileSync(archive)).digest('hex'));
+  });
+
+  it('refuses a base image with VOLUME /bundle, whose content docker commit would leave out', async () => {
+    await docker(['build', '-t', VOLUME_BASE, '-'], `FROM ${FROM}\nVOLUME /bundle\n`);
+    const p = createBundleImage({ baseImage: VOLUME_BASE, platform: PLATFORM, archivePath: archive, tag: `${TAG}-volume`, labels: {} });
+    await expect(p).rejects.toThrow(`The docker image "${VOLUME_BASE}" declares /bundle as a volume`);
   });
 
   it('leaves no temporary container behind', async () => {

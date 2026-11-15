@@ -90,8 +90,15 @@ Pokud base image `/bundle` už má (například `zodern/meteor:root` ho má jako
 - **Base image se pullne** jako dnes, chyba pullu se ignoruje. Když base image pro platformu lokálně chybí (pull selhal nebo varianta neexistuje), `docker create` selže a build skončí chybou:
   ```
   The docker image "kadirahq/meteord" is not available for linux/arm64: <stderr docker create>
-  Hint: In bundle mode the servers run this image itself. Use an image that exists for linux/arm64, or a zodern/meteor image.
+  Hint: In bundle mode the servers run this image itself. Use an image that exists for linux/arm64 ("docker buildx imagetools inspect kadirahq/meteord" lists its platforms).
   ```
+  [Změněno při review: `zodern/meteor:root` i `:latest` existují jen pro `linux/amd64`, takže rada „or a zodern/meteor image“ na arm64 nepomůže.]
+- **Base image nesmí mít `/bundle` (ani `/`) jako VOLUME** [doplněno při review]: `docker create` pro něj udělá anonymní volume, `docker cp` zapíše do něj a `docker commit` ho vynechá, takže by image neměl bundle. Před `docker create` se proto přečte `docker image inspect --format '{{json .Config.Volumes}}'` a build skončí chybou:
+  ```
+  The docker image "<image>" declares /bundle as a volume, so the bundle cannot be part of the app image: docker commit leaves volumes out.
+  Hint: Use a base image without that VOLUME, or an image that can build an app image (zodern/meteor, docker.prepareBundle: true).
+  ```
+  Převzetí serveru MUP (`bundle-adopt.sh`) se stejným image skončí chybou dřív, než cokoli změní.
 - **Hash vstupů** obsahuje i režim (`bundle`) a verzi formátu image s bundlem (`BUNDLE_IMAGE_VERSION = 1`), takže se image z prepare mode a z bundle mode v cache nikdy nezamění [moje volba]. Při nezměněných vstupech se image použije znovu jako dnes (`No changes since …`).
 - **Informační řádek** při buildu: `bundle mode: mup-myapp:<verze> is "kadirahq/meteord" with the bundle in /bundle; the app installs its npm dependencies each time the container starts.`
 - **`--cache-from` / `--cache-to`** v bundle mode nemají co dělat. Varování: `--cache-from and --cache-to are ignored in bundle mode: the app image is not built with BuildKit.` [moje volba]

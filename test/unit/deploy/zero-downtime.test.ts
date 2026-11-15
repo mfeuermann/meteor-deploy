@@ -219,6 +219,9 @@ describe('activateServer with the zero-downtime switch', () => {
     expect(finish).toContain("APP_DIR='/opt/myapp'");
     expect(at('sudo rm -rf "$APP_DIR/current"')).toBeGreaterThan(at('docker rename'));
     expect(at('sudo rm -rf "$APP_DIR/current"')).toBeGreaterThan(at('docker rm -f "$NAME"'));
+    // After nginx is back on docker-gen's config, and never fatal: the switch is done by then.
+    expect(at('sudo rm -rf "$APP_DIR/current"')).toBeGreaterThan(finish.lastIndexOf('\nunroute\n'));
+    expect(finish).toContain('sudo rm -rf "$APP_DIR/current" || true');
     // Guarded by the mount list of the renamed container.
     const guard = finish.slice(at('{{range .Mounts}}'), at('sudo rm -rf "$APP_DIR/current"'));
     expect(guard).toContain('"$APP_DIR/current"');

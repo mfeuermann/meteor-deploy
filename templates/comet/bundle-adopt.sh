@@ -15,6 +15,15 @@ SOURCE=$(sudo docker inspect -f '{{range .Mounts}}{{if eq .Destination "/bundle"
 sudo test -f "$APP_DIR/current/bundle.tar.gz" || exit 0
 IMAGE_ID=$(sudo docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null) || exit 0
 [ -n "$IMAGE_ID" ] || exit 0
+# docker commit leaves the content of a volume out: with /bundle (or /) as a VOLUME of the image
+# the taken-over image would have no bundle. Stop before anything changes.
+for VOLUME in $(sudo docker image inspect -f '{{range $k, $v := .Config.Volumes}}{{$k}} {{end}}' "$IMAGE_ID" 2>/dev/null || true); do
+  case "$VOLUME" in
+    / | /bundle | /bundle/)
+      echo "The image of the container $CONTAINER declares $VOLUME as a volume, so the bundle MUP mounts cannot be made part of an image: docker commit leaves volumes out. Deploy this app with MUP, or switch it to a base image without that VOLUME." >&2
+      exit 1 ;;
+  esac
+done
 
 set -eo pipefail
 WORK="$APP_DIR/tmp/comet-bundle-adopt"

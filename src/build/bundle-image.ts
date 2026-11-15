@@ -67,11 +67,27 @@ export function bundleLayerTar(archive: Buffer): Buffer {
 }
 
 /**
+ * The volume of `docker image inspect --format '{{json .Config.Volumes}}'` output that would
+ * hide `/bundle` (`/bundle` itself or `/`), or null. Output that is not JSON (the image is not
+ * local yet) counts as none: `docker create` then reports the missing image.
+ */
+function bundleVolume(inspectJson: string): string | null {
+  let volumes: unknown;
+  try {
+    volumes = JSON.parse(inspectJson.trim() || 'null');
+  } catch {
+    return null;
+  }
+  if (!volumes || typeof volumes !== 'object') return null;
+  return Object.keys(volumes).find((v) => ['/', '/bundle', '/bundle/'].includes(v)) ?? null;
+}
+
+/**
  * Creates the bundle image `tag` for `platform` from `baseImage` and the archive at
  * `archivePath` (see the file comment). The temporary container is removed in every case.
  *
- * @throws CometError when the base image is not available for the platform, or when copying,
- *   committing or reading the new image fails.
+ * @throws CometError when the base image declares `/bundle` (or `/`) as a volume, when it is
+ *   not available for the platform, or when copying, committing or reading the new image fails.
  */
 export async function createBundleImage(o: {
   baseImage: string;
@@ -82,10 +98,19 @@ export async function createBundleImage(o: {
   run?: RunFn;
 }): Promise<{ imageId: string }> {
   const exec = o.run ?? run;
+  // docker create makes an anonymous volume for every VOLUME of the image, docker cp writes into
+  // it and docker commit leaves it out: the image would have no bundle, without any error.
+  const volume = bundleVolume((await exec('docker', ['image', 'inspect', '--format', '{{json .Config.Volumes}}', o.baseImage])).stdout);
+  if (volume) {
+    throw new CometError(
+      `The docker image "${o.baseImage}" declares ${volume} as a volume, so the bundle cannot be part of the app image: docker commit leaves volumes out.`,
+      { hint: 'Use a base image without that VOLUME, or an image that can build an app image (zodern/meteor, docker.prepareBundle: true).' },
+    );
+  }
   const created = await exec('docker', ['create', '--platform', o.platform, o.baseImage]);
   if (created.code !== 0) {
     throw new CometError(`The docker image "${o.baseImage}" is not available for ${o.platform}: ${created.stderr.trim()}`, {
-      hint: `In bundle mode the servers run this image itself. Use an image that exists for ${o.platform}, or a zodern/meteor image.`,
+      hint: `In bundle mode the servers run this image itself. Use an image that exists for ${o.platform} ("docker buildx imagetools inspect ${o.baseImage}" lists its platforms).`,
     });
   }
   const cid = created.stdout.trim();

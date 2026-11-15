@@ -39,6 +39,7 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [Not a Meteor app](#not-a-meteor-app)
 - [meteor build failed](#meteor-build-failed)
 - [The base image is not available for the server's platform](#the-base-image-is-not-available-for-the-servers-platform)
+- [The base image declares /bundle as a volume](#the-base-image-declares-bundle-as-a-volume)
 - [docker buildx build failed](#docker-buildx-build-failed)
 - [It builds every time](#it-builds-every-time)
 - [npm install runs again](#npm-install-runs-again)
@@ -420,10 +421,24 @@ Exit code 127 means the command was not found (`buildOptions.executable`).
 
 ```
 The docker image "kadirahq/meteord" is not available for linux/arm64: no matching manifest for linux/arm64/v8 in the manifest list entries
-Hint: In bundle mode the servers run this image itself. Use an image that exists for linux/arm64, or a zodern/meteor image.
+Hint: In bundle mode the servers run this image itself. Use an image that exists for linux/arm64 ("docker buildx imagetools inspect kadirahq/meteord" lists its platforms).
 ```
 
-In [bundle mode](configuration.md#bundle-mode) the version image is the base image (`docker.image`) plus the bundle, for the platform of the servers. `kadirahq/meteord` exists only for `linux/amd64`, so it cannot run on an arm64 server; with MUP the container would fail there with `exec format error`. Use an image that has a variant for that platform, for example `zodern/meteor:root`. The pull of the base image may also have failed (offline, rate limit): see [Docker Hub rate limits](#docker-hub-rate-limits).
+In [bundle mode](configuration.md#bundle-mode) the version image is the base image (`docker.image`) plus the bundle, for the platform of the servers. `kadirahq/meteord` exists only for `linux/amd64`, and so do `zodern/meteor:root` and `zodern/meteor:latest`. On a server without amd64 emulation they cannot run; with MUP the container would fail there with `exec format error`. What you can do:
+
+- Use a base image that has a variant for the servers' platform (`docker buildx imagetools inspect <image>` lists them).
+- If the arm64 servers can run amd64 images under emulation (as MUP's container would there), set `cometDeploy.platform: 'linux/amd64'`: comet-deploy then builds the amd64 image for every server.
+
+The pull of the base image may also have failed (offline, rate limit): see [Docker Hub rate limits](#docker-hub-rate-limits).
+
+### The base image declares /bundle as a volume
+
+```
+The docker image "my/meteord" declares /bundle as a volume, so the bundle cannot be part of the app image: docker commit leaves volumes out.
+Hint: Use a base image without that VOLUME, or an image that can build an app image (zodern/meteor, docker.prepareBundle: true).
+```
+
+In bundle mode comet-deploy puts the bundle into the image at `/bundle`. A base image with `VOLUME /bundle` (or `VOLUME /`) hides that path from `docker commit`, so the image would start without a bundle. Use a base image without that `VOLUME`, or prepare mode. On a server MUP deployed in bundle mode with such an image, the takeover of the MUP version stops the command (`[server] Taking over the bundle MUP runs failed`, with the same reason) before anything on the server changes; deploy that app with MUP, or switch it to a base image without that `VOLUME`.
 
 ### docker buildx build failed
 

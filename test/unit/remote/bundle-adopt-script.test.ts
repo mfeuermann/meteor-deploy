@@ -13,7 +13,8 @@ import { tempDir } from '../../helpers/fs.js';
 
 const FAKE_DOCKER = `#!/bin/bash
 # state: one "<ref> <id>" line per tag. MOUNT: source of the container's /bundle mount;
-# NO_CONTAINER: the app container does not exist; FAIL_COMMIT / FAIL_RMI: those commands fail.
+# NO_CONTAINER: the app container does not exist; FAIL_COMMIT / FAIL_RMI: those commands fail;
+# VOLUMES: the volumes of the container's image, as the script's format prints them.
 echo "$*" >> "$DIR/calls"
 state="$DIR/state"
 resolve() { awk -v r="$1" '$1 == r { print $2 }' "$state"; }
@@ -26,6 +27,7 @@ case "$1" in
       *Image*) echo sha256:base ;;
     esac ;;
   image)
+    case "$4" in *Volumes*) echo "$VOLUMES"; exit 0 ;; esac
     id=$(resolve "$5"); [ -n "$id" ] || exit 1; echo "$id" ;;
   create) echo tmp1 ;;
   cp) cat > "$DIR/cp.tar" ;;
@@ -114,6 +116,23 @@ describe('bundle-adopt.sh', () => {
     const h = fakeHost();
     expect(await h.run({ NO_CONTAINER: '1' })).toEqual({ code: 0, stdout: '' });
     expect(h.calls().some((c) => c.startsWith('create'))).toBe(false);
+  });
+
+  it('refuses an image that declares /bundle as a volume, before it changes anything', async () => {
+    // docker commit would leave the bundle out of the image.
+    for (const volumes of ['/bundle ', '/data /bundle/ ', '/ ']) {
+      const h = fakeHost({ 'mup-myapp:latest': 'sha256:keep' });
+      const r = await h.run({ VOLUMES: volumes });
+      expect(r.code, volumes).not.toBe(0);
+      expect(r.stdout, volumes).toBe('');
+      expect(h.calls().some((c) => c.startsWith('create')), volumes).toBe(false);
+      expect(h.tagsNow()['mup-myapp:latest'], volumes).toBe('sha256:keep');
+    }
+  });
+
+  it('takes over an image with other volumes', async () => {
+    const h = fakeHost();
+    expect(await h.run({ VOLUMES: '/data /var/log ' })).toEqual({ code: 0, stdout: 'adopted\n' });
   });
 
   it('cleans up when commit fails', async () => {

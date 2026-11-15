@@ -52,9 +52,10 @@ for c in "$NAME-frontend" "$NAME-nginx-letsencrypt" "$NAME-nginx-proxy"; do
   sudo docker rm -f "$c" >/dev/null 2>&1 || true
 done
 sudo docker rename "$NEXT" "$NAME"
+unroute
+# The switch is done here: a failure to remove the directory must not fail it.
 if MOUNTS=$(sudo docker inspect -f '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$NAME" 2>/dev/null) &&
   ! printf '%s\n' "$MOUNTS" | grep -qxF "$APP_DIR/current"; then
-  sudo rm -rf "$APP_DIR/current"
+  sudo rm -rf "$APP_DIR/current" || true
 fi
-unroute
 echo switched
