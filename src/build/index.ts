@@ -1,8 +1,9 @@
 /**
  * The build step of a deploy. For each target platform it either reuses a cached local image
  * (the inputs did not change, or `--cached-build`) or runs `meteor build` locally and builds the
- * layered app image with `docker buildx build`. The result is one local image per platform, ready
- * to be pushed to the local registry.
+ * layered app image with `docker buildx build`; in MUP's bundle mode the image is the base image
+ * plus the bundle (bundle-image.ts). The result is one local image per platform, ready to be
+ * pushed to the local registry.
  */
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, relative, sep } from 'node:path';
@@ -13,6 +14,7 @@ import { CometError } from '../core/errors.js';
 import { localImageRepo } from '../core/naming.js';
 import { TOOL_ID } from '../core/version.js';
 import { buildImage, imageId, pullImage, removeImage } from '../local/docker.js';
+import { BUNDLE_IMAGE_VERSION, createBundleImage, writeBundleArchive } from './bundle-image.js';
 import { BuildCache } from './cache.js';
 import { argKeysForInstructions, computeDepsHash, DOCKERFILE_VERSION, planBuildContext, renderDockerfile, writeContextIgnore } from './dockerfile.js';
 import { computeInputHash } from './input-hash.js';
@@ -37,8 +39,7 @@ export interface BuiltImage {
 /**
  * MUP's `prepareBundleSupported`: whether the base image can build an app image. An explicit
  * `docker.prepareBundle` decides; otherwise only `abernix/meteord` and `zodern/meteor` images
- * can. Without it MUP runs in bundle mode (the container installs the uploaded bundle when it
- * starts), which comet-deploy does not support yet.
+ * can. Without it MUP runs in bundle mode: the container installs the bundle when it starts.
  */
 export function prepareBundleSupported(docker: Pick<DockerOptions, 'image' | 'prepareBundle'>): boolean {
   if ('prepareBundle' in docker) return !!docker.prepareBundle;
@@ -63,6 +64,9 @@ export function hashExtras(app: AppConfig, platform: Platform): Record<string, u
     buildInstructions: app.docker.buildInstructions ?? [],
     dockerfile: DOCKERFILE_VERSION,
     buildArgs: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+    // Only in bundle mode, so the hashes (and cached images) of prepare mode stay as they were,
+    // and an image of one mode is never reused for the other.
+    ...(prepareBundleSupported(app.docker) ? {} : { mode: 'bundle', bundleImage: BUNDLE_IMAGE_VERSION }),
   };
 }
 
@@ -103,8 +107,11 @@ export interface BuildAppOptions {
  * the recorded image id. Everything else is a full build: pull the base image, `meteor build`,
  * render the Dockerfile, `docker buildx build`, then record the result in the build cache.
  *
- * @throws CometError when the base image cannot build an app image (MUP bundle mode), when
- *   `--cached-build` finds no usable image, or when `meteor build` or the image build fails.
+ * In MUP's bundle mode (`prepareBundleSupported` false) the image is the base image with the
+ * bundle in `/bundle` instead (bundle-image.ts): no Dockerfile, no buildx, no build instructions.
+ *
+ * @throws CometError when `--cached-build` finds no usable image, when `meteor build` or the
+ *   image build fails, or in bundle mode when the base image is missing for a platform.
  */
 export async function buildApp(
   ctx: CommandContext,
@@ -112,11 +119,9 @@ export async function buildApp(
 ): Promise<BuiltImage[]> {
   const { app } = ctx.config;
   const r = ctx.reporter;
-  if (!prepareBundleSupported(app.docker)) {
-    throw new CometError(
-      `The docker image "${app.docker.image}" cannot build an app image (MUP bundle mode). Bundle mode is planned for phase 2 of comet-deploy.`,
-      { hint: 'Use a zodern/meteor image (app.docker.image), e.g. "zodern/meteor:root".' },
-    );
+  const bundleMode = !prepareBundleSupported(app.docker);
+  if (bundleMode && (o.cacheFrom?.length || o.cacheTo?.length)) {
+    r.warn('--cache-from and --cache-to are ignored in bundle mode: the app image is not built with BuildKit.');
   }
   const appPath = resolveAppPath(ctx.config, ctx.basePath);
   const cache = new BuildCache(appPath);
@@ -157,6 +162,10 @@ export async function buildApp(
     const bundleDir = await r.phase(`meteor build (${platform})`, () =>
       runMeteorBuild(app, { appPath, buildLocation, arch: meteorArchFor(platform), reporter: r }),
     );
+    if (bundleMode) {
+      results.push(await buildBundleImage(ctx, { platform, localTag, buildLocation, bundleDir, version: o.version, inputHash }, cache));
+      continue;
+    }
     const nodeVersion = readNodeVersion(bundleDir);
     const plan = planBuildContext(bundleDir);
     const depsHash = await computeDepsHash(bundleDir, plan);
@@ -204,6 +213,50 @@ export async function buildApp(
     results.push({ ...pick(entry), fromCache: false });
   }
   return results;
+}
+
+/**
+ * Bundle mode: `bundle.tar.gz` and the image `localTag` = base image + `/bundle` (bundle-image.ts),
+ * recorded in the build cache like a prepare-mode image. The base image runs the bundle as it
+ * is, so there is no deps layer (`depsHash` empty) and the Node version is only informative:
+ * empty when the bundle does not name one.
+ */
+async function buildBundleImage(
+  ctx: CommandContext,
+  b: { platform: Platform; localTag: string; buildLocation: string; bundleDir: string; version: string; inputHash: string },
+  cache: BuildCache,
+): Promise<BuiltImage> {
+  const r = ctx.reporter;
+  const image = ctx.config.app.docker.image!;
+  r.info(`bundle mode: ${b.localTag} is "${image}" with the bundle in /bundle; the app installs its npm dependencies each time the container starts.`);
+  let nodeVersion = '';
+  try {
+    nodeVersion = readNodeVersion(b.bundleDir);
+  } catch {
+    // Not needed in bundle mode: the base image brings (or installs) its own Node.
+  }
+  const built = await r.phase(`bundle image (${b.platform})`, async () =>
+    createBundleImage({
+      baseImage: image,
+      platform: b.platform,
+      archivePath: await writeBundleArchive(b.buildLocation),
+      tag: b.localTag,
+      labels: { 'comet-deploy.version': b.version, 'comet-deploy.bundle': '1' },
+    }),
+  );
+  const entry = {
+    inputHash: b.inputHash,
+    platform: b.platform,
+    version: b.version,
+    localTag: b.localTag,
+    imageId: built.imageId,
+    bundleDir: b.bundleDir,
+    nodeVersion,
+    depsHash: '',
+    createdAt: new Date().toISOString(),
+  };
+  for (const gone of cache.save(entry)) await removeImage(gone.localTag);
+  return { ...pick(entry), fromCache: false };
 }
 
 /**
