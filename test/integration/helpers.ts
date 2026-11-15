@@ -129,11 +129,13 @@ export async function cli(args: string[], cwd: string): Promise<{ code: number; 
   return { code, output: out.join('') };
 }
 
-/** Runs MUP 1.5.11 (devDependency) as a child process. */
+/** Runs MUP 1.5.11 (devDependency) as a child process; with `COMET_TEST_LOG` its output is logged too. */
 export function mup(args: string[], cwd: string): Promise<{ code: number; output: string }> {
   const bin = join(dirname(require.resolve('mup/package.json')), 'index.js');
+  const log = process.env.COMET_TEST_LOG;
+  if (log) appendFileSync(log, `\n$ mup ${args.join(' ')}\n`);
   return new Promise((resolve) => {
-    execFile(
+    const child = execFile(
       process.execPath,
       [bin, ...args],
       { cwd, env: { ...process.env, MUP_SKIP_UPDATE_CHECK: 'true', FORCE_COLOR: '0' }, maxBuffer: 256 * 1024 * 1024 },
@@ -142,6 +144,7 @@ export function mup(args: string[], cwd: string): Promise<{ code: number; output
         resolve({ code, output: `${stdout}${stderr}` });
       },
     );
+    if (log) for (const stream of [child.stdout, child.stderr]) stream?.on('data', (d: Buffer | string) => appendFileSync(log, d));
   });
 }
 
