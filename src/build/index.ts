@@ -8,13 +8,14 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { resolveAppPath } from '../config/normalize.js';
-import type { AppConfig, DockerOptions, Platform } from '../config/types.js';
+import type { AppConfig, Platform } from '../config/types.js';
 import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
 import { localImageRepo } from '../core/naming.js';
 import { TOOL_ID } from '../core/version.js';
 import { buildImage, imageId, pullImage, removeImage } from '../local/docker.js';
 import { BUNDLE_IMAGE_VERSION, createBundleImage, writeBundleArchive } from './bundle-image.js';
+import { prepareBundleSupported } from './mode.js';
 import { BuildCache } from './cache.js';
 import { argKeysForInstructions, computeDepsHash, DOCKERFILE_VERSION, planBuildContext, renderDockerfile, writeContextIgnore } from './dockerfile.js';
 import { computeInputHash } from './input-hash.js';
@@ -36,15 +37,7 @@ export interface BuiltImage {
   fromCache: boolean;
 }
 
-/**
- * MUP's `prepareBundleSupported`: whether the base image can build an app image. An explicit
- * `docker.prepareBundle` decides; otherwise only `abernix/meteord` and `zodern/meteor` images
- * can. Without it MUP runs in bundle mode: the container installs the bundle when it starts.
- */
-export function prepareBundleSupported(docker: Pick<DockerOptions, 'image' | 'prepareBundle'>): boolean {
-  if ('prepareBundle' in docker) return !!docker.prepareBundle;
-  return ['abernix/meteord', 'zodern/meteor'].some((img) => (docker.image ?? '').startsWith(img));
-}
+export { prepareBundleSupported } from './mode.js';
 
 /** The env keys that the build instructions use, which become `--build-arg`s. */
 const buildArgKeys = (app: AppConfig) => argKeysForInstructions(app.docker.buildInstructions ?? [], Object.keys(app.env ?? {}));

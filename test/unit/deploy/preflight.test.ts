@@ -5,6 +5,7 @@ import { CometError } from '../../../src/core/errors.js';
 import { createContext } from '../../../src/core/context.js';
 import { evaluatePreflight, platformForArch, runPreflight, type PreflightInput } from '../../../src/deploy/preflight.js';
 import { createReporter } from '../../../src/output/reporter.js';
+import { fakeDocker } from '../../helpers/fake-docker.js';
 import { tempDir } from '../../helpers/fs.js';
 import type { ServerFacts } from '../../../src/remote/ops.js';
 
@@ -88,6 +89,15 @@ describe('evaluatePreflight', () => {
     expect(evaluatePreflight(input({ local, needsBuild: false })).errors).toEqual([]);
   });
 
+  it('skips the buildx checks in bundle mode', () => {
+    const noBuildx = evaluatePreflight(input({ bundleMode: true, local: { docker: { ok: true }, platforms: [], meteorOk: true } }));
+    expect(noBuildx.errors).toEqual([]);
+    const noEmulation = evaluatePreflight(input({ bundleMode: true, local: { docker: { ok: true }, platforms: ['linux/arm64'], meteorOk: true } }));
+    expect(noEmulation.errors).toEqual([]);
+    const dockerDown = evaluatePreflight(input({ bundleMode: true, local: { docker: { ok: false, error: 'Cannot connect to the Docker daemon' }, platforms: [], meteorOk: true } }));
+    expect(dockerDown.errors.join('\n')).toMatch(/Docker daemon/);
+  });
+
   it('requires buildx support for the target platform with an emulation hint', () => {
     const r = evaluatePreflight(input({ local: { docker: { ok: true }, platforms: ['linux/arm64'], meteorOk: true } }));
     expect(r.errors.join('\n')).toMatch(/linux\/amd64/);
@@ -168,6 +178,24 @@ describe('runPreflight', () => {
     const err = await runPreflight(ctx, [], { needsBuild: true, checkLocks: false, distributes: true }).catch((e: Error) => e);
     expect(String(err instanceof Error ? err.message : '')).not.toMatch(/tools\/meteor/);
   }, LOCAL_CHECKS_TIMEOUT);
+});
+
+describe('runPreflight in bundle mode', () => {
+  it('does not ask buildx for its platforms', async () => {
+    const docker = fakeDocker('[ "$1" = version ] && echo 27.0.0; exit 0');
+    try {
+      const dir = tempDir({
+        '.deploy/mup.js': `module.exports = { servers: { one: { host: '192.0.2.1', username: 'root', password: 'pw' } }, app: { name: 'myapp', path: '../app', servers: { one: {} }, env: { ROOT_URL: 'http://a.com' }, docker: { image: 'kadirahq/meteord' }, buildOptions: { executable: './meteor' } } };`,
+        'app/meteor': '#!/bin/sh\necho "Meteor 3.0"\n',
+      });
+      chmodSync(join(dir, 'app/meteor'), 0o755);
+      const ctx = await createContext({ config: '.deploy/mup.js' }, { cwd: dir, reporter: createReporter({ verbose: false, tty: false, write: () => {} }) });
+      await runPreflight(ctx, [], { needsBuild: true, checkLocks: false, distributes: true });
+      expect(docker.calls().some((c) => c.startsWith('buildx'))).toBe(false);
+    } finally {
+      docker.restore();
+    }
+  });
 });
 
 describe('evaluatePreflight: proxy servers', () => {

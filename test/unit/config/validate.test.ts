@@ -131,6 +131,48 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('bundle mode', () => {
+    const IGNORED =
+      'are ignored in bundle mode, as in MUP: the base image "kadirahq/meteord" runs the bundle as it is. Set docker.prepareBundle: true (or use a zodern/meteor image) to apply them.';
+
+    it('warns that buildInstructions are ignored', () => {
+      const issues = check((c) => (c.app.docker = { image: 'kadirahq/meteord', buildInstructions: ['RUN x'] }));
+      const issue = find(issues, 'app.docker.buildInstructions');
+      expect(issue).toEqual({ path: 'app.docker.buildInstructions', message: IGNORED, severity: 'warning' });
+      expect(hasFatal(issues)).toBe(false);
+    });
+
+    it('warns about a non-root zodern/meteor image', () => {
+      for (const image of ['zodern/meteor', 'zodern/meteor:latest', 'zodern/meteor:slim']) {
+        const issues = check((c) => (c.app.docker = { image, prepareBundle: false }));
+        const issue = find(issues, 'app.docker.image');
+        expect(issue?.severity, image).toBe('warning');
+        expect(issue!.message).toMatch(new RegExp(`^"${image}" cannot unpack the bundle in bundle mode`));
+      }
+      const issues = check((c) => (c.app.docker = { image: 'zodern/meteor:latest', prepareBundle: false }));
+      expect(find(issues, 'app.docker.image')!.message).toBe(
+        '"zodern/meteor:latest" cannot unpack the bundle in bundle mode: its app user cannot write to /bundle, with MUP as with comet-deploy. Use "zodern/meteor:root", or remove docker.prepareBundle: false.',
+      );
+    });
+
+    it('accepts root zodern/meteor images in bundle mode', () => {
+      for (const image of ['zodern/meteor:root', 'zodern/meteor:1.2.3-root']) {
+        expect(find(check((c) => (c.app.docker = { image, prepareBundle: false })), 'app.docker.image'), image).toBeUndefined();
+      }
+    });
+
+    it('stays quiet in prepare mode', () => {
+      const issues = check((c) => (c.app.docker = { image: 'zodern/meteor:latest', buildInstructions: ['RUN x'] }));
+      expect(find(issues, 'app.docker.image')).toBeUndefined();
+      expect(find(issues, 'app.docker.buildInstructions')).toBeUndefined();
+    });
+
+    it('no longer refuses bundle mode', () => {
+      const issues = check((c) => (c.app.docker = { image: 'kadirahq/meteord' }));
+      expect(issues.filter((i) => i.severity === 'error')).toEqual([]);
+    });
+  });
+
   describe('the built-in MongoDB', () => {
     const withMongo = (c: RawConfig) => {
       c.mongo = { version: '7.0.14', servers: { one: {} } };

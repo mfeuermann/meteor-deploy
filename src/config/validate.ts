@@ -5,6 +5,7 @@
  * warnings, so configs that work with MUP keep working.
  */
 import type Joi from 'joi';
+import { prepareBundleSupported } from '../build/mode.js';
 import { appSchema, cometSchema, KNOWN_TOP_LEVEL_KEYS, mongoSchema, proxySchema, registrySchema, serversSchema } from './schema.js';
 import { builtInMongoProblem } from '../mongo/rules.js';
 import type { NormalizedConfig, RawConfig } from './types.js';
@@ -130,6 +131,25 @@ export function validateConfig(config: NormalizedConfig, raw: RawConfig): Issue[
     for (const opt of ['prepareBundleLocally', 'useBuildKit']) {
       if (rawApp.docker && opt in rawApp.docker) {
         warn(`${appKey}.docker.${opt}`, 'ignored: comet-deploy always builds locally with BuildKit');
+      }
+    }
+    // MUP's bundle mode (bundle mode design §4.6): what MUP does there, comet-deploy does too,
+    // including what does not work.
+    if (app.docker && !prepareBundleSupported(app.docker)) {
+      const image = app.docker.image ?? '';
+      if (app.docker.buildInstructions?.length) {
+        warn(
+          `${appKey}.docker.buildInstructions`,
+          `are ignored in bundle mode, as in MUP: the base image "${image}" runs the bundle as it is. Set docker.prepareBundle: true (or use a zodern/meteor image) to apply them.`,
+        );
+      }
+      // zodern/meteor runs as its app user except in the root variants (tag root, 1.2.3-root ...).
+      const tag = image.includes(':') ? image.slice(image.lastIndexOf(':') + 1) : '';
+      if (image.startsWith('zodern/meteor') && !tag.includes('root')) {
+        warn(
+          `${appKey}.docker.image`,
+          `"${image}" cannot unpack the bundle in bundle mode: its app user cannot write to /bundle, with MUP as with comet-deploy. Use "zodern/meteor:root", or remove docker.prepareBundle: false.`,
+        );
       }
     }
   }

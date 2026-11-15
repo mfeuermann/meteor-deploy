@@ -9,6 +9,7 @@ import type { CommandContext } from '../core/context.js';
 import { CometError } from '../core/errors.js';
 import { meteorExecutable } from '../build/meteor-build.js';
 import { resolveAppPath } from '../config/normalize.js';
+import { prepareBundleSupported } from '../build/mode.js';
 import { buildxPlatforms, dockerAvailable } from '../local/docker.js';
 import { run } from '../local/exec.js';
 import { readLock, serverFacts, type LockInfo, type ServerFacts } from '../remote/ops.js';
@@ -60,6 +61,11 @@ export interface PreflightInput {
   override: CometOptions['platform'];
   /** Whether this command builds locally; the local checks only matter then. */
   needsBuild: boolean;
+  /**
+   * MUP's bundle mode: the image is made without buildx and nothing runs in it, so the buildx
+   * and emulation checks are skipped (bundle mode design §4.7).
+   */
+  bundleMode?: boolean;
   /** Whether a held lock is an error. */
   checkLocks: boolean;
   /**
@@ -189,7 +195,9 @@ export function evaluatePreflight(i: PreflightInput): PreflightResult {
   const platforms = [...new Set(Object.values(platformByServer))];
   // Only when Docker works: otherwise buildx reports no platforms and every platform would
   // repeat the Docker error in a less helpful form.
-  if (i.needsBuild && i.local.docker.ok && i.local.platforms.length === 0) {
+  if (i.bundleMode) {
+    // Nothing to check: no buildx, no emulation.
+  } else if (i.needsBuild && i.local.docker.ok && i.local.platforms.length === 0) {
     // `docker buildx inspect` failed or listed nothing: the plugin is missing, not the emulation.
     errors.push('Docker buildx is not available locally ("docker buildx inspect" failed). Install the buildx plugin; Docker Desktop and OrbStack include it.');
   } else if (i.needsBuild && i.local.docker.ok) {
@@ -219,8 +227,9 @@ export async function runPreflight(
   const proxyServers = o.proxyServers ?? [];
   const proxyName = (s: string) => (proxyServers.includes(s) ? PROXY_NAME : undefined);
   // Started first and awaited last, so the local checks overlap with the SSH round trips.
+  const bundleMode = !prepareBundleSupported(ctx.config.app.docker);
   const localP = o.needsBuild
-    ? Promise.all([dockerAvailable(), buildxPlatforms(), run(meteorExecutable(ctx.config.app), ['--version'], { cwd: resolveAppPath(ctx.config, ctx.basePath) }).then((r) => r.code === 0)])
+    ? Promise.all([dockerAvailable(), bundleMode ? Promise.resolve([]) : buildxPlatforms(), run(meteorExecutable(ctx.config.app), ['--version'], { cwd: resolveAppPath(ctx.config, ctx.basePath) }).then((r) => r.code === 0)])
     : Promise.resolve([{ ok: true }, [], true] as const);
   // allSettled: a server that cannot be reached becomes one error in the list instead of
   // hiding the results of the others.
@@ -260,6 +269,7 @@ export async function runPreflight(
     ...(o.mongo ? { mongo: { problem: builtInMongoProblem(ctx.config) } } : {}),
     override: ctx.config.cometDeploy.platform,
     needsBuild: o.needsBuild,
+    bundleMode,
     checkLocks: o.checkLocks,
     distributes: o.distributes,
     transfer,
