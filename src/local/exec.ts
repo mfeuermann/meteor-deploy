@@ -19,7 +19,7 @@ export interface RunOptions {
   /** Inherit stdio (output is shown, not captured). */
   inherit?: boolean;
   /** Written to stdin. stdin is closed either way, so a command that reads it never waits. */
-  input?: string;
+  input?: string | Buffer;
   /**
    * Called once per output line, without the line break (`\r\n` included), and once more for an
    * unterminated last line when the command exits.
