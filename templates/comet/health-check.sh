@@ -13,6 +13,13 @@ MAX_NO_IP=10
 
 START=$(date +%s)
 END=$((START + TIMEOUT))
+# A bundle-mode image (label comet-deploy.bundle=1) unpacks the bundle and installs its npm
+# dependencies when it starts. MUP's start.sh waits 15 s after starting such a container with
+# the bundle mounted, but only 3 s with an image, so the app gets the 12 s difference here.
+BUNDLE_EXTRA=12
+if [ "$(sudo docker inspect -f '{{index .Config.Labels "comet-deploy.bundle"}}' "$CONTAINER" 2>/dev/null)" = 1 ]; then
+  END=$((END + BUNDLE_EXTRA))
+fi
 NO_IP=0
 LAST=-
 
