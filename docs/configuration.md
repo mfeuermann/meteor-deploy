@@ -478,7 +478,7 @@ A hook name is `pre.<key>` or `post.<key>`, where the key is one of the steps in
 | Another property in the object | warning: `is an unknown property` |
 | A name without `pre.` or `post.` | warning: `must start with "pre." or "post."` |
 | A key that is not a step of MUP or comet-deploy, for example `pre.deplyo` | warning: `does not match a command, so it never runs` |
-| A key of a command comet-deploy does not run (`default.init`, `default.validate`, `default.ssh`, `meteor.debug`, `docker.destroyCluster`, `proxy.envconfig`) | warning: `belongs to a command comet-deploy does not run (<key>), so it never runs` |
+| A key of a command comet-deploy does not run (`default.init`, `default.validate`, `docker.destroyCluster`, `proxy.envconfig`) | warning: `belongs to a command comet-deploy does not run (<key>), so it never runs` |
 
 ### The three forms
 
@@ -528,6 +528,8 @@ A hook that changes the config (`api.getConfig().app.env.X = 'y'`, `api.setConfi
 | `status` | `default.status` › `docker.status` → `meteor.status` → (with `mongo`) `mongo.status` → (with `proxy`) `proxy.status` |
 | `setup` | `default.setup` › `docker.setup` → `meteor.setup` → (with `mongo`) `mongo.setup` → `mongo.start` → (with `proxy`) `proxy.setup` › `proxy.start` |
 | `rollback` | `default.rollback` (comet-deploy only) |
+| `ssh`, `meteor debug` | `default.ssh`, `meteor.debug`: `pre.` before the connection, `post.` when the shell, the command or the debug session ended with exit code 0 |
+| `cache prune` | `cache.prune` (comet-deploy only) |
 | `meteor setup`, `meteor destroy` | `meteor.setup`, `meteor.destroy` |
 | `docker setup`, `update`, `restart`, `ps`, `status` | `docker.<command>` |
 | `mongo setup`, `start`, `stop`, `logs`, `shell`, `status` | `mongo.<command>` |
@@ -544,7 +546,7 @@ The keys are MUP's: a hook on any key runs at the same point with both tools, an
 - **`meteor.start` in `deploy` and `reconfig`** is the whole activation by strategy: the start, the health check and the revert on every server. `post.meteor.start` runs once, after all servers.
 - **`docker.status`** in `status` is an empty step: the Docker state is part of the app's table. It is there for the hooks.
 - **`post.default.status`** runs after `proxy.status` has finished. MUP does not wait for `proxy.status` there, so its `post.default.status` hooks run while the proxy status is still being read.
-- **`default.rollback`** is a comet-deploy command; MUP has no such key.
+- **`default.rollback`** and **`cache.prune`** are comet-deploy commands; MUP has no such keys.
 - The line before a `localCommand` always has the full name (`> Running hook pre.default.deploy …`); MUP leaves out `pre.`.
 
 ### The api object
@@ -574,7 +576,7 @@ The `api` argument of a method is the part of MUP's plugin API that works withou
 **`api.runCommand(key)`** runs the comet-deploy command behind a key, with the same config, settings and hooks, and only the global options (`--config`, `--settings`, `--servers`, `--verbose`, `--show-hook-names`). It throws:
 
 - `Unknown command name: <key>` for a key MUP does not have, as MUP;
-- `api.runCommand("<key>") is not supported by comet-deploy.` for `meteor.prepareBundle` (a distribution without a build), `meteor.debug`, `default.ssh` and the other keys comet-deploy does not run;
+- `api.runCommand("<key>") is not supported by comet-deploy.` for `meteor.prepareBundle` (a distribution without a build), `meteor.debug` and `default.ssh` (they wait for the terminal or for Ctrl+C), and the keys comet-deploy does not run;
 - for a command that takes the deploy lock (`deploy`, `reconfig`, `restart`, `rollback`, `setup`, `meteor deploy`, `meteor push`, `meteor restart`, `mongo setup`, `start` and `stop`, `proxy setup`, `reconfig-shared`, `start` and `stop`) called from a hook that runs under the lock of the running command: `api.runCommand("default.restart") cannot run while comet-deploy holds the deploy lock (from a hook inside a locked step). Run it from a post.default.deploy hook instead.`
 
 These members need MUP's nodemiral sessions or Docker Swarm and throw `api.<name>() is not supported by comet-deploy (it needs MUP's nodemiral sessions). Use api.runSSHCommand(server, command) or a remoteCommand hook.`: `getSessions`, `getSessionsForServers`, `getManagerSession`, `runTaskList`, `getDockerLogs`, `getServerInfo`, `serverInfoStale`, `swarmInfo`, `dockerServiceInfo`, `forwardPort`, and everything in `api.tasks` and `api.statusHelpers`.

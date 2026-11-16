@@ -281,7 +281,7 @@ Every option, the defaults, validation, paths, ignored and rejected MUP options:
 | `comet-deploy history` | Who deployed what, when, and the result. |
 | `comet-deploy unlock` | Release a stale deploy lock. |
 | `comet-deploy status` | A table per server, then a full report: OS, Docker, container, versions, ports, env names (never values), HTTP on the server and from your computer. `--overview` for the table alone. |
-| `comet-deploy ssh` | A shell on a server, or a command there: `comet-deploy ssh one -- docker ps`. |
+| `comet-deploy ssh` | A shell on a server, or a command there: `comet-deploy ssh one docker ps -a`. |
 | `comet-deploy meteor debug` | Chrome DevTools on the running app, through SSH, without a published port. |
 | `comet-deploy cache prune` | Remove old local images and the build output; `--registry` also the local registry. |
 | `comet-deploy meteor …` | MUP's `meteor` subcommands (`deploy`, `push`, `build`, `setup`, `envconfig`, `destroy`, …); `comet-deploy meteor --help` lists them. |

@@ -27,10 +27,10 @@ export const MUP_COMMAND_KEYS: readonly string[] = [
 ];
 
 /** MUP keys whose command comet-deploy does not have (or runs without the config), so their hooks never run. */
-export const KEYS_COMET_DOES_NOT_RUN: readonly string[] = ['default.init', 'default.validate', 'default.ssh', 'meteor.debug', 'docker.destroyCluster', 'proxy.envconfig'];
+export const KEYS_COMET_DOES_NOT_RUN: readonly string[] = ['default.init', 'default.validate', 'docker.destroyCluster', 'proxy.envconfig'];
 
 /** Keys only comet-deploy has. */
-export const COMET_ONLY_KEYS: readonly string[] = ['default.rollback'];
+export const COMET_ONLY_KEYS: readonly string[] = ['default.rollback', 'cache.prune'];
 
 const KNOWN_KEYS = new Set([...MUP_COMMAND_KEYS, ...COMET_ONLY_KEYS]);
 

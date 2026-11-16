@@ -467,14 +467,15 @@ Opens a login shell on a server, or runs a command there, with the SSH settings 
 
 ```bash
 comet-deploy ssh one                       # a shell on "one"
-comet-deploy ssh one -- docker ps -a       # a command; its options after --
-comet-deploy ssh -- uptime                 # the only server of the config
-comet-deploy ssh --servers two -- df -h    # the server picked with --servers
+comet-deploy ssh one docker ps -a          # a command, with its options
+comet-deploy ssh uptime                    # the only server of the config
+comet-deploy ssh --servers two df -h       # the server picked with --servers
+comet-deploy ssh one cat /opt/myapp/config/env.list > env.list   # output as it is
 ```
 
 - **The server.** The first word, when it is a name in `servers`; any server of the config works, not only the app servers. Without it, the only server (after `--servers`) is used. With more than one: `Choose a server: comet-deploy ssh <server>. Servers: one, two`. With a single server, a first word that is no server name is part of the command (`comet-deploy ssh uptime`).
-- **The command.** The words after the server are joined with spaces and run by the SSH user's login shell, as with `ssh host command`, so quote what that shell should see as one word: `comet-deploy ssh one -- 'ls /opt/*/config'`. Put the command after `--` when it has options, so comet-deploy does not read them as its own.
-- With a terminal, the session gets a pseudo-terminal that follows the size of your window. Piped input works too.
+- **The command.** The words after the server are joined with spaces and run by the SSH user's login shell, as with `ssh host command`, so quote what that shell should see as one word: `comet-deploy ssh one 'ls /opt/*/config'`. As with OpenSSH, everything after the first word belongs to the command, options too (`-a`, `--verbose`); comet-deploy's own options (`--config`, `--servers`, `--verbose`) go before it. `--` after the server still works.
+- A shell gets a pseudo-terminal when your input is a terminal, a command only when its output goes to your terminal too; the pseudo-terminal follows the size of your window. Redirected output (`> file`) stays byte for byte, with stderr apart, and piped input works too.
 - The exit code is the one of the remote command or shell.
 
 `ssh` takes no lock and writes no history.
@@ -537,13 +538,13 @@ What it does:
 1. It sends `SIGUSR1` to the `node` process in the app container, which opens the inspector on `127.0.0.1:9229` inside the container. The app keeps running. A container that does not run stops it: `The app container "myapp" does not run on "one".`
 2. It starts a helper container `<name>-debug` (`alpine/socat:1.8.1.1`) in the app's network. It listens on port 9228 of the container's address and lets in only connections from the server itself.
 3. It listens on `127.0.0.1:<port>` on your computer, 9229 by default (the port `chrome://inspect` looks at). Each connection goes through SSH to the helper (`direct-tcpip`, like `ssh -L`). Nothing is published on the server.
-4. Ctrl+C removes the helper and ends with exit code `0`.
+4. Ctrl+C removes the helper and ends with exit code `0`. A second Ctrl+C quits at once with `130`, for example when the connection hangs; the helper then stays on the server until the next `meteor debug` removes it.
 
 - **The server.** As with `ssh`: the first word, or the only app server (after `--servers`); otherwise `Choose a server: comet-deploy meteor debug <server>. Servers: one, two`.
 - **`--port <n>`.** Another local port, for example when 9229 is taken (`Port 9229 is in use on this computer.`). Add `localhost:<n>` under **Configure** in `chrome://inspect`.
 - **Without SSH TCP forwarding** (`AllowTcpForwarding no` or `remote`), each connection runs `docker exec -i <name>-debug socat …` over SSH instead, with the notice `SSH TCP forwarding is off on "one": the debugger connection goes through docker exec, which is slower to connect.`
-- **With `--network host`** the inspector is on the server's own `127.0.0.1:9229`, and the connections go there.
-- **When the app container is replaced** (a deploy, a restart, a crash) the new one starts without the inspector: `The app container on "one" was replaced or stopped; run "comet-deploy meteor debug" again.`
+- **With `--network host`** the inspector is on the server's own `127.0.0.1:9229`, and the connections go there. Local users of the server can reach it there until the app restarts; see [The inspector on the host network](troubleshooting.md#the-inspector-on-the-host-network).
+- **When the app container is replaced or restarted** (a deploy, a restart, a crash that Docker restarts) the app starts without the inspector: `The app container on "one" was replaced or stopped; run "comet-deploy meteor debug" again.`
 
 The inspector runs any code that is sent to it. MUP publishes it on port 9227 of every interface of the server and listens on every interface of your computer; comet-deploy keeps it on `127.0.0.1` at both ends. `meteor debug` takes no lock.
 
@@ -627,7 +628,7 @@ Removes what the deploys of this app leave on this computer:
 | Local images `mup-<name>:<version>` of the builds the build cache recorded | all but the newest build per platform, so a deploy without changes and `--cached-build` still reuse it | all |
 | Other version tags of `mup-<name>` (also `<anything>/mup-<name>`, left by an interrupted push) | those older than the newest build that stays | all |
 | Tags that are no version (`latest`, `build`, your own names) | stay | stay |
-| The build output | with `buildOptions.cleanBuildLocation` (always for the default `buildLocation`) the whole `buildLocation` and its `-amd64` / `-arm64` variants; otherwise only `bundle/`, `bundle.tar.gz` and `.dockerignore` in them | the same |
+| The build output | with `buildOptions.cleanBuildLocation` (always for the default `buildLocation`) the whole `buildLocation`, otherwise only `bundle/`, `bundle.tar.gz` and `.dockerignore` in it; in its `-amd64` / `-arm64` variants always only those | the same |
 
 | Option | Description |
 |---|---|
@@ -641,6 +642,6 @@ Removed the build output (312 MB): /tmp/mup-meteor-6f1c9a2e-41b7-4e0b-9a3d-5c8e2
 The local registry holds 12.4 GB; "comet-deploy cache prune --registry" removes it.
 ```
 
-`--verbose` lists every tag it removes or leaves. Images are removed with `docker rmi` without `--force`: an image that a container uses stays, with a warning, and so does its record. The build cache records live in `~/.cache/comet-deploy/`, by `app.path`; two configs with the same `app.path` and different app names (`.deploy/staging`, `.deploy/production`) share them, and `cache prune` touches only the records and images of its own app.
+`--verbose` lists every tag it removes or leaves. Images are removed with `docker rmi` without `--force`: an image that a container uses stays, with a warning, and so does its record. The build cache records live in `~/.cache/comet-deploy/`, by `app.path`; two configs with the same `app.path` and different app names (`.deploy/staging`, `.deploy/production`) share them, and `cache prune` touches only the records and images of its own app. An image that the records of another `app.path` name (another checkout of an app with the same name) always stays.
 
-Do not run `cache prune` while a deploy of the same app runs: a deploy that reuses an older image from the cache can lose it. The BuildKit cache stays; `docker builder prune` clears it.
+Do not run `cache prune` while a deploy from the same `app.path` runs, of this app or of another config there: a deploy that reuses an older image from the cache can lose it, and configs with the same `app.path` share the default `buildLocation`. The BuildKit cache stays; `docker builder prune` clears it.

@@ -21,7 +21,8 @@ const cmd = (group: CommandGroup | null, name: string, locks = false): HookComma
 /**
  * Every key whose command comet-deploy has. MUP's keys are export names, so a few differ from
  * the CLI names (`proxy.leLogs` is `proxy logs-le`). `meteor.prepareBundle` (the distribution
- * without a build) has no command of its own.
+ * without a build) has no command of its own; `default.ssh` and `meteor.debug` run their hooks
+ * but wait for the terminal or for Ctrl+C, which a hook cannot give them.
  */
 export const HOOK_COMMANDS: Record<string, HookCommand> = {
   'default.deploy': cmd(null, 'deploy', true),
@@ -33,6 +34,7 @@ export const HOOK_COMMANDS: Record<string, HookCommand> = {
   'default.stop': cmd(null, 'stop'),
   'default.status': cmd(null, 'status'),
   'default.rollback': cmd(null, 'rollback', true),
+  'cache.prune': cmd('cache', 'prune'),
   'docker.setup': cmd('docker', 'setup'),
   'docker.restart': cmd('docker', 'restart'),
   'docker.ps': cmd('docker', 'ps'),

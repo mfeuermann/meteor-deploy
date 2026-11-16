@@ -73,6 +73,7 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [Cannot start the debugger helper](#cannot-start-the-debugger-helper)
 - [DevTools does not connect](#devtools-does-not-connect)
 - [The app container was replaced or stopped](#the-app-container-was-replaced-or-stopped)
+- [The inspector on the host network](#the-inspector-on-the-host-network)
 - [HTTP from this computer fails in status](#http-from-this-computer-fails-in-status)
 
 **Hooks**
@@ -765,7 +766,13 @@ The helper container `<name>-debug` runs `alpine/socat:1.8.1.1`, which the serve
 The app container on "one" was replaced or stopped; run "comet-deploy meteor debug" again.
 ```
 
-A deploy, `restart`, `reconfig` or a crash replaced the app container while `meteor debug` ran. The new container starts without the inspector. The helper was removed; run `meteor debug` again.
+A deploy, `restart`, `reconfig` or a crash replaced the app container while `meteor debug` ran, or Docker restarted the same container after a crash (MUP starts the app with a restart policy). The app then runs without the inspector. The helper was removed; run `meteor debug` again.
+
+### The inspector on the host network
+
+An app container started with `--network host` (in `docker.args`) has the network of the server itself. `SIGUSR1` opens the inspector on the server's `127.0.0.1:9229`, as `node --inspect` would. No helper listens and nothing is open to the network, but every local user and every process of the server, including containers on the host network, can connect to that port. The inspector runs any code it is sent, as the app.
+
+It stays open after `meteor debug` ends, until the app restarts. On a server shared with users you do not trust, debug without `--network host`, or run `comet-deploy restart` when you are done.
 
 ### HTTP from this computer fails in status
 
@@ -806,7 +813,7 @@ As in MUP, a `remoteCommand` never fails the command. For a check that must stop
 
 ### A hook never runs
 
-`comet-deploy validate` warns about a name that does not match a step (`hooks."pre.deplyo" does not match a command, so it never runs`), a name without `pre.` or `post.`, and a hook on a command comet-deploy does not have (`default.ssh`, `meteor.debug`, …). Run the command with `--show-hook-names` to see every name it enters, in order. A name with one dot is short for `default`: `pre.deploy` is `pre.default.deploy`, and it runs only for `deploy`, not for `meteor deploy`. See [Configuration → Keys and nesting](configuration.md#keys-and-nesting).
+`comet-deploy validate` warns about a name that does not match a step (`hooks."pre.deplyo" does not match a command, so it never runs`), a name without `pre.` or `post.`, and a hook on a command comet-deploy does not have (`default.init`, `docker.destroyCluster`, …). Run the command with `--show-hook-names` to see every name it enters, in order. A name with one dot is short for `default`: `pre.deploy` is `pre.default.deploy`, and it runs only for `deploy`, not for `meteor deploy`. See [Configuration → Keys and nesting](configuration.md#keys-and-nesting).
 
 ### api.runCommand cannot run while comet-deploy holds the deploy lock
 

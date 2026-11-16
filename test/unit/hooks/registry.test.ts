@@ -65,9 +65,13 @@ describe('hookIssues', () => {
   });
 
   it('a hook on a command comet-deploy does not run is a warning', () => {
-    expect(issue({ 'pre.ssh': () => {} })).toEqual([
-      { path: 'hooks."pre.ssh"', message: 'belongs to a command comet-deploy does not run (default.ssh), so it never runs', severity: 'warning' },
+    expect(issue({ 'pre.init': () => {} })).toEqual([
+      { path: 'hooks."pre.init"', message: 'belongs to a command comet-deploy does not run (default.init), so it never runs', severity: 'warning' },
     ]);
+  });
+
+  it('the hooks of ssh, meteor debug and cache prune are accepted: those commands run them', () => {
+    expect(issue({ 'pre.ssh': () => {}, 'post.meteor.debug': { localCommand: 'a' }, 'pre.cache.prune': { localCommand: 'a' } })).toEqual([]);
   });
 
   it('accepts the hooks of MUP and comet-deploy keys', () => {

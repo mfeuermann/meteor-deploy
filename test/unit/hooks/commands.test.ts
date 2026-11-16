@@ -44,7 +44,7 @@ describe('api.runCommand', () => {
     await expect(runHookCommand(s.ctx, 'meteor.deplyo')).rejects.toThrow('Unknown command name: meteor.deplyo');
   });
 
-  it.each(['meteor.prepareBundle', 'default.ssh', 'docker.destroyCluster', 'proxy.envconfig'])('%s is not supported', async (key) => {
+  it.each(['meteor.prepareBundle', 'default.ssh', 'meteor.debug', 'docker.destroyCluster', 'proxy.envconfig'])('%s is not supported', async (key) => {
     const s = await setup();
     await expect(runHookCommand(s.ctx, key)).rejects.toThrow(`api.runCommand("${key}") is not supported by comet-deploy.`);
   });
@@ -64,8 +64,17 @@ describe('api.runCommand', () => {
     expect(acquired).toBe(1);
   });
 
+  it('every entry is a command of the CLI that runs with the config', async () => {
+    const { COMMANDS } = await import('../../../src/cli/main.js');
+    for (const [key, e] of Object.entries(HOOK_COMMANDS)) {
+      const m = COMMANDS.find((c) => c.command.split(' ')[0] === e.name && (c.group ?? null) === e.group);
+      expect(m && m.needsConfig !== false, key).toBe(true);
+    }
+  });
+
   it('every MUP key comet-deploy runs has an entry', () => {
-    const expected = MUP_COMMAND_KEYS.filter((k) => !KEYS_COMET_DOES_NOT_RUN.includes(k) && k !== 'meteor.prepareBundle');
-    expect(Object.keys(HOOK_COMMANDS).sort()).toEqual([...expected, 'default.rollback'].sort());
+    // ssh and meteor debug run their hooks, but wait for the terminal or for Ctrl+C: not from a hook.
+    const expected = MUP_COMMAND_KEYS.filter((k) => !KEYS_COMET_DOES_NOT_RUN.includes(k) && !['meteor.prepareBundle', 'default.ssh', 'meteor.debug'].includes(k));
+    expect(Object.keys(HOOK_COMMANDS).sort()).toEqual([...expected, 'default.rollback', 'cache.prune'].sort());
   });
 });
