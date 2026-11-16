@@ -1,10 +1,11 @@
 /**
  * One SSH connection to a server, built on ssh2: remote commands (scripts are fed to `bash -s`
- * on stdin), SFTP writes and reverse port forwards for the registry tunnel. It turns ssh2's
+ * on stdin), interactive sessions and shells, SFTP writes, reverse port forwards for the registry
+ * tunnel and direct forwards for `meteor debug`. It turns ssh2's
  * failure modes (a synchronous "Not connected" throw, a channel that closes without an exit
  * status when the connection drops) into CometErrors with a clear message.
  */
-import type { Duplex } from 'node:stream';
+import type { Duplex, Readable } from 'node:stream';
 import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2';
 import type { ServerConfig } from '../config/types.js';
 import { CometError } from '../core/errors.js';
@@ -44,6 +45,19 @@ export interface InteractiveOptions {
   /** Called once the session is open, with a function that sends a new window size (pty only). */
   onChannel?: (resize: (rows: number, cols: number) => void) => void;
 }
+
+/**
+ * The server refuses a direct TCP forward (`forwardOut`), as sshd does with
+ * `AllowTcpForwarding no`. Callers can fall back to another way in.
+ */
+export class ForwardRefusedError extends CometError {}
+
+/** ssh2's reason code for a channel the server refuses by policy (RFC 4254 §5.1). */
+const ADMINISTRATIVELY_PROHIBITED = 1;
+const FORWARD_REFUSED_RE = /administratively prohibited|forwarding.*(denied|disabled)/i;
+
+/** An exec channel as a duplex stream (stdin/stdout), with its stderr and exit code. */
+export type ExecChannel = Duplex & { stderr: Readable; exitCode: Promise<number> };
 
 /** Same as MUP: errors show the last 4200 characters of each stream. */
 const OUTPUT_TAIL = 4200;
@@ -214,15 +228,69 @@ export class SshConnection {
       const opts = o.pty ? { pty: { rows: o.pty.rows, cols: o.pty.cols, term: o.pty.term } } : {};
       this.call('cannot open an interactive session', () => this.client.exec(command, opts, (err, stream: ClientChannel) => {
         if (err) return reject(this.dropped ? this.closedError('cannot open an interactive session', err) : new CometError(`[${this.name}] Cannot run a command: ${err.message}`, { cause: err }));
-        o.onChannel?.((rows, cols) => stream.setWindow(rows, cols, 0, 0));
-        stream.pipe(o.stdout, { end: false });
-        stream.stderr.pipe(o.stderr, { end: false });
-        o.stdin.pipe(stream);
-        stream.on('close', (code: number | null, signal?: string) => {
-          o.stdin.unpipe(stream);
-          if (code === null && !signal && this.dropped) return reject(this.closedError('the session was interrupted'));
-          resolve(code ?? (signal ? 128 : 1));
-        });
+        this.attach(stream, o, resolve, reject);
+      }), reject);
+    });
+  }
+
+  /**
+   * Opens the SSH user's login shell with the local streams attached (`ssh host` without a
+   * command), wired like `interactive`: with `pty` the server allocates a pseudo-terminal and
+   * `onChannel` receives a resize function. Resolves with the shell's exit status.
+   */
+  shell(o: InteractiveOptions): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const window = o.pty ? { rows: o.pty.rows, cols: o.pty.cols, term: o.pty.term } : false;
+      this.call('cannot open a shell', () => this.client.shell(window, (err, stream: ClientChannel) => {
+        if (err) return reject(this.dropped ? this.closedError('cannot open a shell', err) : new CometError(`[${this.name}] Cannot open a shell: ${err.message}`, { cause: err }));
+        this.attach(stream, o, resolve, reject);
+      }), reject);
+    });
+  }
+
+  /** Pipes a session channel to the local streams and settles with its exit status. */
+  private attach(stream: ClientChannel, o: InteractiveOptions, resolve: (code: number) => void, reject: (err: unknown) => void): void {
+    o.onChannel?.((rows, cols) => stream.setWindow(rows, cols, 0, 0));
+    stream.pipe(o.stdout, { end: false });
+    stream.stderr.pipe(o.stderr, { end: false });
+    o.stdin.pipe(stream);
+    stream.on('close', (code: number | null, signal?: string) => {
+      o.stdin.unpipe(stream);
+      if (code === null && !signal && this.dropped) return reject(this.closedError('the session was interrupted'));
+      resolve(code ?? (signal ? 128 : 1));
+    });
+  }
+
+  /**
+   * Opens a TCP connection from the server to `host:port` (`direct-tcpip`, like `ssh -L`) and
+   * returns it as a stream. Rejects with ForwardRefusedError when the server does not allow TCP
+   * forwarding, and with a CometError for any other failure (the target refused, the connection
+   * dropped).
+   */
+  forwardOut(host: string, port: number): Promise<Duplex> {
+    return new Promise((resolve, reject) => {
+      this.call('cannot open a forward', () => this.client.forwardOut('127.0.0.1', 0, host, port, (err, stream) => {
+        if (!err) return resolve(stream);
+        const reason = (err as Error & { reason?: unknown }).reason;
+        if (reason === ADMINISTRATIVELY_PROHIBITED || FORWARD_REFUSED_RE.test(err.message)) {
+          return reject(new ForwardRefusedError(`[${this.name}] The SSH server does not allow TCP forwarding (${err.message}).`, { cause: err }));
+        }
+        reject(this.dropped ? this.closedError('cannot open a forward', err) : new CometError(`[${this.name}] Cannot connect to ${host}:${port} from the server: ${err.message}`, { cause: err }));
+      }), reject);
+    });
+  }
+
+  /**
+   * Starts `command` without a pseudo-terminal and returns its channel as a duplex stream: what
+   * is written goes to the command's stdin, what it prints is read from the stream. `exitCode`
+   * resolves when the channel closes (128 for a signal, 1 without a status).
+   */
+  openExec(command: string): Promise<ExecChannel> {
+    return new Promise((resolve, reject) => {
+      this.call('cannot run a command', () => this.client.exec(command, (err, stream: ClientChannel) => {
+        if (err) return reject(this.dropped ? this.closedError('cannot run a command', err) : new CometError(`[${this.name}] Cannot run a command: ${err.message}`, { cause: err }));
+        const exitCode = new Promise<number>((res) => stream.on('close', (code: number | null, signal?: string) => res(code ?? (signal ? 128 : 1))));
+        resolve(Object.assign(stream, { exitCode }) as unknown as ExecChannel);
       }), reject);
     });
   }

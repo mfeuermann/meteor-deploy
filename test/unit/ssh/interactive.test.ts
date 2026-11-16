@@ -132,3 +132,19 @@ describe('runInteractive', () => {
     expect(t.stdout.listenerCount('resize')).toBe(0);
   });
 });
+
+describe('runInteractive without a command', () => {
+  it('runInteractive with null command calls shell() and restores raw mode', async () => {
+    const t = terminal(true);
+    let shellPty: unknown;
+    const conn = {
+      interactive: async () => {
+        throw new Error('interactive() must not be used for a shell');
+      },
+      shell: async (o: { pty?: unknown }) => ((shellPty = o.pty), 5),
+    } as unknown as SshConnection;
+    expect(await runInteractive(conn, null, t.term)).toBe(5);
+    expect(shellPty).toMatchObject({ rows: 30, cols: 100 });
+    expect(t.raw).toEqual([true, false]);
+  });
+});
