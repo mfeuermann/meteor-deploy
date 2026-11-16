@@ -264,7 +264,7 @@ On your machine, you can remove the local images `mup-myapp:<version>` and the l
 
 ## Differences at a glance
 
-| | MUP 1.5.11 | comet-deploy 0.4.0 |
+| | MUP 1.5.11 | comet-deploy 0.5.0 |
 |---|---|---|
 | Config | `mup.js` | the same `mup.js` (and `mup.json`), plus an optional `cometDeploy` section |
 | Docker on your machine | not needed | required, with buildx |
