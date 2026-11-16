@@ -10,6 +10,7 @@ import { CometError } from '../core/errors.js';
 import { TOOL_VERSION } from '../core/version.js';
 import { createReporter, type Reporter } from '../output/reporter.js';
 import { deployCommand, meteorBuildCommand, meteorDeployCommand, meteorPushCommand } from './commands/deploy.js';
+import { meteorDebugCommand } from './commands/debug.js';
 import { meteorDestroyCommand } from './commands/destroy.js';
 import { DOCKER_COMMANDS } from './commands/docker.js';
 import { historyCommand } from './commands/history.js';
@@ -17,7 +18,6 @@ import { initCommand } from './commands/init.js';
 import { isEntryPoint } from './entry.js';
 import { LIFECYCLE_COMMANDS } from './commands/lifecycle.js';
 import { MONGO_COMMANDS } from './commands/mongo.js';
-import { PHASE2_COMMANDS } from './commands/phase2.js';
 import { PROXY_COMMANDS } from './commands/proxy.js';
 import { rollbackCommand } from './commands/rollback.js';
 import { meteorSetupCommand, setupCommand } from './commands/setup.js';
@@ -70,10 +70,10 @@ export const COMMANDS: CommandModule[] = [
   meteorSetupCommand,
   meteorStatusCommand,
   meteorDestroyCommand,
+  meteorDebugCommand,
   ...DOCKER_COMMANDS,
   ...MONGO_COMMANDS,
   ...PROXY_COMMANDS,
-  ...PHASE2_COMMANDS,
 ];
 
 /**

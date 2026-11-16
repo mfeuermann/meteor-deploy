@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { main } from '../../../src/cli/main.js';
 import { CometError } from '../../../src/core/errors.js';
@@ -30,16 +31,13 @@ describe('main', () => {
   });
 });
 
-describe('phase-2 commands (M12)', () => {
-  it('say they are planned for phase 2 instead of "unknown argument"', async () => {
-    for (const args of [['meteor', 'debug']]) {
-      const c = capture();
-      const code = await main(args, c.io);
-      expect(code, args.join(' ')).toBe(1);
-      expect(c.err.join(''), args.join(' ')).toMatch(/planned for phase 2/);
-      // the command is quoted as typed
-      expect(c.err.join(''), args.join(' ')).toContain(`"${args.join(' ')}"`);
-    }
+describe('meteor debug', () => {
+  it('is a real command that picks an app server first', async () => {
+    const c = capture();
+    const fixture = join(import.meta.dirname, '../../fixtures/configs/per-server-env');
+    const code = await main(['--config', join(fixture, 'mup.js'), 'meteor', 'debug'], c.io, { cwd: fixture });
+    expect(code).toBe(1);
+    expect(c.err.join('')).toContain('Choose a server: comet-deploy meteor debug <server>. Servers: one, two');
   });
 });
 
