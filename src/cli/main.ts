@@ -41,6 +41,8 @@ export interface MainDeps {
   cwd?: string;
   /** Replaces the real SSH pool, e.g. with stubs that never open a connection. */
   sshPoolFactory?: SshPoolFactory;
+  /** Replaces the HTTP check from this computer (`status`). */
+  checkUrl?: (url: string) => Promise<string>;
 }
 
 const defaultIO: CliIO = {
@@ -90,7 +92,7 @@ export function buildCli(argv: string[], io: CliIO = defaultIO, deps: MainDeps =
   const makeCtx = async (args: Record<string, unknown>, needsConfig: boolean) => {
     const reporter = createReporter({ verbose: !!args.verbose, tty, write: io.stdout });
     onReporter?.(reporter);
-    const ctxDeps = { cwd: deps.cwd, reporter, print: (t: string) => io.stdout(t + '\n'), sshPoolFactory: deps.sshPoolFactory };
+    const ctxDeps = { cwd: deps.cwd, reporter, print: (t: string) => io.stdout(t + '\n'), sshPoolFactory: deps.sshPoolFactory, checkUrl: deps.checkUrl };
     return needsConfig ? createContext(args, ctxDeps) : createBaseContext(args, ctxDeps);
   };
   const y = yargs(argv)

@@ -11,6 +11,7 @@ import { hasFatal, validateConfig, type Issue } from '../config/validate.js';
 import { createReporter, type Reporter } from '../output/reporter.js';
 import { collectSecrets } from '../output/secrets.js';
 import { loadServerSettings } from '../remote/app-files.js';
+import { checkFromHere } from '../remote/http-check.js';
 import type { SshConnection } from '../ssh/connection.js';
 import { SshPool } from '../ssh/pool.js';
 import { CometError } from './errors.js';
@@ -64,6 +65,8 @@ export interface CommandContext extends BaseContext {
   /** SSH pool that connects on first use. The CLI closes it after the command. */
   ssh: SshPoolLike;
   runner: CommandRunner;
+  /** One HTTP check from this computer (`status`); see checkFromHere. */
+  checkUrl: (url: string) => Promise<string>;
   /**
    * The Meteor settings. Loaded and cached on the first call; always returns the same
    * (mutable) object. Throws CometError when the settings file or a per-server settings
@@ -99,6 +102,8 @@ export interface ContextDeps {
   reporter?: Reporter;
   print?: (text: string) => void;
   sshPoolFactory?: SshPoolFactory;
+  /** Replaces the HTTP check from this computer, so that tests stay off the network. */
+  checkUrl?: (url: string) => Promise<string>;
 }
 
 const defaultSshPoolFactory: SshPoolFactory = (c, cwd, basePath) => new SshPool(c.servers, { cwd, basePath });
@@ -204,6 +209,7 @@ export async function createContext(argv: GlobalArgs & Record<string, unknown>, 
     serverFilter,
     ssh: (deps.sshPoolFactory ?? defaultSshPoolFactory)(config, cwd, basePath),
     runner: new CommandRunner(),
+    checkUrl: deps.checkUrl ?? ((url) => checkFromHere(url)),
     getSettings,
     maskSettings,
     appServers,
