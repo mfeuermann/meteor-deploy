@@ -1,6 +1,5 @@
 /**
- * Placeholders for the MUP commands that comet-deploy does not implement yet: `ssh` and
- * `meteor debug`.
+ * Placeholder for the MUP command that comet-deploy does not implement yet: `meteor debug`.
  */
 import { CometError } from '../../core/errors.js';
 import type { NoConfigCommand } from '../registry.js';
@@ -31,8 +30,7 @@ function planned(command: string, describe: string | false, group?: NoConfigComm
   };
 }
 
-/** Listed in `--help`; `meteor debug` under `meteor --help`. */
+/** `meteor debug`, listed under `meteor --help`. */
 export const PHASE2_COMMANDS: NoConfigCommand[] = [
-  planned('ssh [server] [command..]', 'Open a shell on a server (planned for phase 2)'),
   planned('debug', 'Debug the app (planned for phase 2)', 'meteor'),
 ];

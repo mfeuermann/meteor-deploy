@@ -21,6 +21,7 @@ import { PHASE2_COMMANDS } from './commands/phase2.js';
 import { PROXY_COMMANDS } from './commands/proxy.js';
 import { rollbackCommand } from './commands/rollback.js';
 import { meteorSetupCommand, setupCommand } from './commands/setup.js';
+import { sshCommand } from './commands/ssh.js';
 import { meteorStatusCommand, statusCommand } from './commands/status.js';
 import { unlockCommand } from './commands/unlock.js';
 import { validateCommand } from './commands/validate.js';
@@ -65,6 +66,7 @@ export const COMMANDS: CommandModule[] = [
   historyCommand,
   unlockCommand,
   statusCommand,
+  sshCommand,
   meteorSetupCommand,
   meteorStatusCommand,
   meteorDestroyCommand,
