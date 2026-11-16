@@ -32,7 +32,8 @@
     "dist",
     "templates",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsup",

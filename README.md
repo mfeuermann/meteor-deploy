@@ -4,7 +4,7 @@ Fast deploys for Meteor apps, compatible with Meteor Up (MUP) 1.5.11.
 
 comet-deploy builds the Docker image of your app **once, on your machine**, and sends each server **only the image layers it does not have yet**, to all servers in parallel. It reads your existing `mup.js`, has the same commands, and leaves the servers in the same state as MUP. You can switch an app from MUP to comet-deploy and back without touching the servers.
 
-**Status:** version 0.5.0: phase 1 of the [roadmap](#roadmap) and the first parts of the next phase: MUP's reverse proxy, MUP's built-in MongoDB, hooks, the image transfer over plain SSH for servers without SSH forwarding, the image transfer through MUP's private registry, and MUP's bundle mode (the default `kadirahq/meteord` image). Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
+**Status:** version 0.6.0: phases 1 to 3 of the [roadmap](#roadmap) are done. Besides MUP's commands, that is MUP's reverse proxy, MUP's built-in MongoDB, hooks, the image transfer over plain SSH for servers without SSH forwarding, the image transfer through MUP's private registry, MUP's bundle mode (the default `kadirahq/meteord` image), and `ssh`, `meteor debug`, the full `status` report and `cache prune`. What changed in each version: [CHANGELOG.md](CHANGELOG.md). Install it with `npm install -g comet-deploy`. Tested with unit tests and with integration tests against MUP 1.5.11 on disposable test servers. Try it on a staging server first.
 
 > **Important: comet-deploy needs Docker on your machine**, with BuildKit and buildx: Docker Desktop, OrbStack, or Docker Engine on Linux. This is new compared to MUP, which builds the image on each server. To build for `x86_64` servers on an Apple Silicon Mac, amd64 emulation must be on. See [Requirements](#requirements).
 
@@ -407,6 +407,7 @@ The first build runs the full `npm install`, and a new server gets the whole ima
 - [Migrating from MUP](docs/migrating-from-mup.md): what stays, what changes, how to go back.
 - [Troubleshooting](docs/troubleshooting.md): common errors and fixes.
 - [Deploying from CI](docs/ci.md): what the job needs, the build cache between runs, a GitHub Actions workflow.
+- [Changelog](CHANGELOG.md): what changed in each version.
 
 ## Development
 
@@ -440,6 +441,7 @@ Source layout:
 | `templates/mup/` | Files copied unchanged from MUP 1.5.11 (scripts, `start.sh` and `env.list` templates, the proxy scripts and `nginx.tmpl`, the `init` sample) |
 | `templates/comet/` | comet-deploy's own remote scripts (lock, history, snapshot, retag, health check, pull, proxy state and reload) |
 | `test/` | Unit tests, integration and e2e tests, the test-server harness, the benchmark |
+| `scripts/` | Release tooling: `release-notes.ts` prints a version's notes from `CHANGELOG.md` |
 
 **Integration tests** (`npm run test:integration`) are slow and use a lot of resources. They need:
 

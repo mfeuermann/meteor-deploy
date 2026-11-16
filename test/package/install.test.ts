@@ -58,13 +58,14 @@ describe('npm package', () => {
     expect(installed.code, installed.output).toBe(0);
   });
 
-  it('ships the built CLI, the templates and the license files, and nothing else', () => {
+  it('ships the built CLI, the templates, the license files and the changelog, and nothing else', () => {
     expect(files).toContain('dist/cli/main.js');
     expect(files).toContain('templates/mup/default/mup.js.sample');
     expect(files).toContain('templates/mup/proxy/nginx.tmpl');
     expect(files).toContain('templates/comet/zd-finish.sh');
-    for (const f of ['LICENSE', 'NOTICE', 'README.md', 'package.json']) expect(files).toContain(f);
-    const unexpected = files.filter((f) => !/^(dist|templates)\//.test(f) && !['LICENSE', 'NOTICE', 'README.md', 'package.json'].includes(f));
+    const topLevel = ['LICENSE', 'NOTICE', 'README.md', 'CHANGELOG.md', 'package.json'];
+    for (const f of topLevel) expect(files).toContain(f);
+    const unexpected = files.filter((f) => !/^(dist|templates)\//.test(f) && !topLevel.includes(f));
     expect(unexpected).toEqual([]);
   });
 
