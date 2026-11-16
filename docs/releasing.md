@@ -1,23 +1,27 @@
 # Releasing
 
-comet-deploy is published to npm as [`comet-deploy`](https://www.npmjs.com/package/comet-deploy). A release is a version tag: pushing `v1.2.3` runs the [Release workflow](../.github/workflows/release.yml), which checks the code and publishes that version.
+comet-deploy is published to npm as [`comet-deploy`](https://www.npmjs.com/package/comet-deploy). A release is a version tag: pushing `v1.2.3` runs the [Release workflow](../.github/workflows/release.yml), which checks the code, publishes that version and makes its [GitHub release](https://github.com/mfeuermann/meteor-deploy/releases) from [CHANGELOG.md](../CHANGELOG.md).
 
 ## A release
 
 1. Make sure `main` is green in the [CI workflow](../.github/workflows/ci.yml), including the integration job.
-2. Bump the version. `npm version` changes `package.json` and `package-lock.json`, commits, and creates the tag:
+2. Write the release notes: a section `## [1.2.3] - <date>` at the top of [CHANGELOG.md](../CHANGELOG.md), with what a user of the previous version notices (`Added`, `Changed`, `Fixed`, `Removed`), and the compare link at the end of the file (`[1.2.3]: https://github.com/mfeuermann/meteor-deploy/compare/v1.2.2...v1.2.3`). Bump the version in the docs too (`grep -rn 1.2.2 README.md docs`). Commit them.
+
+   `node scripts/release-notes.ts 1.2.3` prints the notes as the GitHub release will show them. Without a section for the version in `package.json`, a unit test fails, and so does the Release workflow before it publishes.
+3. Bump the version. `npm version` changes `package.json` and `package-lock.json`, commits, and creates the tag:
 
    ```bash
    npm version minor      # or patch, major, or an exact version such as 0.3.0-beta.1
    git push --follow-tags
    ```
 
-3. The Release workflow:
-   - fails when the tag is not `v` followed by the version in `package.json`;
+4. The Release workflow:
+   - fails when the tag is not `v` followed by the version in `package.json`, or when CHANGELOG.md has no notes for it;
    - packs the package, installs it and runs the installed command (`npm run test:package`);
-   - runs `npm publish`, which first runs lint, typecheck and the unit tests (`prepublishOnly`) and builds `dist/` (`prepack`). A version that is already on npm is skipped, so a re-run does no harm.
+   - runs `npm publish`, which first runs lint, typecheck and the unit tests (`prepublishOnly`) and builds `dist/` (`prepack`). A version that is already on npm is skipped, so a re-run does no harm;
+   - creates the GitHub release `v1.2.3` with the version's section of CHANGELOG.md as its notes (a re-run updates them). To fix the notes later, change CHANGELOG.md on `main` and run `gh release edit v1.2.3 --notes-file <(node scripts/release-notes.ts 1.2.3)`.
 
-   A version with a prerelease part (`0.3.0-beta.1`) is published under the `next` dist-tag, so `npm install -g comet-deploy` keeps installing the last stable version.
+   A version with a prerelease part (`0.3.0-beta.1`) is published under the `next` dist-tag, so `npm install -g comet-deploy` keeps installing the last stable version, and its GitHub release is marked as a prerelease.
 
 The integration tests do not run in the Release workflow: they take about an hour and depend on Docker Hub. Step 1 is where they count.
 
