@@ -22,7 +22,7 @@ import { MONGO_COMMANDS } from './commands/mongo.js';
 import { PROXY_COMMANDS } from './commands/proxy.js';
 import { rollbackCommand } from './commands/rollback.js';
 import { meteorSetupCommand, setupCommand } from './commands/setup.js';
-import { sshCommand } from './commands/ssh.js';
+import { protectSshCommand, sshCommand } from './commands/ssh.js';
 import { meteorStatusCommand, statusCommand } from './commands/status.js';
 import { unlockCommand } from './commands/unlock.js';
 import { validateCommand } from './commands/validate.js';
@@ -139,8 +139,10 @@ export function buildCli(argv: string[], io: CliIO = defaultIO, deps: MainDeps =
  * itself. A `CometError` prints `Error: <message>` (and `Hint: <hint>`) and returns its
  * `exitCode`; any other error prints its stack trace and returns 1.
  */
-export async function main(argv: string[] = process.argv.slice(2), io: CliIO = defaultIO, deps: MainDeps = {}): Promise<number> {
+export async function main(rawArgv: string[] = process.argv.slice(2), io: CliIO = defaultIO, deps: MainDeps = {}): Promise<number> {
   let reporter: Reporter | undefined;
+  // `ssh one docker ps -a`: the remote command's options are not comet-deploy's.
+  const argv = protectSshCommand(rawArgv);
   try {
     let parseError: Error | undefined;
     let output = '';

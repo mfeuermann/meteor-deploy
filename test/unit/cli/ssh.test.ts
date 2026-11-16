@@ -70,6 +70,23 @@ describe('ssh', () => {
     expect(r.code).toBe(0);
   });
 
+  it('options of the remote command reach the server also without --, as with OpenSSH', async () => {
+    // yargs would read -a, -n 50 and --verbose as options of comet-deploy and drop them.
+    for (const [args, command] of [
+      [['ssh', 'one', 'docker', 'ps', '-a'], 'docker ps -a'],
+      [['ssh', 'one', 'tail', '-n', '50', '/var/log/syslog'], 'tail -n 50 /var/log/syslog'],
+      [['ssh', 'one', 'curl', '--verbose', 'https://x'], 'curl --verbose https://x'],
+      [['ssh', 'one', 'git', 'log', '--', 'file'], 'git log -- file'],
+      [['ssh', 'one', '--', 'git', 'log', '--', 'file'], 'git log -- file'],
+      [['--servers', 'one', 'ssh', 'uptime', '-p'], 'uptime -p'],
+      [['ssh', '--servers', 'one', 'uptime', '-p'], 'uptime -p'],
+    ] as const) {
+      const r = await cli([...args]);
+      expect(r.calls, args.join(' ')).toEqual([{ server: 'one', command }]);
+      expect(r.code, r.err).toBe(0);
+    }
+  });
+
   it('--servers one with a bare command', async () => {
     const r = await cli(['ssh', '--servers', 'one', '--', 'uptime']);
     expect(r.calls).toEqual([{ server: 'one', command: 'uptime' }]);
