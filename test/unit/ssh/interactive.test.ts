@@ -92,11 +92,14 @@ describe('SshConnection.interactive', () => {
   });
 });
 
-/** A local terminal whose stdin says it is (or is not) a TTY and records raw mode changes. */
-function terminal(isTTY: boolean) {
+/**
+ * A local terminal whose stdin (and stdout, by default the same) says it is or is not a TTY;
+ * records raw mode changes.
+ */
+function terminal(isTTY: boolean, stdoutTTY = isTTY) {
   const raw: boolean[] = [];
   const stdin = Object.assign(new PassThrough(), { isTTY, setRawMode: (b: boolean) => raw.push(b) });
-  const stdout = Object.assign(new EventEmitter(), { rows: 30, columns: 100, write: () => true });
+  const stdout = Object.assign(new EventEmitter(), { isTTY: stdoutTTY, rows: 30, columns: 100, write: () => true });
   return { term: { stdin, stdout, stderr: stdout } as unknown as LocalTerminal, raw, stdout };
 }
 
@@ -117,6 +120,17 @@ describe('runInteractive', () => {
     await runInteractive(conn, () => 'cmd', t.term);
     expect(pty).toMatchObject({ rows: 30, cols: 100 });
     expect(t.raw).toEqual([true, false]);
+  });
+
+  it('a command whose output is redirected gets no pty', async () => {
+    // `comet-deploy ssh one -- mongodump --archive > backup.gz` typed in a terminal: a pty
+    // would turn \n into \r\n and mix stderr into the file, as OpenSSH without -t avoids.
+    const t = terminal(true, false);
+    let got: { command: string; pty: unknown } | undefined;
+    const conn = { interactive: async (command: string, o: { pty?: unknown }) => ((got = { command, pty: o.pty }), 0) } as unknown as SshConnection;
+    await runInteractive(conn, (tty) => `cmd tty=${tty}`, t.term);
+    expect(got).toEqual({ command: 'cmd tty=false', pty: undefined });
+    expect(t.raw).toEqual([]);
   });
 
   it('restores the terminal when the command fails', async () => {
@@ -146,5 +160,13 @@ describe('runInteractive without a command', () => {
     expect(await runInteractive(conn, null, t.term)).toBe(5);
     expect(shellPty).toMatchObject({ rows: 30, cols: 100 });
     expect(t.raw).toEqual([true, false]);
+  });
+
+  it('a shell gets a pty from a terminal stdin even with stdout redirected, as with ssh', async () => {
+    const t = terminal(true, false);
+    let shellPty: unknown;
+    const conn = { shell: async (o: { pty?: unknown }) => ((shellPty = o.pty), 0) } as unknown as SshConnection;
+    await runInteractive(conn, null, t.term);
+    expect(shellPty).toMatchObject({ rows: 30, cols: 100 });
   });
 });
