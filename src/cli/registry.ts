@@ -8,7 +8,7 @@ import type { Argv } from 'yargs';
 import type { BaseContext, CommandContext, GlobalArgs } from '../core/context.js';
 
 /** Subcommand groups, as in MUP: `comet-deploy meteor <cmd>`, `comet-deploy docker <cmd>`. */
-export type CommandGroup = 'meteor' | 'docker' | 'mongo' | 'proxy';
+export type CommandGroup = 'meteor' | 'docker' | 'mongo' | 'proxy' | 'cache';
 
 /** What every command module declares, whether it needs the config or not. */
 interface CommandBase {
@@ -54,6 +54,7 @@ const GROUP_DESCRIPTIONS: Record<CommandGroup, string> = {
   docker: 'Docker commands',
   mongo: 'MongoDB commands',
   proxy: 'Reverse proxy commands',
+  cache: 'Local build cache commands',
 };
 
 /**

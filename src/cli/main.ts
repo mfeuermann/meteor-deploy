@@ -10,6 +10,7 @@ import { CometError } from '../core/errors.js';
 import { TOOL_VERSION } from '../core/version.js';
 import { createReporter, type Reporter } from '../output/reporter.js';
 import { deployCommand, meteorBuildCommand, meteorDeployCommand, meteorPushCommand } from './commands/deploy.js';
+import { cachePruneCommand } from './commands/cache.js';
 import { meteorDebugCommand } from './commands/debug.js';
 import { meteorDestroyCommand } from './commands/destroy.js';
 import { DOCKER_COMMANDS } from './commands/docker.js';
@@ -73,6 +74,7 @@ export const COMMANDS: CommandModule[] = [
   meteorStatusCommand,
   meteorDestroyCommand,
   meteorDebugCommand,
+  cachePruneCommand,
   ...DOCKER_COMMANDS,
   ...MONGO_COMMANDS,
   ...PROXY_COMMANDS,

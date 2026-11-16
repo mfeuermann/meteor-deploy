@@ -1,7 +1,8 @@
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { RunResult } from '../../../src/local/exec.js';
-import { ensureLocalRegistry, stopLocalRegistry, type RegistryEnv } from '../../../src/transfer/local-registry.js';
+import { ensureLocalRegistry, removeLocalRegistry, stopLocalRegistry, type RegistryEnv } from '../../../src/transfer/local-registry.js';
 import { tempDir } from '../../helpers/fs.js';
 
 /** A fake `docker` CLI for the registry container: records calls, answers like Docker. */
@@ -143,5 +144,29 @@ describe('local registry shared by concurrent deploys (M5)', () => {
     };
     await ensureLocalRegistry({ ...env(d, dir, 100, new Set([100, 600])), docker });
     expect(readFileSync(lock, 'utf8')).toBe('600');
+  });
+});
+
+describe('removeLocalRegistry', () => {
+  const recorder = () => {
+    const calls: string[] = [];
+    return { calls, docker: async (args: string[]): Promise<RunResult> => (calls.push(args.join(' ')), { code: 0, stdout: '', stderr: '' }) };
+  };
+
+  it('refuses while a live lease exists', async () => {
+    const d = recorder();
+    const dir = tempDir();
+    writeFileSync(join(dir, '300'), 'x');
+    expect(await removeLocalRegistry({ docker: d.docker, leaseDir: dir, pid: 1, isAlive: (p) => p === 300 })).toEqual({ removed: false, pid: 300 });
+    expect(d.calls).toEqual([]);
+  });
+
+  it('removes container and volume when only dead leases exist', async () => {
+    const d = recorder();
+    const dir = tempDir();
+    writeFileSync(join(dir, '400'), 'x');
+    expect(await removeLocalRegistry({ docker: d.docker, leaseDir: dir, pid: 1, isAlive: () => false })).toEqual({ removed: true });
+    expect(d.calls).toEqual(['rm -f comet-deploy-registry', 'volume rm comet-deploy-registry-data']);
+    expect(readdirSync(dir)).toEqual([]);
   });
 });

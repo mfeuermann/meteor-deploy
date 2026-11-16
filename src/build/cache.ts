@@ -5,7 +5,7 @@
  * never in the app repository.
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Platform } from '../config/types.js';
@@ -61,6 +61,25 @@ export class BuildCache {
     }
   }
 
+  /** All entries, newest first (`cache prune`). */
+  entries(): CacheEntry[] {
+    return this.read();
+  }
+
+  /**
+   * Forgets the entries `pred` selects and returns them; the state file is rewritten like in
+   * `save`, or deleted when no entry is left. The caller removes the images.
+   */
+  remove(pred: (e: CacheEntry) => boolean): CacheEntry[] {
+    const old = this.read();
+    const removed = old.filter(pred);
+    if (!removed.length) return [];
+    const entries = old.filter((e) => !removed.includes(e));
+    if (entries.length) this.write(entries);
+    else rmSync(this.statePath, { force: true });
+    return removed;
+  }
+
   /**
    * The entry built from exactly these inputs for `platform`, or null. The caller still checks
    * that its image exists locally with the same id.
@@ -88,6 +107,11 @@ export class BuildCache {
     const entries = [e, ...old.filter((x) => !(x.inputHash === e.inputHash && x.platform === e.platform))].slice(0, MAX_ENTRIES);
     const keptTags = new Set(entries.map((x) => x.localTag));
     const forgotten = old.filter((x) => !entries.includes(x) && !keptTags.has(x.localTag));
+    this.write(entries);
+    return forgotten;
+  }
+
+  private write(entries: CacheEntry[]): void {
     mkdirSync(dirname(this.statePath), { recursive: true });
     // Write a temp file and rename it over the state file (atomic on one filesystem), so a reader
     // or a crash never sees a half-written file. Two deploys of the same app saving at once can
@@ -95,6 +119,5 @@ export class BuildCache {
     const tmp = `${this.statePath}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify({ entries }, null, 2));
     renameSync(tmp, this.statePath);
-    return forgotten;
   }
 }

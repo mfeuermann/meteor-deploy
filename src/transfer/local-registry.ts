@@ -13,8 +13,10 @@ import { run, type RunResult } from '../local/exec.js';
 /** Pinned, so every machine runs the same registry version. */
 const REGISTRY_IMAGE = 'registry:2.8.3';
 /** One container and one volume per machine, shared by all apps and deploys. */
-const CONTAINER = 'comet-deploy-registry';
-const VOLUME = 'comet-deploy-registry-data';
+export const REGISTRY_CONTAINER = 'comet-deploy-registry';
+export const REGISTRY_VOLUME = 'comet-deploy-registry-data';
+const CONTAINER = REGISTRY_CONTAINER;
+const VOLUME = REGISTRY_VOLUME;
 const READY_TIMEOUT_MS = 30_000;
 /** How long a deploy waits for another one to finish starting or stopping the registry. */
 const LEASE_LOCK_TIMEOUT_MS = 120_000;
@@ -272,5 +274,29 @@ export async function stopLocalRegistry(env: RegistryEnv = {}): Promise<boolean>
     if (others > 0) return false;
     await e.docker(['stop', CONTAINER]);
     return true;
+  });
+}
+
+/**
+ * `cache prune --registry`: removes the registry container and its volume, but only while no
+ * running deploy holds a lease (checked under the lease lock, so no deploy can start using the
+ * registry halfway; leases of processes that no longer run are removed). Returns the pid of a
+ * live lease instead of removing anything. A container or volume that does not exist counts as
+ * removed.
+ *
+ * @throws CometError when Docker refuses to remove the volume for another reason
+ */
+export async function removeLocalRegistry(env: RegistryEnv = {}): Promise<{ removed: true } | { removed: false; pid: number }> {
+  const e = resolveEnv(env);
+  return withLeaseLock(e, async () => {
+    for (const name of readdirSync(e.leaseDir)) {
+      const pid = Number(name);
+      if (Number.isInteger(pid) && pid > 0 && e.isAlive(pid)) return { removed: false as const, pid };
+      rmSync(join(e.leaseDir, name), { force: true });
+    }
+    await e.docker(['rm', '-f', CONTAINER]);
+    const r = await e.docker(['volume', 'rm', VOLUME]);
+    if (r.code !== 0 && !/no such volume/i.test(r.stderr)) throw new CometError(`Removing the volume ${VOLUME} failed: ${r.stderr.trim() || `exit ${r.code}`}`);
+    return { removed: true as const };
   });
 }

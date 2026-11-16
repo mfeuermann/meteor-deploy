@@ -57,4 +57,18 @@ describe('BuildCache', () => {
     expect(c.save(entry({ inputHash: 'h20', localTag: 'mup-app:v21' })).map((e) => e.localTag)).toEqual(['mup-app:v20']);
     expect(c.save(entry({ inputHash: 'h20', localTag: 'mup-app:v21' }))).toEqual([]);
   });
+
+  it('remove() rewrites state.json and deletes it when empty', () => {
+    const root = tempDir();
+    const c = new BuildCache('/apps/a', root);
+    c.save(entry({ inputHash: 'h1', version: '20261101-000000' }));
+    c.save(entry({ inputHash: 'h2', version: '20261102-000000' }));
+    expect(c.entries().map((e) => e.version)).toEqual(['20261102-000000', '20261101-000000']);
+    expect(c.remove((e) => e.version === '20261101-000000').map((e) => e.version)).toEqual(['20261101-000000']);
+    expect(new BuildCache('/apps/a', root).entries().map((e) => e.version)).toEqual(['20261102-000000']);
+    expect(c.remove(() => false)).toEqual([]);
+    c.remove(() => true);
+    expect(existsSync(c.statePath)).toBe(false);
+    expect(c.entries()).toEqual([]);
+  });
 });
