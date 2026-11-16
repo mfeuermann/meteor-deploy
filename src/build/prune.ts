@@ -45,9 +45,10 @@ function versionStamp(tag: string): string | null {
  * `/<repo>` (`127.0.0.1:<port>/mup-a`, left by an interrupted push). Without `all`, the newest
  * entry per platform stays, and an unrecorded version tag goes only when it is older than the
  * oldest entry that stays; with no entry staying, unrecorded tags stay (a deploy that builds
- * right now has not recorded its image yet). Pure.
+ * right now has not recorded its image yet). `protectedRefs` (the tags other app paths record,
+ * see BuildCache.entriesOfOtherApps) never go, also not with `all`. Pure.
  */
-export function planPrune(o: { entries: CacheEntry[]; repo: string; refs: string[]; all: boolean }): PrunePlan {
+export function planPrune(o: { entries: CacheEntry[]; repo: string; refs: string[]; all: boolean; protectedRefs?: string[] }): PrunePlan {
   const own = o.entries.filter((e) => repoOf(e.localTag) === o.repo);
   const keep: CacheEntry[] = [];
   if (!o.all) {
@@ -59,7 +60,8 @@ export function planPrune(o: { entries: CacheEntry[]; repo: string; refs: string
   const present = new Set(o.refs);
   const keepTags = new Set(keep.map((e) => e.localTag));
   const recorded = new Set(own.map((e) => e.localTag));
-  const removeRefs = [...new Set(removeEntries.map((e) => e.localTag))].filter((t) => !keepTags.has(t) && present.has(t));
+  const others = new Set(o.protectedRefs ?? []);
+  const removeRefs = [...new Set(removeEntries.map((e) => e.localTag))].filter((t) => !keepTags.has(t) && !others.has(t) && present.has(t));
   const stamps = keep.map((e) => versionStamp(e.version)).filter((s): s is string => s !== null);
   const threshold = stamps.length ? stamps.reduce((a, b) => (a < b ? a : b)) : null;
   const untouched: string[] = [];
@@ -67,6 +69,10 @@ export function planPrune(o: { entries: CacheEntry[]; repo: string; refs: string
     const repository = repoOf(ref);
     if (repository !== o.repo && !repository.endsWith(`/${o.repo}`)) continue;
     if (recorded.has(ref)) continue;
+    if (others.has(ref)) {
+      untouched.push(ref);
+      continue;
+    }
     const stamp = versionStamp(tagOf(ref));
     if (stamp !== null && (o.all || (threshold !== null && stamp < threshold))) removeRefs.push(ref);
     else untouched.push(ref);
@@ -171,7 +177,8 @@ export async function pruneCache(ctx: CommandContext, o: PruneOptions, env: Regi
 
     const cache = new BuildCache(appPath);
     const refs = images.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-    const plan = planPrune({ entries: cache.entries(), repo, refs, all: o.all });
+    const protectedRefs = cache.entriesOfOtherApps().map((e) => e.localTag);
+    const plan = planPrune({ entries: cache.entries(), repo, refs, all: o.all, protectedRefs });
     const failed = new Set<string>();
     for (const ref of plan.removeRefs) {
       if (o.dryRun) {

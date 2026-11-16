@@ -5,7 +5,7 @@
  * never in the app repository.
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Platform } from '../config/types.js';
@@ -34,6 +34,16 @@ export interface CacheEntry {
   createdAt: string;
 }
 
+/** The entries of a state file; a missing or unreadable file (or a directory without one) has none. */
+function readEntries(statePath: string): CacheEntry[] {
+  try {
+    const v = JSON.parse(readFileSync(statePath, 'utf8'));
+    return Array.isArray(v?.entries) ? v.entries : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Entries kept per app; the caller removes the local images of the ones that drop out. */
 const MAX_ENTRIES = 20;
 
@@ -53,12 +63,24 @@ export class BuildCache {
   }
 
   private read(): CacheEntry[] {
+    return readEntries(this.statePath);
+  }
+
+  /**
+   * The entries of every other app path under the same cache root. Two checkouts can share an
+   * app name, and so the local repository `mup-<name>`; `cache prune` must not take the
+   * images the other one records for leftovers.
+   */
+  entriesOfOtherApps(): CacheEntry[] {
+    const own = dirname(this.statePath);
+    const root = dirname(own);
+    let dirs: string[];
     try {
-      const v = JSON.parse(readFileSync(this.statePath, 'utf8'));
-      return Array.isArray(v?.entries) ? v.entries : [];
+      dirs = readdirSync(root);
     } catch {
       return [];
     }
+    return dirs.map((d) => join(root, d)).filter((d) => d !== own).flatMap((d) => readEntries(join(d, 'state.json')));
   }
 
   /** All entries, newest first (`cache prune`). */

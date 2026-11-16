@@ -71,4 +71,15 @@ describe('BuildCache', () => {
     expect(existsSync(c.statePath)).toBe(false);
     expect(c.entries()).toEqual([]);
   });
+
+  it('entriesOfOtherApps() reads the state files of the other app paths', () => {
+    const root = tempDir();
+    const mine = new BuildCache('/apps/a', root);
+    mine.save(entry({ version: '20261101-000000' }));
+    new BuildCache('/apps/b', root).save(entry({ version: '20261102-000000', localTag: 'mup-app:20261102-000000' }));
+    new BuildCache('/apps/c', root).save(entry({ version: '20261103-000000', localTag: 'mup-c:20261103-000000' }));
+    expect(mine.entriesOfOtherApps().map((e) => e.localTag).sort()).toEqual(['mup-app:20261102-000000', 'mup-c:20261103-000000']);
+    expect(new BuildCache('/apps/none', tempDir()).entriesOfOtherApps()).toEqual([]);
+  });
 });
+

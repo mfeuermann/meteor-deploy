@@ -57,6 +57,21 @@ describe('planPrune', () => {
     expect(p.untouched).toEqual(['mup-a:20261120-000000', 'mup-a:latest', 'mup-a:build']);
   });
 
+  it('never removes a ref that another app path records', () => {
+    // Two projects named "a" (the name `mup init` suggests is shared often), each with its own
+    // state.json: the other one's images are not leftovers of this one.
+    const a1 = entry('20261101-000000');
+    const a2 = entry('20261110-000000');
+    const refs = ['mup-a:20261101-000000', 'mup-a:20261110-000000', 'mup-a:20261103-000000', 'mup-a:20261102-000000'];
+    const protectedRefs = ['mup-a:20261103-000000', 'mup-a:20261101-000000'];
+    const p = planPrune({ entries: [a2, a1], repo: 'mup-a', refs, all: false, protectedRefs });
+    expect(p.removeEntries).toEqual([a1]);
+    expect(p.removeRefs).toEqual(['mup-a:20261102-000000']);
+    expect(p.untouched).toEqual(['mup-a:20261103-000000']);
+    const all = planPrune({ entries: [a2, a1], repo: 'mup-a', refs, all: true, protectedRefs });
+    expect(all.removeRefs).toEqual(['mup-a:20261110-000000', 'mup-a:20261102-000000']);
+  });
+
   it('without a kept entry, unrecorded versions stay', () => {
     // A deploy that builds right now has not saved its entry yet.
     const p = planPrune({ entries: [], repo: 'mup-a', refs: ['mup-a:20261101-000000'], all: false });
@@ -133,9 +148,9 @@ describe('cache prune command', () => {
   }
 
   const REFS = ['mup-a:20261105-000000', 'mup-a:20261110-000000', 'mup-a:20261101-000000', 'mup-a:latest', '127.0.0.1:5000/mup-a:20261101-000000'];
-  const script = (o: { refuse?: string } = {}) => `
+  const script = (o: { refuse?: string; refs?: string[] } = {}) => `
 case "$1" in
-  images) printf '%s\\n' ${REFS.map((r) => `'${r}'`).join(' ')} ;;
+  images) printf '%s\\n' ${(o.refs ?? REFS).map((r) => `'${r}'`).join(' ')} ;;
   rmi) ${o.refuse ? `[ "$2" = '${o.refuse}' ] && { echo 'Error response from daemon: conflict: unable to remove repository reference "${o.refuse}" (must force) - container 1a2b is using its referenced image 3c4d' >&2; exit 1; };` : ''} exit 0 ;;
   volume) exit 0 ;;
   system) echo '{"Images":[],"Volumes":[{"Name":"other","Size":"1GB"},{"Name":"comet-deploy-registry-data","Size":"12.4GB"}]}' ;;
@@ -172,6 +187,16 @@ esac`;
     expect(existsSync(join(p.build, 'bundle'))).toBe(false);
     expect(existsSync(join(p.build, '.dockerignore'))).toBe(false);
     expect(existsSync(join(p.build, 'notes.txt'))).toBe(true);
+  });
+
+  it("leaves the images another project of the same name records", async () => {
+    const p = project();
+    // Another checkout of an app also named "a", with its own state.json.
+    new BuildCache(join(p.root, 'other-app')).save(entry('20261101-000000'));
+    docker = fakeDocker(script());
+    const r = await prune(p.root);
+    expect(r.code).toBe(0);
+    expect(docker.calls().filter((c) => c.startsWith('rmi'))).toEqual(['rmi mup-a:20261105-000000', 'rmi 127.0.0.1:5000/mup-a:20261101-000000']);
   });
 
   it('rmi refused prints a warning and keeps the entry', async () => {
