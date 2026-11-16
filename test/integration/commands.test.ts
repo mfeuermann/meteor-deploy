@@ -79,6 +79,11 @@ describe('ssh, status and meteor debug', () => {
     expect(r.output).toMatch(/Env: {8}\d+ variables: .*ROOT_URL/);
     expect(r.output).toContain('SECRET_TOKEN');
     expect(r.output).not.toContain(SECRET);
+    // The reporter masks SECRET whatever status.sh prints; a value from outside the config (the
+    // image's PATH) and the mask itself show whether a value left the server at all.
+    expect(r.output).toMatch(/Env: .*\bPATH\b/);
+    expect(r.output).not.toContain('/usr/local/sbin');
+    expect(r.output).not.toContain('***');
     expect(r.output).toMatch(/HTTP: {7}200 on the server/);
 
     const overview = await cli(['status', '--overview', ...config()], p.root);
