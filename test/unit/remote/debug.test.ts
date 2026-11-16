@@ -15,7 +15,8 @@ import { ForwardRefusedError, type SshConnection } from '../../../src/ssh/connec
 
 // One app server "one", app "my.mongo.app".
 const fixture = join(import.meta.dirname, '../../fixtures/configs/mongo');
-const BRIDGE = 'network=bridge\nip=172.18.0.5\ngateway=172.18.0.1\nid=cid123\n';
+const BRIDGE = 'network=bridge\nip=172.18.0.5\ngateway=172.18.0.1\nid=cid123\nstarted=2026-11-16T08:12:00.1Z\n';
+const SAME = 'cid123 true 2026-11-16T08:12:00.1Z';
 
 interface Fake {
   start?: { code: number; stdout?: string; stderr?: string };
@@ -29,7 +30,7 @@ async function setup(f: Fake = {}) {
   const conn = {
     name: 'one',
     runScript: async () => (log.scripts++, { code: 0, stdout: BRIDGE, stderr: '', ...f.start }),
-    exec: async (command: string) => (log.execs.push(command), { code: 0, stdout: command.includes('inspect') ? (f.inspect ?? 'cid123 true') : '', stderr: '' }),
+    exec: async (command: string) => (log.execs.push(command), { code: 0, stdout: command.includes('inspect') ? (f.inspect ?? SAME) : '', stderr: '' }),
     forwardOut: async (host: string, port: number) => (log.forwards.push(`${host}:${port}`), f.forwardOut ? f.forwardOut(host, port) : new PassThrough()),
     openExec: async (command: string) => (log.openExecs.push(command), Object.assign(new PassThrough(), { stderr: new PassThrough(), exitCode: new Promise<number>(() => {}) })),
   } as unknown as SshConnection;
@@ -165,6 +166,29 @@ describe('debugApp', () => {
     connect(port, '127.0.0.1').on('error', () => {});
     await expect(done).rejects.toThrow('The app container on "one" was replaced or stopped; run "comet-deploy meteor debug" again.');
     expect(s.log.execs).toContain('sudo docker rm -f my.mongo.app-debug');
+  });
+
+  it('reports a container that Docker restarted under the same id', async () => {
+    // A crash with MUP's restart policy: same container, new process, no inspector.
+    const s = await setup({ forwardOut: async () => Promise.reject(new CometError('[one] Cannot connect to 172.18.0.5:9228 from the server: connect failed')), inspect: 'cid123 true 2026-11-16T09:30:00.5Z' });
+    const done = debugApp(s.ctx, { words: [], port: 0, signal: s.ac.signal });
+    const port = await localPort(s.out);
+    connect(port, '127.0.0.1').on('error', () => {});
+    await expect(done).rejects.toThrow('The app container on "one" was replaced or stopped; run "comet-deploy meteor debug" again.');
+  });
+
+  it('a failed connection while the same container runs keeps the session', async () => {
+    let calls = 0;
+    const s = await setup({ forwardOut: async () => (calls++ ? new PassThrough() : Promise.reject(new CometError('[one] Cannot connect: connect failed'))) });
+    const done = debugApp(s.ctx, { words: [], port: 0, signal: s.ac.signal });
+    const port = await localPort(s.out);
+    connect(port, '127.0.0.1').on('error', () => {});
+    await new Promise((r) => setTimeout(r, 50));
+    const r = await roundTrip(port);
+    expect(r.data).toBe('ping');
+    r.socket.destroy();
+    s.ac.abort();
+    await done;
   });
 
   it('maps the exit codes of the start script', async () => {

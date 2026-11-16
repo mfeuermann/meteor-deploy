@@ -21,7 +21,7 @@ case "$1" in
     case "$3" in
       *State.Running*)
         if [ "$4" = myapp-debug ]; then [ -n "$HELPER_DIES" ] && echo false || echo true
-        else echo "\${RUNNING:-true} cid123"; fi ;;
+        else echo "\${RUNNING:-true} cid123 2026-11-16T08:12:00.1Z"; fi ;;
       *index*) echo "map[\${NET:-bridge}:0xc000123]" ;;
       *range*) echo "$IP $GW" ;;
     esac ;;
@@ -57,7 +57,7 @@ describe('debug-start.sh', () => {
   it('bridge: kills USR1 in the app and starts a listening helper limited to the gateway', async () => {
     const r = await runScript();
     expect(r.code).toBe(0);
-    expect(r.stdout).toBe('network=bridge\nip=172.18.0.5\ngateway=172.18.0.1\nid=cid123\n');
+    expect(r.stdout).toBe('network=bridge\nip=172.18.0.5\ngateway=172.18.0.1\nid=cid123\nstarted=2026-11-16T08:12:00.1Z\n');
     expect(r.log).toMatch(/^exec myapp sh -c pid=\$\(pidof -s node[\s\S]*kill -s USR1 "\$pid"$/m);
     expect(r.calls).toContain('rm -f myapp-debug');
     expect(r.calls).toContain(
@@ -70,7 +70,7 @@ describe('debug-start.sh', () => {
   it('host network: the helper only sleeps', async () => {
     const r = await runScript({ NET: 'host' });
     expect(r.code).toBe(0);
-    expect(r.stdout).toBe('network=host\nid=cid123\n');
+    expect(r.stdout).toBe('network=host\nid=cid123\nstarted=2026-11-16T08:12:00.1Z\n');
     expect(r.calls).toContain('run -d --rm --name myapp-debug --network host --entrypoint sleep alpine/socat:1.8.1.1 infinity');
   });
 

@@ -43,17 +43,22 @@ export interface DebugOptions {
 interface Target {
   host: string;
   port: number;
-  containerId: string;
+  /**
+   * `<Id> <StartedAt>` of the app container when the inspector was enabled. The start time
+   * changes when Docker restarts the same container (a crash with a restart policy), which
+   * starts the app without the inspector.
+   */
+  instance: string;
 }
 
 /** Parses the key=value lines of debug-start.sh. */
 function parseTarget(stdout: string): Target {
   const kv = new Map(stdout.split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).trim()]));
-  const containerId = kv.get('id') ?? '';
-  if (kv.get('network') === 'host') return { host: '127.0.0.1', port: INSPECTOR_PORT, containerId };
+  const instance = `${kv.get('id') ?? ''} ${kv.get('started') ?? ''}`;
+  if (kv.get('network') === 'host') return { host: '127.0.0.1', port: INSPECTOR_PORT, instance };
   const ip = kv.get('ip');
   if (!ip) throw new CometError(`Unexpected output of the debugger setup: ${stdout.trim()}`);
-  return { host: ip, port: DEBUG_PORT_IN_APP, containerId };
+  return { host: ip, port: DEBUG_PORT_IN_APP, instance };
 }
 
 /** Listens on 127.0.0.1:`port`; a port in use is a CometError with the spec's hint. */
@@ -126,10 +131,11 @@ function serve(ctx: CommandContext, o: { listener: Server; conn: SshConnection; 
     if (o.signal.aborted) return finish();
     o.signal.addEventListener('abort', onAbort);
 
-    /** The app container still runs as the one the inspector was enabled in. */
+    /** The app container still runs as the one the inspector was enabled in, not restarted. */
     const appStillThere = async (): Promise<boolean> => {
-      const r = await o.conn.exec(`sudo docker inspect -f '{{.Id}} {{.State.Running}}' ${shArg(o.container)}`);
-      return r.code === 0 && r.stdout.trim() === `${o.target.containerId} true`;
+      const r = await o.conn.exec(`sudo docker inspect -f '{{.Id}} {{.State.Running}} {{.State.StartedAt}}' ${shArg(o.container)}`);
+      const [id, running, started] = r.stdout.trim().split(' ');
+      return r.code === 0 && running === 'true' && `${id} ${started}` === o.target.instance;
     };
     const failed = async (socket: Socket) => {
       socket.destroy();

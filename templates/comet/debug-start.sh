@@ -1,14 +1,15 @@
 # debug-start.sh: enables the Node inspector of the app and starts the helper container of
 # `meteor debug` (commands design §4.3). Exit 10: the app container does not run; 11: the
 # inspector could not be enabled; 12: the helper could not start (reason on stderr). Prints
-# network=bridge|host, for bridge ip= and gateway= of the container's first network, and id=.
+# network=bridge|host, for bridge ip= and gateway= of the container's first network, id= and
+# started= (the start time tells a restart of the same container apart).
 CONTAINER=<%- q(container) %>
 HELPER=<%- q(helper) %>
 IMAGE=<%- q(image) %>
 # A number, so it goes in unquoted.
 LISTEN_PORT=<%- listenPort %>
 
-read -r RUNNING ID <<< "$(sudo docker inspect -f '{{.State.Running}} {{.Id}}' "$CONTAINER" 2>/dev/null)"
+read -r RUNNING ID STARTED <<< "$(sudo docker inspect -f '{{.State.Running}} {{.Id}} {{.State.StartedAt}}' "$CONTAINER" 2>/dev/null)"
 [ "$RUNNING" = true ] || exit 10
 
 # SIGUSR1 makes Node open its inspector on 127.0.0.1:9229 inside the container. The PID comes
@@ -63,3 +64,4 @@ if [ "$NETWORK" = bridge ]; then
   echo "gateway=$GATEWAY"
 fi
 echo "id=$ID"
+echo "started=$STARTED"
