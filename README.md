@@ -280,7 +280,10 @@ Every option, the defaults, validation, paths, ignored and rejected MUP options:
 | `comet-deploy rollback` | Switch back to the previous kept version, or `--to <version>`. Seconds, no build. |
 | `comet-deploy history` | Who deployed what, when, and the result. |
 | `comet-deploy unlock` | Release a stale deploy lock. |
-| `comet-deploy status` | Docker version, container state, version, HTTP status and lock per server. |
+| `comet-deploy status` | A table per server, then a full report: OS, Docker, container, versions, ports, env names (never values), HTTP on the server and from your computer. `--overview` for the table alone. |
+| `comet-deploy ssh` | A shell on a server, or a command there: `comet-deploy ssh one -- docker ps`. |
+| `comet-deploy meteor debug` | Chrome DevTools on the running app, through SSH, without a published port. |
+| `comet-deploy cache prune` | Remove old local images and the build output; `--registry` also the local registry. |
 | `comet-deploy meteor …` | MUP's `meteor` subcommands (`deploy`, `push`, `build`, `setup`, `envconfig`, `destroy`, …); `comet-deploy meteor --help` lists them. |
 | `comet-deploy docker …` | MUP's `docker` subcommands (`setup`, `update`, `restart`, `ps`, `status`). |
 | `comet-deploy proxy …` | MUP's `proxy` subcommands (`setup`, `reconfig-shared`, `start`, `stop`, `logs`, `logs-le`, `nginx-config`, `status`). |
@@ -315,11 +318,7 @@ The full list and a side-by-side table: [Migrating from MUP](docs/migrating-from
 
 ## Limitations
 
-comet-deploy does not include these MUP features yet. A config that uses them stops with a clear message, and MUP keeps working on the same config:
-
-- the commands `ssh`, `meteor debug`, and the full `status` report.
-
-Not supported and not planned: Docker Swarm (`swarm`), MUP plugins (`plugins`).
+comet-deploy has every command of MUP 1.5.11. Not supported and not planned: Docker Swarm (`swarm`), MUP plugins (`plugins`). A config that uses them stops with a clear message (plugins only warn), and MUP keeps working on the same config.
 
 Other limits of this release:
 
@@ -330,7 +329,7 @@ Other limits of this release:
 - `setup` installs Docker only on apt-based systems (Debian, Ubuntu), as MUP does.
 - `rollback` changes only the image; the current `start.sh` and `env.list` stay.
 - Locks do not expire, and MUP does not know them.
-- The local registry volume (`comet-deploy-registry-data`) is never cleaned up and grows with every deploy; remove it by hand when needed. Local images are limited to the last 20 builds per app. See [Troubleshooting](docs/troubleshooting.md#leftover-local-images-and-the-registry-volume).
+- The local registry volume (`comet-deploy-registry-data`) grows with every deploy until you run `comet-deploy cache prune --registry`. Local images are limited to the last 20 builds per app; `cache prune` removes all but the newest. See [Troubleshooting](docs/troubleshooting.md#leftover-local-images-and-the-registry-volume).
 - SSH host keys are not verified, the same as with MUP.
 - The proxy's Let's Encrypt part is tested against a local ACME test server (Pebble), not against Let's Encrypt itself.
 
@@ -338,7 +337,7 @@ Other limits of this release:
 
 **Phase 1: done.** `init`, `validate`, `setup`, `deploy`, `reconfig`, `restart`, `start`, `stop`, `logs`, `rollback`, `history`, `unlock`, `status`, `meteor destroy`, the `docker` subcommands and the `meteor` variants of the commands. Local build with a cached dependency layer, delta transfer through an SSH tunnel, rollout strategies, health check with automatic revert, deploy lock and history, per-server CPU architecture.
 
-**Phase 2: in progress.**
+**Phase 2: done.**
 
 - Done: the reverse proxy (nginx-proxy, Let's Encrypt, load balancing; the `proxy` section and commands) and zero-downtime deploys behind it (`cometDeploy.zeroDowntime`).
 - Done: MUP's built-in MongoDB (the `mongo` section and commands).
@@ -346,7 +345,7 @@ Other limits of this release:
 - Done: image transfer over plain SSH for servers without forwarding (`transfer: 'stream'`, automatic with `auto`).
 - Done: image transfer through MUP's private registry (`privateDockerRegistry`, `transfer: 'registry'`).
 - Done: MUP's bundle mode (the default `kadirahq/meteord`, `docker.prepareBundle: false`).
-- `meteor debug`, `ssh`, the full `status` report, and a command to prune the local build cache.
+- Done: `meteor debug` through SSH, `ssh`, the full `status` report (env names without values) and `cache prune` for the local build cache.
 
 **Phase 3: done.** The npm package, CI on GitHub Actions, releases from a version tag, and [deploying from CI](docs/ci.md) with a build cache that survives between runs (`--cache-from` / `--cache-to`).
 

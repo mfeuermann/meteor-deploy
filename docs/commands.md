@@ -12,9 +12,8 @@ The command names are the same as in Meteor Up (MUP) 1.5.11. Run commands from t
 - [Exit codes and Ctrl+C](#exit-codes-and-ctrlc)
 - [Output](#output)
 - [Overview](#overview)
-- Commands: [`init`](#init) · [`validate`](#validate) · [`setup`](#setup) · [`deploy`](#deploy) · [`reconfig`](#reconfig) · [`restart`](#restart) · [`start`](#start) · [`stop`](#stop) · [`logs`](#logs) · [`rollback`](#rollback) · [`history`](#history) · [`unlock`](#unlock) · [`status`](#status)
-- Groups: [`meteor …`](#meteor-commands) · [`docker …`](#docker-commands) · [`mongo …`](#mongo-commands) · [`proxy …`](#proxy-commands)
-- [Planned for phase 2](#planned-for-phase-2)
+- Commands: [`init`](#init) · [`validate`](#validate) · [`setup`](#setup) · [`deploy`](#deploy) · [`reconfig`](#reconfig) · [`restart`](#restart) · [`start`](#start) · [`stop`](#stop) · [`logs`](#logs) · [`rollback`](#rollback) · [`history`](#history) · [`unlock`](#unlock) · [`status`](#status) · [`ssh`](#ssh)
+- Groups: [`meteor …`](#meteor-commands) · [`docker …`](#docker-commands) · [`mongo …`](#mongo-commands) · [`proxy …`](#proxy-commands) · [`cache …`](#cache-commands)
 
 ## Global options
 
@@ -37,8 +36,10 @@ Without `--verbose`, remote output appears only when a step fails: the last 4200
 | Code | Meaning |
 |---|---|
 | `0` | Success. |
-| `1` | Any error: config not found or invalid, preflight failed, build failed, a server ended up not healthy (reverted, failed or skipped), an unknown command or option, a phase 2 command. `validate` also exits `1` when there are only warnings. |
+| `1` | Any error: config not found or invalid, preflight failed, build failed, a server ended up not healthy (reverted, failed or skipped), an unknown command or option. `validate` also exits `1` when there are only warnings. |
 | `130` | A rollout command was aborted with Ctrl+C (SIGINT) or SIGTERM. |
+
+`ssh` and `mongo shell` end with the exit code of the remote command or shell, as `ssh` does.
 
 **Graceful abort.** `deploy`, `reconfig`, `restart`, `rollback` and their `meteor …` variants (including `meteor push` and `meteor build`) handle the first SIGINT or SIGTERM (Ctrl+C, or a cancelled CI job) like this:
 
@@ -77,11 +78,14 @@ Other commands (`logs -f`, `status`, `setup`, …) stop immediately on Ctrl+C.
 | [`rollback`](#rollback) | Switch to an older kept version | app | yes | yes | yes |
 | [`history`](#history) | Show who deployed what and when | app | - | - | reads it |
 | [`unlock`](#unlock) | Release a stale deploy lock | app | releases | - | - |
-| [`status`](#status) | Docker, container, version, HTTP, lock; MongoDB and proxy | app | - | - | - |
+| [`status`](#status) | Servers, container, version, ports, env names, HTTP, lock; MongoDB and proxy | app | - | - | - |
+| [`ssh`](#ssh) | A shell or a command on one server | one server | - | - | - |
 | [`meteor destroy`](#meteor-destroy) | Remove the app from the servers | app, one by one | - | - | deletes it |
+| [`meteor debug`](#meteor-debug) | Chrome DevTools on the running app | one app server | - | - | - |
 | [`docker …`](#docker-commands) | Docker on the servers | see below | - | - | - |
 | [`mongo …`](#mongo-commands) | MUP's built-in MongoDB | `mongo` servers | some | - | - |
 | [`proxy …`](#proxy-commands) | MUP's reverse proxy | `proxy` servers | some | - | - |
+| [`cache prune`](#cache-prune) | Old local images, the build output, the local registry | - (this computer) | - | - | - |
 
 ---
 
@@ -399,7 +403,7 @@ Make sure no deploy is running before you unlock. Instead of a separate `unlock`
 comet-deploy status [--overview]
 ```
 
-One SSH round trip per app server, in parallel:
+One SSH round trip per app server, in parallel. First a table:
 
 ```
 SERVER  DOCKER  APP      VERSION                  HTTP  LOCK
@@ -415,7 +419,30 @@ two     27.5.1  running  20261111-091502-3f2a1c9  200
 | `HTTP` | HTTP status of `healthCheck.path` on the container, when it runs. |
 | `LOCK` | Who holds the deploy lock, if anyone. |
 
-With a `mongo` section, the [`mongo status`](#mongo-commands) block follows the table, then with a `proxy` section the [`proxy status`](#proxy-commands) block, as in MUP:
+Then one section per server, like MUP's full status:
+
+```
+== one (192.0.2.10)
+Server:     Ubuntu 24.04.1 LTS, x86_64, Docker 27.5.1, 18.2 GB free in /var/lib/docker
+Container:  running since 2026-11-16 08:12 (3 h 4 min), restarted 0 times
+Version:    20261116-081100-1a2b3c4 (:previous 20261115-170200-9f8e7d6)
+Ports:      127.0.0.1:3000 -> 3000/tcp
+Env:        5 variables: MONGO_URL, METEOR_SETTINGS, PORT, ROOT_URL, NODE_ENV
+HTTP:       200 on the server (http://172.17.0.2:3000/), 200 from this computer (https://app.example.com/)
+```
+
+| Line | Meaning |
+|---|---|
+| `Server` | The OS (`PRETTY_NAME` of `/etc/os-release`), the CPU architecture, the Docker version and the free space in Docker's data directory. |
+| `Container` | The state of the app container, since when it runs (local time) and how often Docker restarted it. A container that is restarting, or has restarted, also gets a warning below the report. |
+| `Version` | The version `:latest` points to, and the one `:previous` points to. `not a comet-deploy version (MUP deployed it)` after `mup deploy`. |
+| `Ports` | The published ports of the container. `none published (behind the proxy)` with a `proxy` section. |
+| `Env` | The number and the **names** of the container's environment variables, in the container's order. Their values (`MONGO_URL`, `METEOR_SETTINGS`, …) never leave the server; MUP prints them. |
+| `HTTP` | The health check path (`cometDeploy.healthCheck.path`) on the server, as in the `HTTP` column, and from this computer: one `GET` of the server's `ROOT_URL` plus that path, with a 5 s timeout and without following redirects. The answer is an HTTP status or `timeout`, `connection refused`, `DNS lookup failed`, `TLS error`. Servers with the same `ROOT_URL` are checked from here once. |
+
+A server that cannot be reached gets a warning, a table row with `unreachable` and the section line `unreachable: <reason>`; `status` still exits `0`. When the servers run different Docker versions, a warning follows the table, as in MUP: `The servers run different Docker versions: 27.5.1 (one), 26.1.4 (two).`
+
+With a `mongo` section, the [`mongo status`](#mongo-commands) block follows, then with a `proxy` section the [`proxy status`](#proxy-commands) block, as in MUP:
 
 ```
 => MongoDB status
@@ -428,7 +455,29 @@ With a `mongo` section, the [`mongo status`](#mongo-commands) block follows the 
  - Feature compatibility: 7.0
 ```
 
-`--overview` shortens the MongoDB block to its first line; the app table is always this overview.
+`--overview` prints the table without the server sections (the output of `status` up to 0.5.0) and shortens the MongoDB block to its first line. `meteor status [--overview]` prints the table and the sections, without the MongoDB and proxy blocks.
+
+## `ssh`
+
+```
+comet-deploy ssh [server] [command…]
+```
+
+Opens a login shell on a server, or runs a command there, with the SSH settings of the config (`host`, `username`, `pem` or `password`, `opts`), like `ssh <host> <command>`:
+
+```bash
+comet-deploy ssh one                       # a shell on "one"
+comet-deploy ssh one -- docker ps -a       # a command; its options after --
+comet-deploy ssh -- uptime                 # the only server of the config
+comet-deploy ssh --servers two -- df -h    # the server picked with --servers
+```
+
+- **The server.** The first word, when it is a name in `servers`; any server of the config works, not only the app servers. Without it, the only server (after `--servers`) is used. With more than one: `Choose a server: comet-deploy ssh <server>. Servers: one, two`. With a single server, a first word that is no server name is part of the command (`comet-deploy ssh uptime`).
+- **The command.** The words after the server are joined with spaces and run by the SSH user's login shell, as with `ssh host command`, so quote what that shell should see as one word: `comet-deploy ssh one -- 'ls /opt/*/config'`. Put the command after `--` when it has options, so comet-deploy does not read them as its own.
+- With a terminal, the session gets a pseudo-terminal that follows the size of your window. Piped input works too.
+- The exit code is the one of the remote command or shell.
+
+`ssh` takes no lock and writes no history.
 
 ---
 
@@ -445,6 +494,7 @@ The `meteor` group has the same commands as in MUP. They are not listed in the t
 | `meteor envconfig` | Writes `start.sh` and `env.list` to the app servers without restarting the app (no lock, no health check, no history). The next `start` or `restart` uses them. |
 | `meteor restart`, `meteor start`, `meteor stop`, `meteor logs`, `meteor status` | The top-level commands. |
 | `meteor destroy --force` | See below. |
+| `meteor debug [server] [--port <n>]` | See below. |
 
 ### `meteor destroy`
 
@@ -461,6 +511,41 @@ With `--force` it waits 5 seconds (`Destroying "<name>" on one, two in 5 seconds
 3. removes comet-deploy's extras: all version tags, the deploy history, the lock and the config snapshot.
 
 Docker itself and other apps stay.
+
+### `meteor debug`
+
+```
+comet-deploy meteor debug [server] [--port 9229]
+```
+
+Opens the Node.js inspector of the running app for Chrome DevTools, through SSH:
+
+```
+Debugger of "myapp" on "one": ws://127.0.0.1:9229
+
+To debug:
+1. Open chrome://inspect in Chrome
+2. Select "Open dedicated DevTools for Node"
+3. Wait a minute while it connects and loads the app. The app's files appear in the Sources tab.
+
+Do not use breakpoints on a production server: they pause the app, which then answers no methods or subscriptions. Use logpoints instead.
+The debugger stays enabled in the app until it restarts; it is reachable only while this command runs. Press Ctrl+C to stop.
+```
+
+What it does:
+
+1. It sends `SIGUSR1` to the `node` process in the app container, which opens the inspector on `127.0.0.1:9229` inside the container. The app keeps running. A container that does not run stops it: `The app container "myapp" does not run on "one".`
+2. It starts a helper container `<name>-debug` (`alpine/socat:1.8.1.1`) in the app's network. It listens on port 9228 of the container's address and lets in only connections from the server itself.
+3. It listens on `127.0.0.1:<port>` on your computer, 9229 by default (the port `chrome://inspect` looks at). Each connection goes through SSH to the helper (`direct-tcpip`, like `ssh -L`). Nothing is published on the server.
+4. Ctrl+C removes the helper and ends with exit code `0`.
+
+- **The server.** As with `ssh`: the first word, or the only app server (after `--servers`); otherwise `Choose a server: comet-deploy meteor debug <server>. Servers: one, two`.
+- **`--port <n>`.** Another local port, for example when 9229 is taken (`Port 9229 is in use on this computer.`). Add `localhost:<n>` under **Configure** in `chrome://inspect`.
+- **Without SSH TCP forwarding** (`AllowTcpForwarding no` or `remote`), each connection runs `docker exec -i <name>-debug socat …` over SSH instead, with the notice `SSH TCP forwarding is off on "one": the debugger connection goes through docker exec, which is slower to connect.`
+- **With `--network host`** the inspector is on the server's own `127.0.0.1:9229`, and the connections go there.
+- **When the app container is replaced** (a deploy, a restart, a crash) the new one starts without the inspector: `The app container on "one" was replaced or stopped; run "comet-deploy meteor debug" again.`
+
+The inspector runs any code that is sent to it. MUP publishes it on port 9227 of every interface of the server and listens on every interface of your computer; comet-deploy keeps it on `127.0.0.1` at both ends. `meteor debug` takes no lock.
 
 ## `docker` commands
 
@@ -525,13 +610,37 @@ comet-deploy proxy reconfig-shared
 
 A restart of the proxy containers (`proxy start`, and `proxy setup` or `reconfig-shared` when the proxy's own files changed) interrupts every app on the server for a moment. `deploy`, `reconfig`, `rollback` and `restart` never restart the proxy.
 
-## Planned for phase 2
+## `cache` commands
 
-These MUP commands exist so that you get a clear answer instead of "Unknown argument". `ssh` is listed in `--help` with "(planned for phase 2)", `meteor debug` in `meteor --help`. They do not read the config or touch the servers, and exit `1`. The message quotes the words you typed:
+comet-deploy's own group, for this computer. It reads the config (the app name, `app.path`, `buildOptions.buildLocation`) and does not connect to the servers. `comet-deploy cache --help` lists the commands.
 
-| Command | Example message |
+### `cache prune`
+
+```
+comet-deploy cache prune [--all] [--registry] [--dry-run]
+```
+
+Removes what the deploys of this app leave on this computer:
+
+| What | Without `--all` | With `--all` |
+|---|---|---|
+| Local images `mup-<name>:<version>` of the builds the build cache recorded | all but the newest build per platform, so a deploy without changes and `--cached-build` still reuse it | all |
+| Other version tags of `mup-<name>` (also `<anything>/mup-<name>`, left by an interrupted push) | those older than the newest build that stays | all |
+| Tags that are no version (`latest`, `build`, your own names) | stay | stay |
+| The build output | with `buildOptions.cleanBuildLocation` (always for the default `buildLocation`) the whole `buildLocation` and its `-amd64` / `-arm64` variants; otherwise only `bundle/`, `bundle.tar.gz` and `.dockerignore` in them | the same |
+
+| Option | Description |
 |---|---|
-| `ssh [server] [command…]` | `"ssh one ls" is not supported yet: it is planned for phase 2 of comet-deploy.` |
-| `meteor debug` | `"meteor debug" is not supported yet: it is planned for phase 2 of comet-deploy.` |
+| `--all` | Also the newest image of each platform, and the app's records in the build cache. The next deploy builds everything again (BuildKit's cache of `npm install` still helps). |
+| `--registry` | Also the local registry (`comet-deploy-registry`) and its volume `comet-deploy-registry-data`. The registry is shared by all apps on this computer, so the next deploy of each app pushes its whole image into it once (locally; the servers still get only the layers they lack). Refused while a deploy uses the registry: `A deploy is using the local registry (pid 1234); run "cache prune --registry" when it has finished.` |
+| `--dry-run` | Print what would be removed; remove nothing. |
 
-Each prints the hint `Meanwhile you can run this command with MUP on the same config and servers.` Not planned: Docker Swarm. See the [Roadmap](../README.md#roadmap).
+```
+Removed 7 images of mup-myapp; the newest stays: mup-myapp:20261116-081100-1a2b3c4 (linux/amd64).
+Removed the build output (312 MB): /tmp/mup-meteor-6f1c9a2e-41b7-4e0b-9a3d-5c8e2f7b1d04.
+The local registry holds 12.4 GB; "comet-deploy cache prune --registry" removes it.
+```
+
+`--verbose` lists every tag it removes or leaves. Images are removed with `docker rmi` without `--force`: an image that a container uses stays, with a warning, and so does its record. The build cache records live in `~/.cache/comet-deploy/`, by `app.path`; two configs with the same `app.path` and different app names (`.deploy/staging`, `.deploy/production`) share them, and `cache prune` touches only the records and images of its own app.
+
+Do not run `cache prune` while a deploy of the same app runs: a deploy that reuses an older image from the cache can lose it. The BuildKit cache stays; `docker builder prune` clears it.

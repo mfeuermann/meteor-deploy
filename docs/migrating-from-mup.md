@@ -25,7 +25,7 @@ comet-deploy is a drop-in replacement for Meteor Up (MUP) 1.5.11. It reads the s
 
 ## Check first: what does not work yet
 
-comet-deploy covers phase 1, MUP's reverse proxy, MUP's built-in MongoDB, the hooks, MUP's private registry and MUP's bundle mode. If your config uses one of these, keep using MUP for that app for now:
+comet-deploy covers all MUP 1.5.11 commands, MUP's reverse proxy, its built-in MongoDB, the hooks, its private registry and its bundle mode. If your config uses one of these, keep using MUP for that app for now:
 
 | In your config | What comet-deploy does | What you can do |
 |---|---|---|
@@ -124,15 +124,17 @@ The commands have the same names and the same options as in MUP.
 | `mup reconfig` | `comet-deploy reconfig` | Now with the lock, the rollout strategy and a history entry. |
 | `mup restart`, `start`, `stop` | `comet-deploy restart`, `start`, `stop` | `restart` follows the rollout strategy. |
 | `mup logs [docker logs options]` | `comet-deploy logs [options]` | Same: the options go to `docker logs`. |
-| `mup status [--overview]` | `comet-deploy status [--overview]` | A one-line overview per server, then the MongoDB and proxy blocks. MUP's full status report is phase 2. |
+| `mup status [--overview]` | `comet-deploy status [--overview]` | A table, then a full report per server, then the MongoDB and proxy blocks. The report shows the env **names** only, never the values, and checks HTTP from your computer too. `--overview` prints the table alone. |
 | `mup meteor deploy`, `push`, `build`, `setup`, `envconfig`, `start`, `stop`, `restart`, `logs`, `status`, `destroy` | the same | Listed by `comet-deploy meteor --help`, not in the top-level help. |
 | `mup docker setup`, `update`, `restart`, `ps`, `status` | the same | |
 | `mup proxy setup`, `reconfig-shared`, `start`, `stop`, `logs`, `logs-le`, `nginx-config`, `status` | the same | `setup` and `reconfig-shared` restart the proxy only when its own files changed. `status` also lists drained servers. `proxy envconfig` fails, as in MUP. |
 | `mup mongo setup`, `logs`, `start`, `stop`, `shell`, `status` | the same | `shell` opens the app's database (`dbName`). `setup`, `start` refuse a MongoDB version change the data cannot take. |
-| `mup ssh`, `mup meteor debug` | exist, but print `… is not supported yet: it is planned for phase 2 of comet-deploy.` and exit 1 | Use MUP for these meanwhile; it works on the same config and servers. |
+| `mup ssh [server] [command]` | `comet-deploy ssh [server] [command…]` | Any server of the config; put options of the command after `--`. The exit code is the remote command's. |
+| `mup meteor debug` | `comet-deploy meteor debug [server] [--port <n>]` | Through SSH, on `127.0.0.1` at both ends: no port is published on the server. |
 | - | `comet-deploy rollback [--to <version>]` | New. |
 | - | `comet-deploy history` | New. |
 | - | `comet-deploy unlock` | New. |
+| - | `comet-deploy cache prune [--all] [--registry] [--dry-run]` | New: removes old local images, the build output and the local registry. |
 
 Global options are the same: `--config`, `--settings`, `--servers`, `--verbose`, `--show-hook-names`. Details: [Commands](commands.md).
 
@@ -178,7 +180,9 @@ Global options are the same: `--config`, `--settings`, `--servers`, `--verbose`,
 
 **A private registry is only the way the image travels.** With `privateDockerRegistry`, MUP builds and pushes `<imagePrefix>/mup-<name>:latest` and every server pulls it in `start.sh`, on every start. comet-deploy pushes `<imagePrefix>/mup-<name>:<version>`, each server pulls it once and keeps it as `mup-<name>:<version>`, and `start.sh` (MUP's template without the registry) runs the server's `mup-<name>:latest`. So canary, the automatic revert and `rollback` work server by server, and a restart does not need the registry. After a healthy deploy to all app servers, comet-deploy also pushes `:latest`, for MUP. `imagePrefix` must start with the registry from `host`, and `setup` and `docker setup` log the servers in only when both `username` and `password` are set. See [Configuration → privateDockerRegistry](configuration.md#privatedockerregistry).
 
-**New local state.** Local images `mup-<name>:<version>` (the last 20 builds per app; older ones are removed), a stopped `comet-deploy-registry` container with a volume that is never cleaned up, and the build cache state in `~/.cache/comet-deploy/`.
+**New local state.** Local images `mup-<name>:<version>` (the last 20 builds per app; older ones are removed), a stopped `comet-deploy-registry` container with a volume that grows with every deploy, and the build cache state in `~/.cache/comet-deploy/`. `comet-deploy cache prune` removes the old images and the build output, `--registry` the registry too.
+
+**Secrets stay on the server.** `meteor debug` keeps the Node.js inspector on `127.0.0.1` on the server and on your computer; MUP publishes it on port 9227 of every interface of the server. The `status` report lists the names of the env variables without their values; MUP prints the values, `MONGO_URL` and `METEOR_SETTINGS` included.
 
 ## The reverse proxy
 
@@ -223,7 +227,6 @@ Things to know:
 - After a `mup deploy`, `comet-deploy status` shows `-` as the version, because `:latest` is not a comet-deploy version. `comet-deploy rollback` then picks the newest kept comet-deploy version.
 - `mup deploy` moves `:latest` to `:previous` as usual. comet-deploy's version tags stay on the server.
 - MUP 1.5.11 reports the `cometDeploy` section as `cometDeploy is an unknown property` and continues. Only `mup validate` exits with code 1 because of it.
-- For the commands that are phase 2 in comet-deploy (`mup ssh`, `mup meteor debug`), use MUP on the same config.
 - **In bundle mode**, MUP's `mup deploy` removes `mup-<name>:latest` and `:previous` and runs the base image with the bundle from `/opt/<name>/current`. comet-deploy recognizes that container in `deploy`, `reconfig`, `rollback` and `restart` and first turns MUP's bundle into an image, tagged `mup-<name>:latest` (so it becomes `:previous`, and a revert or `rollback` returns to it) and `mup-<name>:mup-bundle`. The second tag keeps MUP's next `docker rmi mup-<name>:latest` from failing and stays out of `status`, `history` and the `rollback` candidates; there is at most one. `mup reconfig` and `mup restart` after comet-deploy run comet-deploy's version; `mup deploy` works as before. `comet-deploy start` and `stop` change nothing here: after `stop` there is no container to recognize, and `start` runs MUP's bundle from `current`, as MUP does.
 
   The integration tests check this sequence: `mup setup` and `mup deploy`, `comet-deploy deploy`, `comet-deploy rollback` back to MUP's version, `mup deploy`, `comet-deploy deploy` and `mup reconfig`, then `mup deploy` and `comet-deploy restart`.
@@ -292,4 +295,7 @@ On your machine, you can remove the local images `mup-myapp:<version>` and the l
 | Hooks (`hooks`) | supported | supported, the same names; `remoteCommand` failures only warn in both; the api object without nodemiral sessions |
 | Private registry (`privateDockerRegistry`) | images as `<imagePrefix>/mup-<name>:latest`; `start.sh` pulls on every start | pushed per version, pulled once per server and kept as `mup-<name>:<version>`; `start.sh` never pulls; `:latest` pushed for MUP |
 | Bundle mode (`kadirahq/meteord`, `prepareBundle: false`) | bundle uploaded, mounted from `/opt/<name>/current` | bundle in the version image at `/bundle`; started the same way; MUP's last version taken over as `:mup-bundle` |
+| `meteor debug` | inspector published on port 9227 of the server | through SSH, `127.0.0.1` at both ends |
+| `status` | env values printed | env names only; HTTP also checked from your computer |
+| Local cleanup | - | `cache prune` |
 | Docker Swarm, MUP plugins | supported | not planned |

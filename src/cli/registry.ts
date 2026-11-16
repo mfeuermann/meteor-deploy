@@ -34,7 +34,7 @@ export interface ConfigCommand extends CommandBase {
   run(ctx: CommandContext, argv: Record<string, unknown>): Promise<void>;
 }
 
-/** A command that runs without loading the config (`init`, `validate`, the phase 2 placeholders). */
+/** A command that runs without loading the config (`init`, `validate`). */
 export interface NoConfigCommand extends CommandBase {
   needsConfig: false;
   run(ctx: BaseContext, argv: Record<string, unknown>): Promise<void>;

@@ -29,7 +29,6 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [Config or settings not found](#config-or-settings-not-found)
 - [validate exits with code 1](#validate-exits-with-code-1)
 - [zodern/meteor cannot unpack the bundle in bundle mode](#zodernmeteor-cannot-unpack-the-bundle-in-bundle-mode)
-- [Not supported yet (phase 2)](#not-supported-yet-phase-2)
 - [imagePrefix does not point to the registry](#imageprefix-does-not-point-to-the-registry)
 - [app.ssl is a deprecated MUP option](#appssl-is-a-deprecated-mup-option)
 - [env.list line over 64 KiB](#envlist-line-over-64-kib)
@@ -65,6 +64,16 @@ Most errors say what is wrong and print a `Hint:` with the fix. This page lists 
 - [Mixed versions after a partial failure](#mixed-versions-after-a-partial-failure)
 - [Nothing to roll back to](#nothing-to-roll-back-to)
 - [Leftover local images and the registry volume](#leftover-local-images-and-the-registry-volume)
+
+**ssh, meteor debug and status**
+
+- [Port 9229 is in use on this computer](#port-9229-is-in-use-on-this-computer)
+- [The debugger goes through docker exec](#the-debugger-goes-through-docker-exec)
+- [Cannot enable the debugger of the app](#cannot-enable-the-debugger-of-the-app)
+- [Cannot start the debugger helper](#cannot-start-the-debugger-helper)
+- [DevTools does not connect](#devtools-does-not-connect)
+- [The app container was replaced or stopped](#the-app-container-was-replaced-or-stopped)
+- [HTTP from this computer fails in status](#http-from-this-computer-fails-in-status)
 
 **Hooks**
 
@@ -354,14 +363,6 @@ Warning: app.docker.image "zodern/meteor:latest" cannot unpack the bundle in bun
 ```
 
 With `docker.prepareBundle: false` the app runs in [bundle mode](configuration.md#bundle-mode): the container unpacks the bundle in `/bundle` when it starts. The `zodern/meteor` images without `root` in the tag run as the user `app`, which cannot write there, so the container fails at start with `tar: bundle/programs: Cannot mkdir`. The same happens with MUP. Use `zodern/meteor:root`, or remove `prepareBundle: false`: `zodern/meteor` images then build an app image, which is also faster to start.
-
-### Not supported yet (phase 2)
-
-```
-"ssh one" is not supported yet: it is planned for phase 2 of comet-deploy.
-```
-
-The `ssh` and `meteor debug` commands are phase 2. Use MUP for them meanwhile; it works on the same config and servers. See [Migrating from MUP](migrating-from-mup.md#check-first-what-does-not-work-yet).
 
 ### imagePrefix does not point to the registry
 
@@ -696,29 +697,79 @@ Version 20261101-120000-1a2b3c4 is not on this server. Available: …
 
 ### Leftover local images and the registry volume
 
-What stays on your machine:
+What deploys leave on your machine:
 
-- **Local images.** Every build creates an image `mup-<name>:<version>` (for several platforms with an `-amd64` / `-arm64` suffix). The build cache remembers the last 20 builds per app; when it forgets one, it removes that build's image (`docker rmi`, best effort: an image that is still in use stays). So at most about 20 images per app remain. To remove more by hand:
+- **Local images** `mup-<name>:<version>` (with an `-amd64` / `-arm64` suffix for several platforms). The build cache remembers the last 20 builds per app and removes the image of a build it forgets (best effort: an image that is still in use stays), so at most about 20 images per app remain.
+- **The build output** in `buildOptions.buildLocation`.
+- **The registry volume** `comet-deploy-registry-data`: the local registry keeps every pushed layer, so the volume grows with every deploy.
 
-  ```bash
-  docker images mup-myapp
-  docker rmi mup-myapp:20261101-120000-1a2b3c4
-  ```
+`comet-deploy cache prune` removes the older images and the build output of the app; `--registry` also removes the registry and its volume, `--all` also the newest image. `--dry-run` shows what it would remove. See [Commands → `cache prune`](commands.md#cache-prune). Run it when no deploy is running.
 
-  When nothing changed (`No changes since …`) or with `--cached-build`, a deploy reuses one of these images. If you removed it, the next deploy builds again.
-
-- **The registry volume.** The local registry keeps every pushed layer in the Docker volume `comet-deploy-registry-data`. comet-deploy never cleans it, so it grows with every deploy.
-
-To reset the registry (when no deploy is running):
-
-```bash
-docker rm -f comet-deploy-registry
-docker volume rm comet-deploy-registry-data
-```
-
-The next deploy creates both again and pushes the full image once. The servers are not affected: they keep their own copies of the layers.
+When nothing changed (`No changes since …`) or with `--cached-build`, a deploy reuses the newest image, which `cache prune` keeps unless you pass `--all`. After `--registry`, the next deploy creates the registry again and pushes the full image into it once. The servers are not affected: they keep their own copies of the layers.
 
 To clear the BuildKit cache (the next build runs `npm install` again): `docker builder prune`.
+
+## ssh, meteor debug and status
+
+### Port 9229 is in use on this computer
+
+```
+Port 9229 is in use on this computer.
+Hint: Use --port <n>, and add localhost:<n> in chrome://inspect → Configure.
+```
+
+Something else listens on `127.0.0.1:9229`, often a Node.js process started with `--inspect`, or another `meteor debug`. Use another port, `comet-deploy meteor debug --port 9230`, and add `localhost:9230` under **Configure** in `chrome://inspect`; or stop the other process. Nothing has changed on the server at that point.
+
+### The debugger goes through docker exec
+
+```
+Warning: SSH TCP forwarding is off on "one": the debugger connection goes through docker exec, which is slower to connect.
+```
+
+The server's `sshd` refuses direct TCP forwards (`ssh -L`): `AllowTcpForwarding no` or `remote`, `DisableForwarding yes`, a `PermitOpen` that does not allow the container's address on port 9228, or a `Match` block for your user. `meteor debug` then opens each connection with `docker exec -i <name>-debug socat …` over SSH. DevTools works, but each connection takes longer to open. To use forwarding, set `AllowTcpForwarding yes`; see [AllowTcpForwarding is disabled on the server](#allowtcpforwarding-is-disabled-on-the-server). `remote` is enough for the deploy's reverse tunnel, but not for `meteor debug`.
+
+### Cannot enable the debugger of the app
+
+```
+The app container "myapp" does not run on "one".
+Hint: Start it with "comet-deploy start".
+```
+
+```
+Cannot enable the debugger of the app on "one": no node process in the container
+```
+
+`meteor debug` sends `SIGUSR1` to the process named `node` in the app container (found with `pidof`, or in `/proc` when the image has no `pidof`). An image that starts the app under another name has no such process. Other reasons, for example a `kill` that is not allowed, are printed after the colon.
+
+### Cannot start the debugger helper
+
+```
+Cannot start the debugger helper on "one": <reason>
+```
+
+The helper container `<name>-debug` runs `alpine/socat:1.8.1.1`, which the server pulls the first time. A failed pull shows Docker's message; see [Docker Hub rate limits](#docker-hub-rate-limits).
+
+`the helper container stopped right after it started; is port 9228 taken in the app?` means that the app itself listens on port 9228, where the helper listens in the app's network. The port is fixed: move the app's own listener to another port while you debug.
+
+### DevTools does not connect
+
+`chrome://inspect` lists no target, or DevTools disconnects at once:
+
+- With `--port` other than 9229, add `localhost:<port>` under **Configure** in `chrome://inspect`.
+- The app ignores `SIGUSR1` when Node.js was started with `--disable-sigusr1`, or when the app handles `SIGUSR1` itself; the inspector then never opens. Check `NODE_OPTIONS` and the start command of your image.
+- Another inspector already runs in the app (`--inspect` in `NODE_OPTIONS` on another port): `SIGUSR1` does not move it to 9229.
+
+### The app container was replaced or stopped
+
+```
+The app container on "one" was replaced or stopped; run "comet-deploy meteor debug" again.
+```
+
+A deploy, `restart`, `reconfig` or a crash replaced the app container while `meteor debug` ran. The new container starts without the inspector. The helper was removed; run `meteor debug` again.
+
+### HTTP from this computer fails in status
+
+The `HTTP` line of `status` checks the server's `ROOT_URL` plus the health check path from your computer as well. A failure there with `200 on the server` points to the way in, not to the app: `DNS lookup failed` (the name does not resolve here), `connection refused` or `timeout` (a firewall, a VPN, the proxy not running, `ROOT_URL` pointing elsewhere), `TLS error` (a certificate this computer does not trust, for example a self-signed one or one from a test CA). The deploy's health check uses only the check on the server.
 
 ## Hooks
 
