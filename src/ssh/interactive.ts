@@ -4,7 +4,7 @@
  * size and follows resizes, and the local terminal is in raw mode, so keys such as Ctrl+C go to
  * the remote program. Piped input (a script, a test) gets plain pipes instead.
  */
-import type { SshConnection } from './connection.js';
+import type { InteractiveOptions, SshConnection } from './connection.js';
 
 /** The local streams; `process` by default. */
 export interface LocalTerminal {
@@ -28,7 +28,7 @@ export async function runInteractive(conn: SshConnection, command: ((tty: boolea
   let onResize: (() => void) | undefined;
   try {
     if (tty) term.stdin.setRawMode!(true);
-    const o = {
+    const o: InteractiveOptions = {
       pty: tty ? { ...size(), term: process.env.TERM || 'xterm' } : undefined,
       stdin: term.stdin,
       stdout: term.stdout,
