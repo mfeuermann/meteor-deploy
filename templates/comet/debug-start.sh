@@ -49,6 +49,13 @@ if ! OUT=$(sudo docker run -d --rm --name "$HELPER" "${HELPER_ARGS[@]}" 2>&1); t
   echo "$OUT" >&2
   exit 12
 fi
+# socat exits at once when it cannot listen (the app uses the port itself); `docker run -d`
+# has returned by then, so look again a moment later.
+sleep 0.5
+if [ "$(sudo docker inspect -f '{{.State.Running}}' "$HELPER" 2>/dev/null)" != true ]; then
+  echo "the helper container stopped right after it started; is port $LISTEN_PORT taken in the app?" >&2
+  exit 12
+fi
 
 echo "network=$NETWORK"
 if [ "$NETWORK" = bridge ]; then

@@ -13,12 +13,15 @@ import { tempDir } from '../../helpers/fs.js';
 
 const FAKE_DOCKER = `#!/bin/bash
 # RUNNING: true|false; NET: name of the container's network (host, bridge, …); IP, GW: its
-# address and gateway; NO_NODE: no node process; FAIL_RUN: docker run fails.
+# address and gateway; NO_NODE: no node process; FAIL_RUN: docker run fails; HELPER_DIES: the
+# helper stops right after it started (its port is taken in the app).
 echo "$*" >> "$DIR/calls"
 case "$1" in
   inspect)
     case "$3" in
-      *State.Running*) echo "\${RUNNING:-true} cid123" ;;
+      *State.Running*)
+        if [ "$4" = myapp-debug ]; then [ -n "$HELPER_DIES" ] && echo false || echo true
+        else echo "\${RUNNING:-true} cid123"; fi ;;
       *index*) echo "map[\${NET:-bridge}:0xc000123]" ;;
       *range*) echo "$IP $GW" ;;
     esac ;;
@@ -88,6 +91,13 @@ describe('debug-start.sh', () => {
     const r = await runScript({ FAIL_RUN: '1' });
     expect(r.code).toBe(12);
     expect(r.stderr).toContain('pull access denied for alpine/socat');
+  });
+
+  it('a helper that stops right after it started exits 12', async () => {
+    const r = await runScript({ HELPER_DIES: '1' });
+    expect(r.code).toBe(12);
+    expect(r.stderr).toContain('the helper container stopped right after it started; is port 9228 taken in the app?');
+    expect(r.stdout).toBe('');
   });
 
   it('a container without an address exits 12', async () => {
