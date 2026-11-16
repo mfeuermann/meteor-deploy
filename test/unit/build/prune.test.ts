@@ -91,13 +91,16 @@ describe('planPrune', () => {
 });
 
 describe('buildDirTargets', () => {
-  it('cleanBuildLocation: the whole directory and its platform variants', () => {
+  it('cleanBuildLocation: the whole directory, and only the build files of its platform variants', () => {
+    // Deploy deletes the -amd64/-arm64 directories only for multi-platform builds; a folder of
+    // that name next to a custom buildLocation can be the user's own.
     const root = tempDir();
     const base = join(root, 'build');
     mkdirSync(base);
-    mkdirSync(`${base}-arm64`);
+    mkdirSync(`${base}-arm64/bundle`, { recursive: true });
+    writeFileSync(join(`${base}-arm64`, 'notes.txt'), 'mine');
     writeFileSync(join(root, 'notes.txt'), 'mine');
-    expect(buildDirTargets({ buildLocation: base, cleanBuildLocation: true })).toEqual([base, `${base}-arm64`]);
+    expect(buildDirTargets({ buildLocation: base, cleanBuildLocation: true })).toEqual([base, join(`${base}-arm64`, 'bundle')]);
   });
 
   it("without cleanBuildLocation only comet-deploy's own files", () => {

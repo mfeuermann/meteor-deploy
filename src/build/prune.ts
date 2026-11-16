@@ -80,16 +80,22 @@ export function planPrune(o: { entries: CacheEntry[]; repo: string; refs: string
   return { removeRefs, removeEntries, keep, untouched };
 }
 
+/** What comet-deploy writes into a build directory. */
+const BUILD_FILES = ['bundle', 'bundle.tar.gz', '.dockerignore'];
+
 /**
  * The build output of the app that exists now: with `cleanBuildLocation` the whole
- * `buildLocation` and its `-amd64`/`-arm64` variants (comet-deploy deletes those before each
- * build anyway), else only what comet-deploy writes into them (`bundle/`, `bundle.tar.gz`,
- * `.dockerignore`), so other files in a directory of the user stay.
+ * `buildLocation` (comet-deploy deletes it before each build anyway), else only what
+ * comet-deploy writes into it (BUILD_FILES), so other files in a directory of the user stay.
+ * Of the `-amd64`/`-arm64` variants only BUILD_FILES go: deploy creates and deletes those
+ * directories only for multi-platform builds, and next to a custom `buildLocation` a folder of
+ * that name can be the user's own.
  */
 export function buildDirTargets(o: { buildLocation: string; cleanBuildLocation?: boolean }): string[] {
-  const dirs = [o.buildLocation, `${o.buildLocation}-amd64`, `${o.buildLocation}-arm64`];
-  if (o.cleanBuildLocation) return dirs.filter((d) => existsSync(d));
-  return dirs.flatMap((d) => ['bundle', 'bundle.tar.gz', '.dockerignore'].map((f) => join(d, f))).filter((p) => existsSync(p));
+  const files = (d: string) => BUILD_FILES.map((f) => join(d, f));
+  const variants = [`${o.buildLocation}-amd64`, `${o.buildLocation}-arm64`];
+  const base = o.cleanBuildLocation ? [o.buildLocation] : files(o.buildLocation);
+  return [...base, ...variants.flatMap(files)].filter((p) => existsSync(p));
 }
 
 /** A size as Docker prints it (`3.371GB`, `512MB`, `0B`; decimal units), in bytes; else null. */
