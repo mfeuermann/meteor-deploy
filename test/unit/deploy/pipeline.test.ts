@@ -835,6 +835,30 @@ describe('pipelines behind the proxy', () => {
     expect(s.calls.indexOf('finalize:')).toBeLessThan(s.calls.indexOf('release:one'));
   });
 
+  it('tells the rollout whether the deploy was aborted, so it skips the certificate check after Ctrl+C', async () => {
+    const run = async (abort: boolean) => {
+      const s = await setup({ extra: LE });
+      const flags: Array<boolean | undefined> = [];
+      s.deps.createProxyRollout = async () => ({
+        prepare: async () => {},
+        activate: async (_server, go) => go({ kind: 'zero-downtime' }),
+        finish: async (_results, o) => (flags.push(o?.aborted), []),
+      });
+      const ac = new AbortController();
+      const activate = s.deps.activateServer!;
+      s.deps.activateServer = async (d, x) => {
+        const r = await activate(d, x);
+        if (abort) ac.abort();
+        return r;
+      };
+      s.deps.signal = ac.signal;
+      await deploy(s).catch(() => {});
+      return flags;
+    };
+    expect(await run(true)).toEqual([true]);
+    expect(await run(false)).toEqual([false]);
+  });
+
   it('a proxy that cannot be written does not stop the deploy, and the summary names it (Review Focus 4)', async () => {
     const s = await setup({ extra: LB });
     await withProxies(s, 'keep', { failWrite: 'two' });

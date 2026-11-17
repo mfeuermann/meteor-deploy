@@ -54,7 +54,7 @@ import {
   writeUpstreamFile,
 } from './sync.js';
 import { describeServed, localCertFingerprint } from './certs.js';
-import { customCertWarnings, parseServedOutput, readServed, REAL_CERT_WAIT, waitForCustomCert, type CertWaitDeps } from './served.js';
+import { CERT_WAIT_MS, customCertWarnings, parseServedOutput, readServed, REAL_CERT_WAIT, waitForCustomCert, type CertWaitDeps } from './served.js';
 import { desiredEntries, formatUpstream, parseUpstream } from './upstream.js';
 
 /** The lock functions the proxy commands use (tests replace them). */
@@ -160,7 +160,8 @@ async function checkSetupCert(ctx: CommandContext, servers: string[], w: CertWai
           reading = null;
           return x;
         };
-        const warnings = customCertWarnings(s, await waitForCustomCert(read, expected, domains, w), expected, domains, new Date());
+        const onWait = () => r.info(`[${s}] waiting up to ${CERT_WAIT_MS / 1000} s until nginx serves proxy.ssl.crt`);
+        const warnings = customCertWarnings(s, await waitForCustomCert(read, expected, domains, w, { onWait }), expected, domains, new Date());
         for (const x of warnings) r.warn(x);
         if (warnings.length === 0) r.verboseLine(s, `serves proxy.ssl.crt for ${domains.join(', ')}`);
       } catch (err) {

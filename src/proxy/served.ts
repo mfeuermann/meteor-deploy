@@ -7,7 +7,7 @@
 import type { NormalizedConfig } from '../config/types.js';
 import { cometScript } from '../remote/ops.js';
 import type { SshConnection } from '../ssh/connection.js';
-import { certSummary, parseServedValue, type ServedState } from './certs.js';
+import { certSummary, describeServed, parseServedValue, type ServedState } from './certs.js';
 import { proxyDomains } from './render.js';
 
 /** One server: the state per domain, and the domains a running app container names in VIRTUAL_HOST / LETSENCRYPT_HOST. */
@@ -50,19 +50,23 @@ export async function readServed(conn: SshConnection, c: NormalizedConfig): Prom
 
 const servesExpected = (s: ServedState | undefined, expected: string) => s?.kind === 'cert' && certSummary(s.pem).fingerprint === expected;
 
+/** How long the check after a deploy, reconfig or proxy setup waits for the certificate. */
+export const CERT_WAIT_MS = 30_000;
+
 /**
  * Reads until every domain serves the certificate with fingerprint `expected`, every
  * `intervalMs` (2 s) for at most `timeoutMs` (30 s). Stops at once when the server cannot be
- * checked (no openssl, no HTTPS port). Returns the last reading.
+ * checked (no openssl, no HTTPS port). `onWait` is called once, before the first wait. Returns
+ * the last reading.
  */
 export async function waitForCustomCert(
   read: () => Promise<ServedOnServer>,
   expected: string,
   domains: string[],
   d: CertWaitDeps,
-  o: { timeoutMs?: number; intervalMs?: number } = {},
+  o: { timeoutMs?: number; intervalMs?: number; onWait?: () => void } = {},
 ): Promise<ServedOnServer> {
-  const timeoutMs = o.timeoutMs ?? 30_000;
+  const timeoutMs = o.timeoutMs ?? CERT_WAIT_MS;
   const intervalMs = o.intervalMs ?? 2_000;
   const start = d.now();
   for (;;) {
@@ -71,12 +75,17 @@ export async function waitForCustomCert(
     if (states.some((s) => s?.kind === 'no-openssl' || s?.kind === 'no-https')) return last;
     if (states.every((s) => servesExpected(s, expected))) return last;
     if (d.now() - start >= timeoutMs) return last;
+    if (d.now() === start) o.onWait?.();
     await d.sleep(intervalMs);
   }
 }
 
-/** The summary warnings for one proxy server after the check (empty when it serves proxy.ssl.crt everywhere). */
-export function customCertWarnings(server: string, last: ServedOnServer, expected: string, domains: string[], _now: Date): string[] {
+/**
+ * The summary warnings for one proxy server after the check: a domain that does not get
+ * proxy.ssl.crt, and, as in `status`, a proxy.ssl.crt that expires within 14 days, has expired or
+ * is not for the domain. Empty when all is well.
+ */
+export function customCertWarnings(server: string, last: ServedOnServer, expected: string, domains: string[], now: Date): string[] {
   const states = domains.map((d) => [d, last.domains[d] ?? ({ kind: 'none' } as ServedState)] as const);
   if (states.some(([, s]) => s.kind === 'no-openssl')) return [`Could not check the certificate "${server}" serves: openssl is not installed on the server.`];
   if (states.some(([, s]) => s.kind === 'no-https')) return [`Could not check the certificate "${server}" serves: the proxy publishes no HTTPS port.`];
@@ -88,6 +97,7 @@ export function customCertWarnings(server: string, last: ServedOnServer, expecte
     }
     const sum = certSummary(s.pem);
     if (sum.fingerprint !== expected) warnings.push(`"${server}" serves another certificate for ${d} than proxy.ssl.crt: ${sum.issuer}, expires ${sum.expires}. ${FIX}`);
+    else warnings.push(...describeServed(server, d, s, { expected, now }).problems);
   }
   return warnings;
 }

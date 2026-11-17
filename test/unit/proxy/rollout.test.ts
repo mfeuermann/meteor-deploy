@@ -395,11 +395,22 @@ describe('lockTargets', () => {
 
 describe('the certificate check after the rollout', () => {
   const pem = (n: string) => readFileSync(join(import.meta.dirname, '../../fixtures/certs', `${n}.pem`), 'utf8');
-  const CUSTOM = "{ domains: 'a.example.com', ssl: { crt: './bundle.crt', key: './private.key' } }";
-  const serving = (n: string): ServedOnServer => ({ domains: { 'a.example.com': { kind: 'cert', pem: pem(n) } }, vhost: ['a.example.com'], letsEncrypt: [] });
+  const CUSTOM = "{ domains: 'www.example.com', ssl: { crt: './bundle.crt', key: './private.key' } }";
+  const serving = (n: string): ServedOnServer => ({ domains: { 'www.example.com': { kind: 'cert', pem: pem(n) } }, vhost: ['www.example.com'], letsEncrypt: [] });
   const TAIL = 'Run "comet-deploy proxy setup"; "comet-deploy proxy status" shows what each proxy serves.';
 
-  async function run(o: { action?: 'deploy' | 'reconfig' | 'restart' | 'rollback'; proxy?: string; served?: Record<string, ServedOnServer[]>; verbose?: boolean; failAfter?: boolean; lb?: 'off' } = {}) {
+  async function run(
+    o: {
+      action?: 'deploy' | 'reconfig' | 'restart' | 'rollback';
+      proxy?: string;
+      served?: Record<string, ServedOnServer[]>;
+      verbose?: boolean;
+      failAfter?: boolean;
+      lb?: 'off';
+      status?: Record<string, ActivationResult['status']>;
+      aborted?: boolean;
+    } = {},
+  ) {
     const dir = tempDir({ 'mup.js': mup(o.proxy ?? CUSTOM), 'bundle.crt': pem('custom'), 'private.key': 'KEY' });
     const lines: string[] = [];
     const ctx = await createContext(
@@ -415,29 +426,46 @@ describe('the certificate check after the rollout', () => {
     const deps = fakeProxyDeps({ one: state, two: state }, calls, { served: o.served, failAfter: o.failAfter });
     const rollout = (await createProxyRollout(ctx, { action: o.action ?? 'deploy', strategy: 'canary' }, deps))!;
     await rollout.prepare();
-    const warnings = await rollout.finish(await roll(rollout, ['one', 'two'], calls));
+    const warnings = await rollout.finish(await roll(rollout, ['one', 'two'], calls, o.status), { aborted: o.aborted });
     return { warnings, calls, output: () => lines.join('') };
   }
 
   it('warns when a proxy serves another certificate than proxy.ssl.crt after a deploy or reconfig', async () => {
     for (const action of ['deploy', 'reconfig'] as const) {
       const r = await run({ action, served: { one: [serving('le-leaf')], two: [serving('custom')] } });
-      expect(r.warnings, action).toEqual([`"one" serves another certificate for a.example.com than proxy.ssl.crt: Let's Encrypt (R11), expires 2126-01-01. ${TAIL}`]);
+      expect(r.warnings, action).toEqual([`"one" serves another certificate for www.example.com than proxy.ssl.crt: Let's Encrypt (R11), expires 2126-01-01. ${TAIL}`]);
     }
   });
 
   it('is silent when it is served, and says so with --verbose', async () => {
     const r = await run({ verbose: true, served: { one: [serving('le-leaf'), serving('custom')], two: [serving('custom')] } });
     expect(r.warnings).toEqual([]);
-    expect(r.output()).toContain('[one] serves proxy.ssl.crt for a.example.com');
+    expect(r.output()).toContain('[one] serves proxy.ssl.crt for www.example.com');
     expect(r.calls.filter((c) => c === 'served:one')).toHaveLength(2);
+  });
+
+  it('says when it waits for a proxy', async () => {
+    const r = await run({ served: { one: [serving('le-leaf'), serving('custom')], two: [serving('custom')] } });
+    expect(r.output()).toContain('[one] waiting up to 30 s until nginx serves proxy.ssl.crt');
+    expect(r.output()).not.toContain('[two] waiting');
+  });
+
+  it('does not check after a deploy that ended healthy on no server, or was aborted', async () => {
+    const served = { one: [serving('le-leaf')], two: [serving('le-leaf')] };
+    const reverted = await run({ served, status: { one: 'reverted', two: 'failed' } });
+    expect(reverted.calls.filter((c) => c.startsWith('served:'))).toEqual([]);
+    expect(reverted.warnings.join('\n')).not.toContain('serves another certificate');
+    const aborted = await run({ served, aborted: true });
+    expect(aborted.calls.filter((c) => c.startsWith('served:'))).toEqual([]);
+    const partly = await run({ served, status: { two: 'reverted' } });
+    expect(partly.calls.filter((c) => c.startsWith('served:')).length).toBeGreaterThan(0);
   });
 
   it("does not check after restart or rollback, with Let's Encrypt, or on a proxy whose update failed", async () => {
     for (const action of ['restart', 'rollback'] as const) expect((await run({ action })).calls.filter((c) => c.startsWith('served:')), action).toEqual([]);
-    expect((await run({ proxy: "{ domains: 'a.example.com', ssl: { letsEncryptEmail: 'a@a.example.com' } }" })).calls.filter((c) => c.startsWith('served:'))).toEqual([]);
+    expect((await run({ proxy: "{ domains: 'www.example.com', ssl: { letsEncryptEmail: 'a@www.example.com' } }" })).calls.filter((c) => c.startsWith('served:'))).toEqual([]);
     // Load balancing is turned on in the after part, which fails on both proxies.
-    const lb = "{ domains: 'a.example.com', loadBalancing: true, ssl: { crt: './bundle.crt', key: './private.key' } }";
+    const lb = "{ domains: 'www.example.com', loadBalancing: true, ssl: { crt: './bundle.crt', key: './private.key' } }";
     const failed = await run({ proxy: lb, lb: 'off', failAfter: true });
     expect(failed.warnings.join('\n')).toContain('Could not update the reverse proxy');
     expect(failed.calls.filter((c) => c.startsWith('served:'))).toEqual([]);

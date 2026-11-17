@@ -1,4 +1,4 @@
-import { copyFileSync, cpSync, mkdtempSync, readFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -335,11 +335,13 @@ describe('the served certificates in proxy status', () => {
 describe('the certificate check of proxy setup', () => {
   const certs = join(here, '../../fixtures/certs');
   const b64 = (name: string) => Buffer.from(readFileSync(join(certs, `${name}.pem`), 'utf8')).toString('base64');
-  /** proxy-certs with a real certificate (custom.pem) as proxy.ssl.crt. */
+  /** proxy-certs with a real certificate (custom.pem) as proxy.ssl.crt, for the domains it covers. */
   function withCert(): string {
     const dir = mkdtempSync(join(tmpdir(), 'comet-certs-'));
     cpSync(join(fixtures, 'proxy-certs'), dir, { recursive: true });
     copyFileSync(join(certs, 'custom.pem'), join(dir, 'cert.crt'));
+    const mup = join(dir, 'mup.js');
+    writeFileSync(mup, readFileSync(mup, 'utf8').replace("domains: 'certs.example.com,www.certs.example.com'", "domains: 'example.com,www.example.com'"));
     return dir;
   }
   const served = (cert: string, o: { vhost?: string; le?: string } = {}) =>
@@ -355,9 +357,10 @@ describe('the certificate check of proxy setup', () => {
     const other = await setup(withCert(), { served: [served('le-leaf')] });
     await proxySetup(other.ctx, undefined, fakeCertWait());
     expect(other.out()).toContain(
-      `Warning: "one" serves another certificate for certs.example.com than proxy.ssl.crt: Let's Encrypt (R11), expires 2126-01-01. Run "comet-deploy proxy setup"; "comet-deploy proxy status" shows what each proxy serves.`,
+      `Warning: "one" serves another certificate for example.com than proxy.ssl.crt: Let's Encrypt (R11), expires 2126-01-01. Run "comet-deploy proxy setup"; "comet-deploy proxy status" shows what each proxy serves.`,
     );
     expect(reads(other.log)).toBe(16);
+    expect(other.out()).toContain('[one] waiting up to 30 s until nginx serves proxy.ssl.crt');
   });
 
   it('does not wait on a server where the app does not run behind the proxy yet', async () => {
@@ -372,7 +375,7 @@ describe('the certificate check of proxy setup', () => {
     const s = await setup(withCert(), { served: [served('le-leaf', { le: '1' })] });
     await proxySetup(s.ctx, undefined, fakeCertWait());
     expect(reads(s.log)).toBe(1);
-    expect(s.out()).toContain(`Warning: "one": the running app still asks Let's Encrypt for certs.example.com. Run "comet-deploy reconfig" to switch it to proxy.ssl.crt.`);
+    expect(s.out()).toContain(`Warning: "one": the running app still asks Let's Encrypt for example.com. Run "comet-deploy reconfig" to switch it to proxy.ssl.crt.`);
     expect(s.out()).not.toContain('serves another certificate');
   });
 });

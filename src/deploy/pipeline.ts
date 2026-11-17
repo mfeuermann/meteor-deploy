@@ -585,7 +585,7 @@ export async function deployPipeline(
       // None of these calls throws. The proxy is finished while the locks are still held, so no
       // other deploy rewrites the upstream in between. `stopLocalRegistry` drops this deploy's
       // lease and stops the container only when no other deploy on this machine still holds one.
-      if (rollout) proxyWarnings = await rollout.finish(results);
+      if (rollout) proxyWarnings = await rollout.finish(results, { aborted: !!d.signal?.aborted });
       await releaseServers(ctx, locked, d);
       if (registryStarted) await d.stopLocalRegistry().catch(() => {});
     }
@@ -715,7 +715,7 @@ async function lockedRollout(
     ({ results, skipped } = await ctx.reporter.phase(o.phase, () => runStrategy(servers, strategy, (s) => fn(s, through(s)), d.signal)));
     await writeHistory(ctx, d, { action: o.action, results, startedAt, servers, versionOf: o.versionOf });
   } finally {
-    if (rollout) proxyWarnings = await rollout.finish(results);
+    if (rollout) proxyWarnings = await rollout.finish(results, { aborted: !!d.signal?.aborted });
     await releaseServers(ctx, locked, d);
   }
   const ok = skipped.length === 0 && results.every((x) => x.status === 'healthy');

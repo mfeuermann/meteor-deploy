@@ -123,6 +123,15 @@ describe('waitForCustomCert', () => {
     expect(last).toEqual(reading(cert('le-leaf')));
   });
 
+  it('says once that it waits, only when the first reading does not match', async () => {
+    const waits: number[] = [];
+    let reads = 0;
+    await waitForCustomCert(async () => reading(++reads >= 3 ? cert('custom') : cert('le-leaf')), CUSTOM, ['a.test'], clock().d, { onWait: () => waits.push(reads) });
+    expect(waits).toEqual([1]);
+    await waitForCustomCert(async () => reading(cert('custom')), CUSTOM, ['a.test'], clock().d, { onWait: () => waits.push(-1) });
+    expect(waits).toEqual([1]);
+  });
+
   it('does not wait when it cannot check', async () => {
     const c = clock();
     let reads = 0;
@@ -136,7 +145,15 @@ describe('customCertWarnings', () => {
   const on = (domains: Record<string, ServedState>): ServedOnServer => ({ domains, vhost: Object.keys(domains), letsEncrypt: [] });
 
   it('is silent when every domain serves proxy.ssl.crt', () => {
-    expect(customCertWarnings('one', on({ 'a.test': cert('custom'), 'b.test': cert('chain') }), CUSTOM, ['a.test', 'b.test'], now)).toEqual([]);
+    expect(customCertWarnings('one', on({ 'example.com': cert('custom'), 'www.example.com': cert('chain') }), CUSTOM, ['example.com', 'www.example.com'], now)).toEqual([]);
+  });
+
+  it('warns, like status, when the served proxy.ssl.crt expires soon or is not for the domain', () => {
+    const soon = new Date(Date.UTC(2125, 11, 25));
+    expect(customCertWarnings('one', on({ 'example.com': cert('custom') }), CUSTOM, ['example.com'], soon)).toEqual([
+      '"one" serves a certificate for example.com that expires in 7 days (2126-01-01).',
+    ]);
+    expect(customCertWarnings('one', on({ 'a.test': cert('custom') }), CUSTOM, ['a.test'], now)).toEqual(['"one" serves a certificate that is not for a.test: CN=example.com.']);
   });
 
   it('names what is served instead, and how to fix it', () => {
