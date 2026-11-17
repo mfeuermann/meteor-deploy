@@ -2,11 +2,11 @@
 
 All notable changes to comet-deploy. The versions follow [semantic versioning](https://semver.org); before 1.0.0, a minor version can change behavior, and this file says how. Each version is on npm as [`comet-deploy`](https://www.npmjs.com/package/comet-deploy) and on GitHub as a release.
 
-## [Unreleased]
+## [0.6.1] - 2026-11-17
 
 ### Added
 
-- `deploy`, `meteor deploy` and `setup` start with a banner in a terminal: COMET in block letters, the version and the author. CI logs, pipes and files do not get it. The README shows it too.
+- `deploy`, `meteor deploy` and `setup` start with a banner in a terminal: COMET in block letters, the version and the author. CI logs, pipes and files do not get it, a terminal narrower than the banner gets one line instead, and `NO_COLOR` or `TERM=dumb` turn its colors off. The README shows it too.
 
 ## [0.6.0] - 2026-11-16
 
@@ -75,6 +75,7 @@ The first release: phase 1 and the reverse proxy.
 - Deploying from CI with a build cache that survives between runs (`--cache-from`, `--cache-to`). See [Deploying from CI](https://github.com/mfeuermann/meteor-deploy/blob/v0.1.0/docs/ci.md).
 - Secrets (`env` values, settings values, passwords) are masked in the output.
 
+[0.6.1]: https://github.com/mfeuermann/meteor-deploy/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mfeuermann/meteor-deploy/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mfeuermann/meteor-deploy/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mfeuermann/meteor-deploy/compare/v0.3.0...v0.4.0
