@@ -2,11 +2,13 @@
 
 All notable changes to comet-deploy. The versions follow [semantic versioning](https://semver.org); before 1.0.0, a minor version can change behavior, and this file says how. Each version is on npm as [`comet-deploy`](https://www.npmjs.com/package/comet-deploy) and on GitHub as a release.
 
-## [Unreleased]
+## [0.7.0] - 2026-11-17
+
+Certificates behind the proxy: what nginx serves for each domain, checked after a deploy, and the switch from Let's Encrypt to your own certificate that no longer loses it.
 
 ### Added
 
-- With `proxy.ssl`, `status` and `proxy status` show the certificate nginx actually serves for each domain of the app (`Served certificates`), asked on each proxy server: the issuer, the expiry date and the days left, or `proxy.ssl.crt` for your own certificate. They warn about a certificate that expires within 14 days or has expired, one that is not for the domain, one that is not your `proxy.ssl.crt`, and a domain without a certificate. See [Troubleshooting → The proxy serves another certificate](https://github.com/mfeuermann/meteor-deploy/blob/main/docs/troubleshooting.md#the-proxy-serves-another-certificate).
+- With `proxy.ssl`, `status` and `proxy status` show the certificate nginx actually serves for each domain of the app (`Served certificates`), asked on each proxy server: the issuer, the expiry date and the days left, or `proxy.ssl.crt` for your own certificate. They warn about a certificate that expires within 14 days or has expired, one that is not for the domain, one that is not your `proxy.ssl.crt`, and a domain without a certificate. See [Troubleshooting → The proxy serves another certificate](https://github.com/mfeuermann/meteor-deploy/blob/v0.7.0/docs/troubleshooting.md#the-proxy-serves-another-certificate).
 - With your own certificate, `deploy`, `reconfig` and `proxy setup` check at the end that every proxy server serves it, for up to 30 seconds, and warn when one does not. The exit code does not change.
 
 ### Fixed
@@ -86,6 +88,7 @@ The first release: phase 1 and the reverse proxy.
 - Deploying from CI with a build cache that survives between runs (`--cache-from`, `--cache-to`). See [Deploying from CI](https://github.com/mfeuermann/meteor-deploy/blob/v0.1.0/docs/ci.md).
 - Secrets (`env` values, settings values, passwords) are masked in the output.
 
+[0.7.0]: https://github.com/mfeuermann/meteor-deploy/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/mfeuermann/meteor-deploy/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mfeuermann/meteor-deploy/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mfeuermann/meteor-deploy/compare/v0.4.0...v0.5.0
