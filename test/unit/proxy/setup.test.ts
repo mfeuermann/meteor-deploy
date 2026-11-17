@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createContext, type CommandContext } from '../../../src/core/context.js';
 import { createReporter } from '../../../src/output/reporter.js';
-import { formatProxyStatus, proxyReconfigShared, proxySetup, proxyStart } from '../../../src/proxy/setup.js';
+import { showProxyStatus } from '../../../src/cli/commands/status.js';
+import { formatProxyStatus, parseProxyStatus, proxyReconfigShared, proxySetup, proxyStart } from '../../../src/proxy/setup.js';
 import { readNginxTmpl, renderNginxConfigSh, renderProxyStartSh, renderServiceConfigureSh } from '../../../src/proxy/render.js';
 import { desiredEntries, formatUpstream, parseUpstream } from '../../../src/proxy/upstream.js';
 import type { ExecOptions, ExecResult, SshConnection } from '../../../src/ssh/connection.js';
@@ -24,6 +25,7 @@ function label(s: string): string {
   if (s.includes('mup-proxy-configure-') && s.includes('NEW_CONTENT')) return 'service-configure.sh';
   if (s.includes('docker rm -f mup-proxy-configure-')) return 'remove-config-container';
   if (s.includes('docker-gen')) return 'regenerate';
+  if (s.includes('status for "proxy status"')) return 'proxy-status';
   if (s.includes('base64 -w0') && s.includes('/opt/mup-nginx-proxy/upstream/')) return 'read-upstream';
   if (s === 'sudo chown "$USER" /opt/mup-nginx-proxy -R') return 'take-proxy-dir';
   if (s.includes('echo "acquired"')) return 'lock';
@@ -35,6 +37,8 @@ interface World {
   /** Digest output per server, per call (the last one repeats). */
   digests?: Record<string, string[]>;
   upstream?: string;
+  /** The output of proxy-status.sh. */
+  status?: string;
 }
 
 async function setup(fixture: string, world: World = {}, argv: Record<string, unknown> = {}) {
@@ -57,6 +61,7 @@ async function setup(fixture: string, world: World = {}, argv: Record<string, un
         stdout = list[Math.min(i, list.length - 1)];
       } else if (l === 'lock') stdout = 'acquired\n';
       else if (l === 'read-upstream') stdout = world.upstream === undefined ? '-' : Buffer.from(world.upstream).toString('base64');
+      else if (l === 'proxy-status') stdout = world.status ?? '';
       return { code: 0, stdout, stderr: '' };
     };
     return {
@@ -260,8 +265,51 @@ describe('formatProxyStatus', () => {
     expect(text).toContain('Out of sync: vhost.d/a.com updated (run "comet-deploy proxy setup" to sync)');
   });
 
+  it('lists the served certificates after the certificates of MUP, before the drained servers', () => {
+    const row = {
+      server: 'one',
+      nginx: 'running',
+      letsEncrypt: 'running',
+      certificates: { 'a.com.chain.pem': 'Feb  1 12:00:00 2027 GMT' },
+      certLines: ["a.com: Let's Encrypt (R11), expires 2027-02-01 (76 days)", 'www.a.com: no certificate (TLS handshake failed)'],
+      certProblems: [],
+      downServers: ['two'],
+      outOfSync: [],
+    };
+    const lines = formatProxyStatus([row]).split('\n');
+    const at = lines.indexOf('   - Served certificates:');
+    expect(at).toBeGreaterThan(lines.indexOf('       - a.com.chain.pem: Feb  1 12:00:00 2027 GMT'));
+    expect(lines.slice(at + 1, at + 3)).toEqual(["     - a.com: Let's Encrypt (R11), expires 2027-02-01 (76 days)", '     - www.a.com: no certificate (TLS handshake failed)']);
+    expect(lines.findIndex((l) => l.startsWith('   - Drained:'))).toBeGreaterThan(at);
+    expect(formatProxyStatus([{ ...row, certLines: [] }])).not.toContain('Served certificates');
+  });
+
   it('points at deploy when load balancing still has to be turned on', () => {
     const row = { server: 'one', nginx: 'running', letsEncrypt: 'running', certificates: {}, downServers: [], outOfSync: ['load balancing enabled'] };
     expect(formatProxyStatus([row])).toContain('Out of sync: load balancing enabled (run "comet-deploy deploy" to sync)');
+  });
+});
+
+describe('the served certificates in proxy status', () => {
+  const pem = readFileSync(join(here, '../../fixtures/certs/le-leaf.pem'), 'utf8');
+  const b64 = Buffer.from(pem).toString('base64');
+  const status = ['nginx=running', 'le=running', 'https=443', `served.0=${b64}`, 'served.1=-', 'vhost.0=1', 'le.0=0'].join('\n');
+
+  it("leaves MUP's keys to parseProxyStatus", () => {
+    const row = parseProxyStatus('one', status, new Map());
+    expect(row.nginx).toBe('running');
+    expect(row.certificates).toEqual({});
+  });
+
+  it('prints a line per domain and a warning per problem', async () => {
+    const s = await setup('proxy-certs', { status });
+    await showProxyStatus(s.ctx);
+    const out = s.out();
+    expect(out).toContain('   - Served certificates:');
+    expect(out).toContain("     - certs.example.com: Let's Encrypt (R11), not for certs.example.com (CN=app.example.com), expires 2126-01-01");
+    expect(out).toContain('     - www.certs.example.com: no certificate (TLS handshake failed)');
+    expect(out).toContain('Warning: "one" serves a certificate that is not for certs.example.com: CN=app.example.com.');
+    expect(out).toContain('Warning: "one" serves no certificate for www.certs.example.com (TLS handshake failed).');
+    expect(s.scripts['proxy-status']).toContain('-servername');
   });
 });

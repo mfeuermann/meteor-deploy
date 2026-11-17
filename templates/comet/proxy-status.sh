@@ -1,6 +1,7 @@
 # The shared proxy's status for "proxy status", one key=value per line (parseProxyStatus in
 # src/proxy/setup.ts): container states, published ports, certificate expiry (MUP's check of
-# mounted-certs/*.chain.pem) and the app's upstream file (base64, "-" = missing).
+# mounted-certs/*.chain.pem), the app's upstream file (base64, "-" = missing) and what nginx serves
+# for each domain of the app (proxy-served.sh).
 APPNAME=<%- q(appName) %>
 state() {
   S=$(sudo docker inspect -f '{{.State.Status}}' "$1" 2>/dev/null)
@@ -19,3 +20,4 @@ if cd /opt/mup-nginx-proxy/mounted-certs 2>/dev/null; then
 fi
 U=/opt/mup-nginx-proxy/upstream/$APPNAME
 if sudo test -f "$U"; then echo "upstream=$(sudo base64 -w0 "$U")"; else echo "upstream=-"; fi
+<% include proxy-served.sh %>

@@ -236,6 +236,7 @@ export const overview = (y: import('yargs').Argv) =>
 export async function showProxyStatus(ctx: CommandContext): Promise<void> {
   const rows = await ctx.runner.run('proxy.status', () => proxyStatus(ctx));
   ctx.reporter.info(formatProxyStatus(rows));
+  for (const r of rows) for (const p of r.certProblems ?? []) ctx.reporter.warn(p);
 }
 
 /** `status [--overview]`, under MUP's `default.status` key. */

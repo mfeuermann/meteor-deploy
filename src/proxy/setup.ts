@@ -53,6 +53,8 @@ import {
   takeProxyDir,
   writeUpstreamFile,
 } from './sync.js';
+import { describeServed, localCertFingerprint } from './certs.js';
+import { parseServedOutput } from './served.js';
 import { desiredEntries, formatUpstream, parseUpstream } from './upstream.js';
 
 /** The lock functions the proxy commands use (tests replace them). */
@@ -271,6 +273,10 @@ export interface ProxyStatusRow {
   downServers: string[];
   /** The app's proxy files that differ from the config (`planProxySync`). */
   outOfSync: string[];
+  /** What nginx serves for each domain of the app (`describeServed`); absent when the server could not be read. */
+  certLines?: string[];
+  /** Warnings about the served certificates, printed after the block. */
+  certProblems?: string[];
 }
 
 /** Parses `proxy-status.sh`; `outOfSync` is filled in by the caller. */
@@ -298,10 +304,12 @@ export function parseProxyStatus(server: string, stdout: string, hostToServer: M
 }
 
 /** `proxy.status`: the state of the shared proxy on every proxy server. */
-export async function proxyStatus(ctx: CommandContext): Promise<ProxyStatusRow[]> {
+export async function proxyStatus(ctx: CommandContext, now = new Date()): Promise<ProxyStatusRow[]> {
   requireProxy(ctx);
   const c = ctx.config;
-  const script = await cometScript('proxy-status.sh', { appName: c.app.name });
+  const domains = proxyDomains(c);
+  const script = await cometScript('proxy-status.sh', { appName: c.app.name, domains });
+  const expected = localCertFingerprint(c, ctx.basePath);
   const names = Object.keys(c.app.servers ?? {});
   const hosts = loadBalancingHosts(c);
   const hostToServer = new Map(hosts.map((h, i) => [h, names[i]]));
@@ -311,7 +319,16 @@ export async function proxyStatus(ctx: CommandContext): Promise<ProxyStatusRow[]
       try {
         const conn = await ctx.ssh.get(s);
         // The exit code is not checked: whatever the script printed is parsed.
-        const row = parseProxyStatus(s, (await conn.runScript(script)).stdout, hostToServer);
+        const stdout = (await conn.runScript(script)).stdout;
+        const row = parseProxyStatus(s, stdout, hostToServer);
+        const served = parseServedOutput(stdout, domains);
+        row.certLines = [];
+        row.certProblems = [];
+        for (const d of domains) {
+          const x = describeServed(s, d, served.domains[d]!, { expected, now });
+          if (x.line) row.certLines.push(x.line);
+          row.certProblems.push(...x.problems);
+        }
         try {
           if (desired instanceof Error) throw desired;
           row.outOfSync = planProxySync(desired, await readProxyFileState(conn, c), proxyDomains(c)).changes;
@@ -342,6 +359,10 @@ export function formatProxyStatus(rows: ProxyStatusRow[]): string {
     if (certs.length) {
       lines.push('     - Certificates');
       for (const [name, date] of certs) lines.push(`       - ${name}: ${date}`);
+    }
+    if (r.certLines?.length) {
+      lines.push('   - Served certificates:');
+      for (const l of r.certLines) lines.push(`     - ${l}`);
     }
     if (r.downServers.length) {
       const one = r.downServers.length === 1;
