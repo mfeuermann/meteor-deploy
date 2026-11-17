@@ -28,6 +28,17 @@ echo "certlinks=$(
   done | base64 -w0
 )"
 
+# The app's domains whose mounted-certs/<domain>.crt is a link: the Let's Encrypt companion's
+# (ssl-setup.sh copies files there).
+echo "lelinks=$(
+  {
+    true
+<% domains.forEach(function (domain) { -%>
+    if sudo test -L /opt/$PROXYNAME/mounted-certs/<%- q(domain + '.crt') %>; then echo <%- q(domain) %>; fi
+<% }) -%>
+  } | base64 -w0
+)"
+
 echo "upstream=$(content /opt/$PROXYNAME/upstream/$APPNAME)"
 # Domains whose vhost.d/<domain>_upstream is upstream.sh's link to this app's upstream file.
 echo "upstreamlinks=$(

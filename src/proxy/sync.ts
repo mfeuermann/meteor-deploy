@@ -3,7 +3,8 @@
  * (proxy spec §4.2), without restarting the proxy containers:
  *
  * - `vhost.d/<domain>` and `<domain>_location` (MUP's `nginx-config.sh`),
- * - the custom certificate and its links and copies (`ssl-cleanup.sh`, upload, `ssl-setup.sh`),
+ * - the custom certificate and its links and copies (`ssl-cleanup.sh`, upload, `ssl-unlink.sh`,
+ *   `ssl-setup.sh`),
  * - with load balancing: `upstream/<app>`, the `vhost.d/<domain>_upstream` links and the config
  *   container `mup-proxy-configure-<app>` (`service-configure.sh`).
  *
@@ -40,8 +41,12 @@ export interface ProxyFileState {
   vhost: Record<string, string | null>;
   /** domain → hash of `vhost.d/<domain>_location`. */
   location: Record<string, string | null>;
-  /** Hashes of `/opt/<app>/config/bundle.crt` and `private.key`, and the domains whose `certs/<domain>.crt` links to it. */
-  cert: { crt: string | null; key: string | null; linkedDomains: string[] };
+  /**
+   * Hashes of `/opt/<app>/config/bundle.crt` and `private.key`, the domains whose
+   * `certs/<domain>.crt` links to it, and the app's domains whose `mounted-certs/<domain>.crt` is
+   * a link (the Let's Encrypt companion's; MUP copies files there).
+   */
+  cert: { crt: string | null; key: string | null; linkedDomains: string[]; leLinked: string[] };
   /** Content of `upstream/<app>`. */
   upstream: string | null;
   /** Domains whose `vhost.d/<domain>_upstream` links to `../upstream/<app>`. */
@@ -71,12 +76,13 @@ export type LbTransition = 'none' | 'enable' | 'disable' | 'keep';
 /**
  * - `vhost`: `nginx-config.sh`; `certs`: cleanup, upload, links; `lb-remove`: upstream file,
  *   links and the config container go.
- * - `lb-enable`: the upstream file in MUP's form and the links; `lb-links`: only the links
- *   (the domains changed, the content is the upstream controller's); `service`: the config
- *   container (`service-configure.sh`).
+ * - `certs` after the activation: the same again on the switch from Let's Encrypt, once the old
+ *   container that asked the companion for the domains is gone; `lb-enable`: the upstream file
+ *   in MUP's form and the links; `lb-links`: only the links (the domains changed, the content is
+ *   the upstream controller's); `service`: the config container (`service-configure.sh`).
  */
 export type BeforeStep = 'vhost' | 'certs' | 'lb-remove';
-export type AfterStep = 'lb-enable' | 'lb-links' | 'service';
+export type AfterStep = 'certs' | 'lb-enable' | 'lb-links' | 'service';
 
 export interface ProxySyncPlan {
   before: BeforeStep[];
@@ -157,7 +163,7 @@ export function parseProxyState(stdout: string, domains: string[]): ProxyFileSta
   return {
     vhost: perDomain('vhost'),
     location: perDomain('location'),
-    cert: { crt: hash('crt'), key: hash('key'), linkedDomains: list('certlinks') },
+    cert: { crt: hash('crt'), key: hash('key'), linkedDomains: list('certlinks'), leLinked: list('lelinks') },
     upstream: text('upstream'),
     upstreamLinks: list('upstreamlinks'),
     serviceScript: text('service'),
@@ -223,6 +229,14 @@ export function planProxySync(desired: DesiredProxyFiles, current: ProxyFileStat
     before.push('certs');
     regenerate.before = true;
     changes.push('custom certificate removed');
+  }
+  // On the switch from Let's Encrypt the old container still asks the companion for the domains
+  // while the new one starts, and the companion may link them again (spec §4.4): set the custom
+  // certificate once more after the activation.
+  if (desired.certs && cert.leLinked.some((d) => domains.includes(d))) {
+    after.push('certs');
+    regenerate.after = true;
+    changes.push("custom certificate set again after Let's Encrypt");
   }
 
   const linked = current.upstreamLinks.length > 0;
@@ -296,7 +310,11 @@ export async function takeProxyDir(conn: SshConnection, out?: ExecOptions): Prom
   if (r.code !== 0) throw new CometError(`[${conn.name}] Handing ${PROXY_DIR} to the SSH user failed (exit code ${r.code}): ${r.stderr.trim()}`);
 }
 
-/** MUP setup's certificate steps: cleanup, then (with a custom certificate) upload and links. */
+/**
+ * MUP setup's certificate steps: cleanup, then (with a custom certificate) upload and links.
+ * Before `ssl-setup.sh` copies into `mounted-certs`, `ssl-unlink.sh` takes out the Let's
+ * Encrypt companion's links there, so the copy is a file of its own (spec §4.4).
+ */
 export async function syncCerts(conn: SshConnection, c: NormalizedConfig, basePath: string, out?: ExecOptions): Promise<void> {
   await conn.runScriptOrThrow(await renderSslCleanupSh(c), 'Cleaning Up SSL Certificates', out);
   const files = customCertFiles(c, basePath);
@@ -305,6 +323,7 @@ export async function syncCerts(conn: SshConnection, c: NormalizedConfig, basePa
   await conn.writeFile(`${dir}/bundle.crt`, readConfigFile('proxy.ssl.crt', files.crt));
   // Over SFTP, so the key never appears in a command or a script.
   await conn.writeFile(`${dir}/private.key`, readConfigFile('proxy.ssl.key', files.key), 0o600);
+  await conn.runScriptOrThrow(await cometScript('ssl-unlink.sh', { proxyName: PROXY_NAME, domains: proxyDomains(c) }), "Removing the Let's Encrypt links", out);
   await conn.runScriptOrThrow(await renderSslSetupSh(c), 'Setup SSL Certificates for Domains', out);
 }
 

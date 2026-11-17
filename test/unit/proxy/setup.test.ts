@@ -22,6 +22,7 @@ function label(s: string): string {
   if (s.includes('CONFIG_EOT') && s.includes('cd /opt/mup-nginx-proxy/config/vhost.d')) return 'nginx-config.sh';
   if (s.includes('Remove broken cert symlinks')) return 'ssl-cleanup.sh';
   if (s.includes('ln -s $APP_CERTS/bundle.crt')) return 'ssl-setup.sh';
+  if (s.includes('# ssl-unlink.sh:')) return 'ssl-unlink.sh';
   if (s.includes('UPSTREAM=/opt/$PROXYNAME/upstream/$APPNAME')) return 'upstream';
   if (s.includes('sudo bash config/start.sh')) return 'proxy-start.sh';
   if (s.includes('mup-proxy-configure-') && s.includes('NEW_CONTENT')) return 'service-configure.sh';
@@ -108,6 +109,7 @@ describe('proxySetup', () => {
       'ssl-cleanup.sh',
       'write /opt/certs-app/config/bundle.crt',
       'write /opt/certs-app/config/private.key',
+      'ssl-unlink.sh',
       'ssl-setup.sh',
       'upstream',
       'remove-config-container',

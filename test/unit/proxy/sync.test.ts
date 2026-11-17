@@ -40,7 +40,7 @@ function matching(desired: DesiredProxyFiles, domains: string[]): ProxyFileState
   return {
     vhost: each(sha(desired.vhost.server)),
     location: each(desired.vhost.location === null ? null : sha(desired.vhost.location)),
-    cert: desired.certs ? { crt: desired.certs.crt, key: desired.certs.key, linkedDomains: [...domains] } : { crt: null, key: null, linkedDomains: [] },
+    cert: desired.certs ? { crt: desired.certs.crt, key: desired.certs.key, linkedDomains: [...domains], leLinked: [] } : { crt: null, key: null, linkedDomains: [], leLinked: [] },
     upstream: desired.lb ? 'ip_hash;\n' : null,
     upstreamLinks: desired.lb ? [...domains] : [],
     serviceScript: desired.serviceScript,
@@ -122,6 +122,22 @@ describe('planProxySync', () => {
     const plan = planProxySync(desired, current, DOMAINS);
     expect(plan.before).toEqual(['certs']);
     expect(plan.regenerate.before).toBe(true);
+  });
+
+  it("sets the custom certificate again after the activation when the Let's Encrypt companion linked a domain", () => {
+    const desired: DesiredProxyFiles = { ...DESIRED, certs: { crt: sha('crt'), key: sha('key') } };
+    const switching = { ...matching(DESIRED, DOMAINS) };
+    switching.cert = { crt: null, key: null, linkedDomains: [], leLinked: [DOMAINS[0]!] };
+    const plan = planProxySync(desired, switching, DOMAINS);
+    expect(plan.before).toEqual(['certs']);
+    expect(plan.after[0]).toBe('certs');
+    expect(plan.regenerate.after).toBe(true);
+    expect(plan.changes).toContain("custom certificate set again after Let's Encrypt");
+    expect(planProxySync(desired, { ...switching, cert: { ...switching.cert, leLinked: [] } }, DOMAINS).after).not.toContain('certs');
+    expect(planProxySync(DESIRED, matching(DESIRED, DOMAINS), DOMAINS).after).not.toContain('certs');
+    const le = matching(DESIRED, DOMAINS);
+    le.cert = { ...le.cert, leLinked: [...DOMAINS] };
+    expect(planProxySync(DESIRED, le, DOMAINS)).toMatchObject({ before: [], after: [] });
   });
 
   it('removes the certificates of a config that no longer has ssl.crt', () => {
@@ -222,6 +238,7 @@ describe('readProxyFileState', () => {
       `crt=${sha('crt')}`,
       'key=-',
       `certlinks=${b64(`${d0}\n`)}`,
+      `lelinks=${b64(`${d1}\n`)}`,
       `upstream=${b64('\nip_hash;\n\nserver 10.0.0.1:4000;\n\n')}`,
       `upstreamlinks=${b64(`${d0}\n${d1}\n`)}`,
       'service=-',
@@ -233,7 +250,7 @@ describe('readProxyFileState', () => {
     expect(s).toEqual({
       vhost: { [d0]: sha('v0'), [d1]: null },
       location: { [d0]: sha('l0'), [d1]: null },
-      cert: { crt: sha('crt'), key: null, linkedDomains: [d0] },
+      cert: { crt: sha('crt'), key: null, linkedDomains: [d0], leLinked: [d1] },
       upstream: '\nip_hash;\n\nserver 10.0.0.1:4000;\n\n',
       upstreamLinks: [d0, d1],
       serviceScript: null,
@@ -249,7 +266,7 @@ describe('applyProxySync', () => {
   it('uploads the certificate and key over SFTP, the key with mode 0600 and never in a command', async () => {
     const { c, dir } = load('proxy-certs');
     const { conn, calls } = fakeConn();
-    const plan = planProxySync(await desiredProxyFiles(c, dir), { ...matching(DESIRED, proxyDomains(c)), cert: { crt: null, key: null, linkedDomains: [] } }, proxyDomains(c));
+    const plan = planProxySync(await desiredProxyFiles(c, dir), { ...matching(DESIRED, proxyDomains(c)), cert: { crt: null, key: null, linkedDomains: [], leLinked: [] } }, proxyDomains(c));
     expect(plan.before).toContain('certs');
     await applyProxySync(conn, c, dir, plan, 'before');
 
@@ -268,12 +285,26 @@ describe('applyProxySync', () => {
     expect(scripts.at(-1)).toContain('docker-gen');
   });
 
+  it("removes the Let's Encrypt links of the app's domains in mounted-certs after the upload, before ssl-setup.sh copies", async () => {
+    const { c, dir } = load('proxy-certs');
+    const { conn, calls } = fakeConn();
+    const plan = planProxySync(await desiredProxyFiles(c, dir), { ...matching(DESIRED, proxyDomains(c)), cert: { crt: null, key: null, linkedDomains: [], leLinked: [] } }, proxyDomains(c));
+    await applyProxySync(conn, c, dir, plan, 'before');
+    const order = calls.map((x) => (x.kind === 'write' ? `write ${x.text}` : x.text.includes('# ssl-unlink.sh') ? 'unlink' : x.text.includes('ln -s $APP_CERTS/bundle.crt') ? 'ssl-setup' : null)).filter(Boolean);
+    expect(order).toEqual(['write /opt/certs-app/config/bundle.crt', 'write /opt/certs-app/config/private.key', 'unlink', 'ssl-setup']);
+    const unlink = calls.find((x) => x.text.includes('# ssl-unlink.sh'))!.text;
+    for (const d of proxyDomains(c)) for (const ext of ['crt', 'key', 'chain.pem', 'dhparam.pem']) expect(unlink).toContain(`/opt/mup-nginx-proxy/mounted-certs/${d}.${ext}`);
+    // Only links are removed: the one rm is guarded by test -L.
+    expect(unlink.match(/\brm\b/g)).toHaveLength(1);
+    expect(unlink).toContain('if sudo test -L "$f"; then sudo rm -f "$f"; fi');
+  });
+
   it('hands the proxy directory to the SSH user before it writes there, as MUP setup does', async () => {
     // start.sh (run with sudo) and the Let's Encrypt companion create root-owned files there; a
     // non-root SSH user could not replace them (ssl-setup.sh copies certificates without sudo).
     const { c, dir } = load('proxy-certs');
     const { conn, calls } = fakeConn();
-    const plan = planProxySync(await desiredProxyFiles(c, dir), { ...matching(DESIRED, proxyDomains(c)), cert: { crt: null, key: null, linkedDomains: [] } }, proxyDomains(c));
+    const plan = planProxySync(await desiredProxyFiles(c, dir), { ...matching(DESIRED, proxyDomains(c)), cert: { crt: null, key: null, linkedDomains: [], leLinked: [] } }, proxyDomains(c));
     await applyProxySync(conn, c, dir, plan, 'before');
     expect(calls[0]).toMatchObject({ kind: 'exec', text: 'sudo chown "$USER" /opt/mup-nginx-proxy -R' });
   });

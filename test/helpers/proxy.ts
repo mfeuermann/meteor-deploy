@@ -24,7 +24,7 @@ export async function inSyncState(ctx: CommandContext, o: { lb?: 'keep' | 'off';
   return {
     vhost: Object.fromEntries(domains.map((d) => [d, sha(want.vhost.server)])),
     location: Object.fromEntries(domains.map((d) => [d, want.vhost.location === null ? null : sha(want.vhost.location)])),
-    cert: { crt: null, key: null, linkedDomains: [] },
+    cert: { crt: null, key: null, linkedDomains: [], leLinked: [] },
     upstream: keep ? (o.upstream ?? formatUpstream(c, desiredEntries(c))) : null,
     upstreamLinks: keep ? domains : [],
     serviceScript: keep ? want.serviceScript : null,
