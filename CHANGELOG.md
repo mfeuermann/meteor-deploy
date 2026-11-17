@@ -2,6 +2,13 @@
 
 All notable changes to comet-deploy. The versions follow [semantic versioning](https://semver.org); before 1.0.0, a minor version can change behavior, and this file says how. Each version is on npm as [`comet-deploy`](https://www.npmjs.com/package/comet-deploy) and on GitHub as a release.
 
+## [Unreleased]
+
+### Added
+
+- `status` and `proxy status` show the certificate nginx actually serves for each domain of the app (`Served certificates`), asked on each proxy server: the issuer, the expiry date and the days left, or `proxy.ssl.crt` for your own certificate. They warn about a certificate that expires within 14 days or has expired, one that is not for the domain, one that is not your `proxy.ssl.crt`, and a domain without a certificate. See [Troubleshooting → The proxy serves another certificate](https://github.com/mfeuermann/meteor-deploy/blob/main/docs/troubleshooting.md#the-proxy-serves-another-certificate).
+- With your own certificate, `deploy`, `reconfig` and `proxy setup` check at the end that every proxy server serves it, for up to 30 seconds, and warn when one does not. The exit code does not change.
+
 ## [0.6.1] - 2026-11-17
 
 ### Added

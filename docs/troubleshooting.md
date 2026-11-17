@@ -987,10 +987,46 @@ With `proxy.loadBalancing`, `deploy`, `reconfig`, `restart` and `rollback` lock 
 
 If the server stays down for a while, take it out of the config: remove it from `app.servers` (and from `proxy.servers`, if it is listed there) and run `comet-deploy deploy`. The deploy removes it from the upstream on the other proxy servers, so nginx stops sending requests there. When the server is back, add it to the config again and deploy: it joins the upstream once it is healthy.
 
+### The proxy serves another certificate
+
+```
+Warning: "one" serves another certificate for app.example.com than proxy.ssl.crt: Let's Encrypt (R11), expires 2027-02-01. Run "comet-deploy proxy setup"; "comet-deploy proxy status" shows what each proxy serves.
+```
+
+`deploy`, `reconfig` and `proxy setup` check after their last step that nginx serves your `proxy.ssl.crt` for every domain. The app runs; only the certificate is not the one in the config. `comet-deploy proxy setup` uploads the certificate again and regenerates the nginx config. `comet-deploy proxy status` then shows under `Served certificates` what each proxy server serves.
+
+```
+Warning: "one": the running app still asks Let's Encrypt for app.example.com. Run "comet-deploy reconfig" to switch it to proxy.ssl.crt.
+```
+
+You switched from Let's Encrypt to your own certificate and ran `proxy setup`, but the app container on that server still has `LETSENCRYPT_HOST`, and the Let's Encrypt companion would put its own certificate back. `comet-deploy reconfig` (or `deploy`) replaces the container; its check then confirms the certificate.
+
+```
+Warning: "one" serves a certificate that is not for app.example.com: CN=letsencrypt-nginx-proxy-companion.
+```
+
+nginx has no certificate for the domain and serves the companion's self-signed default instead. With Let's Encrypt, see [No Let's Encrypt certificate](#no-lets-encrypt-certificate); with your own certificate, run `comet-deploy proxy setup`.
+
+### A certificate expires soon
+
+```
+Warning: "one" serves a certificate for app.example.com that expires in 9 days (2026-11-26).
+```
+
+`status` and `proxy status` warn from 14 days before the expiry. The Let's Encrypt companion renews 30 days before, so with Let's Encrypt this means the renewal has failed for over two weeks: `comet-deploy proxy logs-le --tail 100` shows why (usually DNS or port 80, see below). Your own certificate has to be replaced in `proxy.ssl.crt` and uploaded with `comet-deploy deploy` or `proxy setup`.
+
+### openssl is not installed on the proxy server
+
+```
+Warning: Could not check the certificate "one" serves: openssl is not installed on the server.
+```
+
+The certificate checks ask nginx with `openssl s_client` on the proxy server, as MUP's `proxy status` uses `openssl` for the expiry dates. Install it (`sudo apt-get install openssl`). Nothing else depends on it, and the deploy itself is not affected.
+
 ### No Let's Encrypt certificate
 
 The companion `mup-nginx-proxy-letsencrypt` gets the certificates, as with MUP. It needs every domain in `proxy.domains` to point at the proxy server, and port 80 to be reachable from the internet.
 
 - `comet-deploy proxy logs-le --tail 100` shows what it tried.
-- `comet-deploy proxy status` lists the certificates and their expiry dates.
+- `comet-deploy proxy status` lists the certificates and their expiry dates, and under `Served certificates` what nginx actually serves for each domain.
 - After a change of `proxy.domains`, run `comet-deploy deploy`: the app's container gets the new `LETSENCRYPT_HOST`.
