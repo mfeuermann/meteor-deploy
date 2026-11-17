@@ -76,10 +76,10 @@ export type LbTransition = 'none' | 'enable' | 'disable' | 'keep';
 /**
  * - `vhost`: `nginx-config.sh`; `certs`: cleanup, upload, links; `lb-remove`: upstream file,
  *   links and the config container go.
- * - `certs` after the activation: the same again on the switch from Let's Encrypt, once the old
- *   container that asked the companion for the domains is gone; `lb-enable`: the upstream file
- *   in MUP's form and the links; `lb-links`: only the links (the domains changed, the content is
- *   the upstream controller's); `service`: the config container (`service-configure.sh`).
+ * - `lb-enable`: the upstream file in MUP's form and the links; `lb-links`: only the links
+ *   (the domains changed, the content is the upstream controller's); `service`: the config
+ *   container (`service-configure.sh`); `certs`, last: the same as before the activation again,
+ *   on the switch from Let's Encrypt, once no container asks the companion for the domains.
  */
 export type BeforeStep = 'vhost' | 'certs' | 'lb-remove';
 export type AfterStep = 'certs' | 'lb-enable' | 'lb-links' | 'service';
@@ -219,24 +219,21 @@ export function planProxySync(desired: DesiredProxyFiles, current: ProxyFileStat
   }
 
   const cert = current.cert;
+  // The Let's Encrypt companion's links in mounted-certs: ssl-setup.sh would copy through them,
+  // and the companion deletes them once no container asks it for the domain (spec §4.4).
+  const leLinked = desired.certs !== null && cert.leLinked.some((d) => domains.includes(d));
   if (desired.certs) {
-    if (cert.crt !== desired.certs.crt || cert.key !== desired.certs.key || !sameSet(cert.linkedDomains, domains)) {
+    const differs = cert.crt !== desired.certs.crt || cert.key !== desired.certs.key || !sameSet(cert.linkedDomains, domains);
+    if (differs || leLinked) {
       before.push('certs');
       regenerate.before = true;
-      changes.push(cert.crt === null ? 'custom certificate uploaded' : 'custom certificate updated');
     }
+    if (differs) changes.push(cert.crt === null ? 'custom certificate uploaded' : 'custom certificate updated');
+    if (leLinked) changes.push("Let's Encrypt links in mounted-certs replaced");
   } else if (cert.crt !== null || cert.key !== null || cert.linkedDomains.length > 0) {
     before.push('certs');
     regenerate.before = true;
     changes.push('custom certificate removed');
-  }
-  // On the switch from Let's Encrypt the old container still asks the companion for the domains
-  // while the new one starts, and the companion may link them again (spec §4.4): set the custom
-  // certificate once more after the activation.
-  if (desired.certs && cert.leLinked.some((d) => domains.includes(d))) {
-    after.push('certs');
-    regenerate.after = true;
-    changes.push("custom certificate set again after Let's Encrypt");
   }
 
   const linked = current.upstreamLinks.length > 0;
@@ -261,6 +258,13 @@ export function planProxySync(desired: DesiredProxyFiles, current: ProxyFileStat
       regenerate.after = true;
       changes.push(current.serviceScript !== desired.serviceScript ? 'load balancing config container updated' : 'load balancing config container started');
     }
+  }
+  // During the switch the old app container (and with load balancing the config container, until
+  // `service` replaces it) still asks the companion for the domains, so it may link them again:
+  // the certificate step once more, after everything else (spec §4.4).
+  if (leLinked) {
+    after.push('certs');
+    regenerate.after = true;
   }
   return { before, after, regenerate, lbTransition, changes };
 }

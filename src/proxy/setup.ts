@@ -350,7 +350,9 @@ export function parseProxyStatus(server: string, stdout: string, hostToServer: M
 export async function proxyStatus(ctx: CommandContext, now = new Date()): Promise<ProxyStatusRow[]> {
   requireProxy(ctx);
   const c = ctx.config;
-  const domains = proxyDomains(c);
+  // Without proxy.ssl the app has no certificate: nginx serves only the companion's default for
+  // its domains on 443, so there is nothing to show or check.
+  const domains = c.proxy?.ssl ? proxyDomains(c) : [];
   const script = await cometScript('proxy-status.sh', { appName: c.app.name, domains });
   const expected = localCertFingerprint(c, ctx.basePath);
   const names = Object.keys(c.app.servers ?? {});

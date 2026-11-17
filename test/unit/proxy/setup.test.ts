@@ -321,6 +321,15 @@ describe('the served certificates in proxy status', () => {
     expect(out).toContain('Warning: "one" serves no certificate for www.certs.example.com (TLS handshake failed).');
     expect(s.scripts['proxy-status']).toContain('-servername');
   });
+
+  it('shows nothing and asks nothing for an app without proxy.ssl: nginx serves only the default there', async () => {
+    const companion = Buffer.from(readFileSync(join(here, '../../fixtures/certs/companion-default.pem'), 'utf8')).toString('base64');
+    const s = await setup('proxy-off-extra', { status: ['nginx=running', 'le=running', 'https=443', `served.0=${companion}`, 'vhost.0=1', 'le.0=0'].join('\n') });
+    await showProxyStatus(s.ctx);
+    expect(s.out()).not.toContain('Served certificates');
+    expect(s.out()).not.toContain('Warning:');
+    expect(s.scripts['proxy-status']).not.toContain('-servername');
+  });
 });
 
 describe('the certificate check of proxy setup', () => {

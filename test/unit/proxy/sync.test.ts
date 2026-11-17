@@ -124,15 +124,23 @@ describe('planProxySync', () => {
     expect(plan.regenerate.before).toBe(true);
   });
 
-  it("sets the custom certificate again after the activation when the Let's Encrypt companion linked a domain", () => {
+  it("replaces the Let's Encrypt companion's links before and after the activation when it linked a domain", () => {
     const desired: DesiredProxyFiles = { ...DESIRED, certs: { crt: sha('crt'), key: sha('key') } };
     const switching = { ...matching(DESIRED, DOMAINS) };
     switching.cert = { crt: null, key: null, linkedDomains: [], leLinked: [DOMAINS[0]!] };
     const plan = planProxySync(desired, switching, DOMAINS);
-    expect(plan.before).toEqual(['certs']);
-    expect(plan.after[0]).toBe('certs');
-    expect(plan.regenerate.after).toBe(true);
-    expect(plan.changes).toContain("custom certificate set again after Let's Encrypt");
+    expect(plan).toMatchObject({ before: ['certs'], after: ['certs'], regenerate: { before: true, after: true } });
+    expect(plan.changes).toEqual(['custom certificate uploaded', "Let's Encrypt links in mounted-certs replaced"]);
+    // The certificate is uploaded already, but the companion linked the domain again.
+    const relinked = matching(desired, DOMAINS);
+    relinked.cert = { ...relinked.cert, leLinked: [DOMAINS[0]!] };
+    expect(planProxySync(desired, relinked, DOMAINS)).toMatchObject({ before: ['certs'], after: ['certs'], regenerate: { before: true, after: true } });
+    // With load balancing, after the config container: it asks Let's Encrypt until `service` replaces it.
+    const lb: DesiredProxyFiles = { ...desired, lb: true, serviceScript: 'new script' };
+    const lbState = matching({ ...lb, serviceScript: 'old script' }, DOMAINS);
+    lbState.cert = { ...lbState.cert, leLinked: [DOMAINS[0]!] };
+    expect(planProxySync(lb, lbState, DOMAINS).after).toEqual(['service', 'certs']);
+
     expect(planProxySync(desired, { ...switching, cert: { ...switching.cert, leLinked: [] } }, DOMAINS).after).not.toContain('certs');
     expect(planProxySync(DESIRED, matching(DESIRED, DOMAINS), DOMAINS).after).not.toContain('certs');
     const le = matching(DESIRED, DOMAINS);
