@@ -6,12 +6,12 @@
  * its replacement, the certificates `proxy status` and `deploy` see nginx serve, Docker 29, and a
  * second app on the same proxy.
  */
-import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startFakeServers, type FakeDockerVersion, type FakeServer } from '../harness/fake-servers.js';
 import { pebbleEnv, startPebble } from '../harness/pebble.js';
+import { certTools, fileFingerprint } from './certs.js';
 import { APP_NAME, cli, curlVia, requestLoop, sampleProject, waitFor, writeTestConfig } from './helpers.js';
 
 const DOMAIN = 'app.test';
@@ -30,57 +30,8 @@ const leProxy = (extra: Record<string, unknown> = {}) => ({
 
 const proxyStartedAt = async (s: FakeServer) => (await s.exec(`docker inspect -f '{{.State.StartedAt}}' ${PROXY}`)).stdout.trim();
 const nginxConf = async (s: FakeServer) => (await s.exec(`docker exec ${PROXY} cat /etc/nginx/conf.d/default.conf`)).stdout;
+const { selfSigned, makeCert, servedFingerprint, certDiagnostics, expectServed, expectStaysServed } = certTools(DOMAIN);
 const appAnswers = (s: FakeServer, host = DOMAIN) => waitFor(async () => (await curlVia(s, host, '/native')) === '60', 120_000, 1000);
-
-/** The SHA-256 fingerprint of a PEM certificate, as upper-case hex without separators. */
-function fingerprint(pemOrOpensslOutput: string): string {
-  const m = /Fingerprint=([0-9A-Fa-f:]+)/.exec(pemOrOpensslOutput);
-  return (m?.[1] ?? '').replace(/:/g, '').toUpperCase();
-}
-
-/** The arguments of `openssl req` for a self-signed certificate for DOMAIN (with `cn` as its CN), valid for a year: no expiry warning. */
-const selfSigned = (cn: string, key: string, crt: string) => ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '365', '-subj', `/CN=${cn}`, '-addext', `subjectAltName=DNS:${DOMAIN}`, '-keyout', key, '-out', crt];
-
-/** The fingerprint of a local PEM certificate file. */
-const fileFingerprint = (path: string) => fingerprint(execFileSync('openssl', ['x509', '-noout', '-fingerprint', '-sha256', '-in', path], { encoding: 'utf8' }));
-
-/** A self-signed certificate for DOMAIN written to `<dir>/bundle.crt` and `<dir>/private.key`; returns its fingerprint. */
-function makeCert(dir: string, cn: string): string {
-  execFileSync('openssl', selfSigned(cn, join(dir, 'private.key'), join(dir, 'bundle.crt')), { stdio: 'ignore' });
-  return fileFingerprint(join(dir, 'bundle.crt'));
-}
-
-/** The fingerprint of the certificate nginx serves for DOMAIN on port 443 of the fake server. */
-async function servedFingerprint(s: FakeServer): Promise<string> {
-  const r = await s.exec(`echo | openssl s_client -connect localhost:443 -servername ${DOMAIN} 2>/dev/null | openssl x509 -noout -fingerprint -sha256`);
-  return fingerprint(r.stdout);
-}
-
-/** What the fake server shows about the certificates: what nginx serves, the files, the companion log. */
-async function certDiagnostics(s: FakeServer): Promise<string> {
-  const served = await s.exec(
-    `echo | openssl s_client -connect localhost:443 -servername ${DOMAIN} 2>/dev/null | openssl x509 -noout -subject -issuer -fingerprint -sha256 2>/dev/null || echo 'no certificate'`,
-  );
-  const files = await s.exec(`sudo ls -l /opt/${PROXY}/certs /opt/${PROXY}/mounted-certs 2>&1`);
-  const log = await s.exec(`docker logs --tail 40 ${PROXY}-letsencrypt 2>&1`);
-  return [`served: ${served.stdout.trim() || 'no certificate'}`, `files:\n${files.stdout.trim()}`, `companion log:\n${log.stdout.trim()}`].join('\n\n');
-}
-
-/** Waits until nginx serves the certificate with `fp` for DOMAIN; fails with what it served instead. */
-async function expectServed(s: FakeServer, fp: string, timeoutMs = 30_000): Promise<void> {
-  if (await waitFor(async () => (await servedFingerprint(s)) === fp, timeoutMs, 1000)) return;
-  expect.fail(`the proxy does not serve the certificate ${fp} for ${DOMAIN}\n\n${await certDiagnostics(s)}`);
-}
-
-/** Checks for `forMs` that nginx keeps serving the certificate with `fp`; fails at the first other one. */
-async function expectStaysServed(s: FakeServer, fp: string, forMs: number): Promise<void> {
-  const end = Date.now() + forMs;
-  while (Date.now() < end) {
-    const now = await servedFingerprint(s);
-    if (now !== fp) expect.fail(`after ${Math.round((forMs - (end - Date.now())) / 1000)} s the proxy serves ${now || 'no certificate'} instead of ${fp} for ${DOMAIN}\n\n${await certDiagnostics(s)}`);
-    await new Promise((r) => setTimeout(r, 3000));
-  }
-}
 
 /**
  * Runs `args` while requests go through the proxy; returns the CLI result, the request counts and

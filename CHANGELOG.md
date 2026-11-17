@@ -2,6 +2,14 @@
 
 All notable changes to comet-deploy. The versions follow [semantic versioning](https://semver.org); before 1.0.0, a minor version can change behavior, and this file says how. Each version is on npm as [`comet-deploy`](https://www.npmjs.com/package/comet-deploy) and on GitHub as a release.
 
+## [Unreleased]
+
+### Changed
+
+- The certificate check after `deploy`, `reconfig` and `proxy setup` also warns, like `status`, when your `proxy.ssl.crt` expires within 14 days, has expired or is not for a domain of the app. Before, it only compared the certificate with the one nginx serves.
+- The check prints `[<server>] waiting up to 30 s until nginx serves proxy.ssl.crt` while it waits, instead of a silent pause before the summary.
+- A deploy that was aborted, or that ended healthy on no server, skips the check, so Ctrl+C no longer waits up to 30 s and a reverted deploy gets no advice about a certificate it did not change.
+
 ## [0.7.0] - 2026-11-17
 
 Certificates behind the proxy: what nginx serves for each domain, checked after a deploy, and the switch from Let's Encrypt to your own certificate that no longer loses it.

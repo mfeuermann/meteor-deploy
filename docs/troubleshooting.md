@@ -1013,7 +1013,7 @@ nginx has no certificate for the domain and serves the companion's self-signed d
 Warning: "one" serves a certificate for app.example.com that expires in 9 days (2026-11-26).
 ```
 
-`status` and `proxy status` warn from 14 days before the expiry. The Let's Encrypt companion renews 30 days before, so with Let's Encrypt this means the renewal has failed for over two weeks: `comet-deploy proxy logs-le --tail 100` shows why (usually DNS or port 80, see below). Your own certificate has to be replaced in `proxy.ssl.crt` and uploaded with `comet-deploy deploy` or `proxy setup`.
+`status` and `proxy status` warn from 14 days before the expiry, and so do `deploy`, `reconfig` and `proxy setup` with your own certificate. The Let's Encrypt companion renews 30 days before, so with Let's Encrypt this means the renewal has failed for over two weeks: `comet-deploy proxy logs-le --tail 100` shows why (usually DNS or port 80, see below). Your own certificate has to be replaced in `proxy.ssl.crt` and uploaded with `comet-deploy deploy` or `proxy setup`.
 
 ### openssl is not installed on the proxy server
 

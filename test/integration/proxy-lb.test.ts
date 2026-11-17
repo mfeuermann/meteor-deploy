@@ -2,7 +2,8 @@
  * Load balancing behind MUP's proxy on two fake servers (proxy plan Task 8, spec §4.4): the
  * upstream as MUP writes it, draining without a failed request, an interrupted deploy that
  * leaves its server drained until `restart`, no drain with the parallel strategy, a PORT
- * change, turning load balancing off and on, and two deploys that meet at the lock.
+ * change, turning load balancing off and on, two deploys that meet at the lock, and the switch
+ * from Let's Encrypt to a custom certificate on both proxies.
  *
  * `privateIp` is each fake server's container IP, so the proxies reach both apps over the
  * local Docker network, as they would over a private network.
@@ -13,7 +14,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config/load.js';
 import { normalizeConfig } from '../../src/config/normalize.js';
 import { startFakeServers, type FakeServer } from '../harness/fake-servers.js';
+import { pebbleEnv, startPebble } from '../harness/pebble.js';
 import { mupUpstreamFile } from '../oracle/mup-oracle.js';
+import { certTools } from './certs.js';
 import { APP_NAME, cli, curlVia, requestLoop, sampleProject, waitFor, writeTestConfig } from './helpers.js';
 
 const DOMAIN = 'lb.test';
@@ -154,4 +157,30 @@ describe('proxy load balancing on two servers', () => {
     const loser = a.code === 1 ? a : b;
     expect(loser.output).toMatch(/locked by|lock is held by/);
   });
+
+  it("8. the switch from Let's Encrypt to proxy.ssl.crt keeps the certificate on both proxies", async () => {
+    const { makeCert, servedIssuer, certDiagnostics, expectServed, expectStaysServed } = certTools(DOMAIN);
+    const lb = { domains: DOMAIN, loadBalancing: true, stickySessions: false, shared: { envLetsEncrypt: pebbleEnv() } };
+    writeTestConfig(p.deployDir, servers, { privateIp: true, proxy: { ...lb, ssl: { letsEncryptEmail: `admin@${DOMAIN}` } } });
+    // MUP's setup does not apply proxy.shared; reconfig-shared does (and restarts the proxies).
+    const shared = await cli(['proxy', 'reconfig-shared', ...config()], p.root);
+    expect(shared.code, shared.output).toBe(0);
+    await Promise.all(servers.map((s) => startPebble(s)));
+    const le = await cli(['deploy', ...config()], p.root);
+    expect(le.code, le.output).toBe(0);
+    for (const s of servers) {
+      const issued = await waitFor(async () => (await servedIssuer(s)).includes('Pebble'), 180_000, 3000);
+      expect(issued, await certDiagnostics(s)).toBe(true);
+    }
+
+    // The config container on each proxy asks Let's Encrypt for the domain until this deploy
+    // replaces it, and the companion removes its links once nothing asks for the domain.
+    const fp = makeCert(p.deployDir, `${DOMAIN} custom`);
+    writeTestConfig(p.deployDir, servers, { privateIp: true, proxy: { ...lb, ssl: { crt: './bundle.crt', key: './private.key' } } });
+    const custom = await cli(['deploy', ...config()], p.root);
+    expect(custom.code, custom.output).toBe(0);
+    expect(custom.output).not.toContain('serves another certificate');
+    await Promise.all(servers.map((s) => expectServed(s, fp)));
+    await Promise.all(servers.map((s) => expectStaysServed(s, fp, 45_000)));
+  }, 1_200_000);
 });
