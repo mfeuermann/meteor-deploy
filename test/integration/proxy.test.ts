@@ -51,6 +51,32 @@ async function servedFingerprint(s: FakeServer): Promise<string> {
   return fingerprint(r.stdout);
 }
 
+/** What the fake server shows about the certificates: what nginx serves, the files, the companion log. */
+async function certDiagnostics(s: FakeServer): Promise<string> {
+  const served = await s.exec(
+    `echo | openssl s_client -connect localhost:443 -servername ${DOMAIN} 2>/dev/null | openssl x509 -noout -subject -issuer -fingerprint -sha256 2>/dev/null || echo 'no certificate'`,
+  );
+  const files = await s.exec(`sudo ls -l /opt/${PROXY}/certs /opt/${PROXY}/mounted-certs 2>&1`);
+  const log = await s.exec(`docker logs --tail 40 ${PROXY}-letsencrypt 2>&1`);
+  return [`served: ${served.stdout.trim() || 'no certificate'}`, `files:\n${files.stdout.trim()}`, `companion log:\n${log.stdout.trim()}`].join('\n\n');
+}
+
+/** Waits until nginx serves the certificate with `fp` for DOMAIN; fails with what it served instead. */
+async function expectServed(s: FakeServer, fp: string, timeoutMs = 30_000): Promise<void> {
+  if (await waitFor(async () => (await servedFingerprint(s)) === fp, timeoutMs, 1000)) return;
+  expect.fail(`the proxy does not serve the certificate ${fp} for ${DOMAIN}\n\n${await certDiagnostics(s)}`);
+}
+
+/** Checks for `forMs` that nginx keeps serving the certificate with `fp`; fails at the first other one. */
+async function expectStaysServed(s: FakeServer, fp: string, forMs: number): Promise<void> {
+  const end = Date.now() + forMs;
+  while (Date.now() < end) {
+    const now = await servedFingerprint(s);
+    if (now !== fp) expect.fail(`after ${Math.round((forMs - (end - Date.now())) / 1000)} s the proxy serves ${now || 'no certificate'} instead of ${fp} for ${DOMAIN}\n\n${await certDiagnostics(s)}`);
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+}
+
 /**
  * Runs `args` while requests go through the proxy; returns the CLI result, the request counts and
  * the server's Docker events meanwhile (to tell when a failed request happened).
@@ -174,13 +200,15 @@ describe('proxy: Let\'s Encrypt via Pebble, deployer user, Docker 27.5', () => {
     write({ proxy: custom() });
     const a = await cli(['deploy', ...config()], p.root);
     expect(a.code, a.output).toBe(0);
-    expect(await waitFor(async () => (await servedFingerprint(server)) === first, 30_000, 1000)).toBe(true);
+    await expectServed(server, first);
+    // The companion handles the removal of the old container (with LETSENCRYPT_HOST) meanwhile.
+    await expectStaysServed(server, first, 45_000);
 
     const second = makeCert(p.deployDir, `${DOMAIN} second`);
     expect(second).not.toBe(first);
     const b = await cli(['deploy', ...config()], p.root);
     expect(b.code, b.output).toBe(0);
-    expect(await waitFor(async () => (await servedFingerprint(server)) === second, 30_000, 1000)).toBe(true);
+    await expectServed(server, second);
     expect(await appAnswers(server)).toBe(true);
   });
 
