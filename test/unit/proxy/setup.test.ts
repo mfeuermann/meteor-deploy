@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { copyFileSync, cpSync, mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createContext, type CommandContext } from '../../../src/core/context.js';
@@ -9,6 +10,7 @@ import { formatProxyStatus, parseProxyStatus, proxyReconfigShared, proxySetup, p
 import { readNginxTmpl, renderNginxConfigSh, renderProxyStartSh, renderServiceConfigureSh } from '../../../src/proxy/render.js';
 import { desiredEntries, formatUpstream, parseUpstream } from '../../../src/proxy/upstream.js';
 import type { ExecOptions, ExecResult, SshConnection } from '../../../src/ssh/connection.js';
+import { fakeCertWait } from '../../helpers/proxy.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, '../../fixtures/configs');
@@ -26,6 +28,7 @@ function label(s: string): string {
   if (s.includes('docker rm -f mup-proxy-configure-')) return 'remove-config-container';
   if (s.includes('docker-gen')) return 'regenerate';
   if (s.includes('status for "proxy status"')) return 'proxy-status';
+  if (s.includes('# proxy-served.sh:')) return 'proxy-served';
   if (s.includes('base64 -w0') && s.includes('/opt/mup-nginx-proxy/upstream/')) return 'read-upstream';
   if (s === 'sudo chown "$USER" /opt/mup-nginx-proxy -R') return 'take-proxy-dir';
   if (s.includes('echo "acquired"')) return 'lock';
@@ -39,15 +42,18 @@ interface World {
   upstream?: string;
   /** The output of proxy-status.sh. */
   status?: string;
+  /** The output of proxy-served.sh, per run (the last one repeats). */
+  served?: string[];
 }
 
 async function setup(fixture: string, world: World = {}, argv: Record<string, unknown> = {}) {
-  const dir = join(fixtures, fixture);
+  const dir = isAbsolute(fixture) ? fixture : join(fixtures, fixture);
   const out: string[] = [];
   const log: string[] = [];
   const scripts: Record<string, string> = {};
   const writes: Record<string, { content: string; mode?: number }> = {};
   const digestCalls: Record<string, number> = {};
+  let servedCalls = 0;
   const conn = (name: string) => {
     const run = async (s: string, o: ExecOptions = {}): Promise<ExecResult> => {
       const text = s === 'bash -s' && typeof o.stdin === 'string' ? o.stdin : s;
@@ -62,6 +68,7 @@ async function setup(fixture: string, world: World = {}, argv: Record<string, un
       } else if (l === 'lock') stdout = 'acquired\n';
       else if (l === 'read-upstream') stdout = world.upstream === undefined ? '-' : Buffer.from(world.upstream).toString('base64');
       else if (l === 'proxy-status') stdout = world.status ?? '';
+      else if (l === 'proxy-served') stdout = world.served?.[Math.min(servedCalls++, world.served.length - 1)] ?? '';
       return { code: 0, stdout, stderr: '' };
     };
     return {
@@ -80,7 +87,7 @@ async function setup(fixture: string, world: World = {}, argv: Record<string, un
     { config: join(dir, 'mup.js'), ...argv },
     {
       cwd: dir,
-      reporter: createReporter({ verbose: false, tty: false, write: (s) => void out.push(s) }),
+      reporter: createReporter({ verbose: !!argv.verbose, tty: false, write: (s) => void out.push(s) }),
       sshPoolFactory: () => ({ get: async (n: string) => conn(n), closeAll: async () => {} }),
     },
   );
@@ -311,5 +318,50 @@ describe('the served certificates in proxy status', () => {
     expect(out).toContain('Warning: "one" serves a certificate that is not for certs.example.com: CN=app.example.com.');
     expect(out).toContain('Warning: "one" serves no certificate for www.certs.example.com (TLS handshake failed).');
     expect(s.scripts['proxy-status']).toContain('-servername');
+  });
+});
+
+describe('the certificate check of proxy setup', () => {
+  const certs = join(here, '../../fixtures/certs');
+  const b64 = (name: string) => Buffer.from(readFileSync(join(certs, `${name}.pem`), 'utf8')).toString('base64');
+  /** proxy-certs with a real certificate (custom.pem) as proxy.ssl.crt. */
+  function withCert(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'comet-certs-'));
+    cpSync(join(fixtures, 'proxy-certs'), dir, { recursive: true });
+    copyFileSync(join(certs, 'custom.pem'), join(dir, 'cert.crt'));
+    return dir;
+  }
+  const served = (cert: string, o: { vhost?: string; le?: string } = {}) =>
+    [`served.0=${b64(cert)}`, `served.1=${b64(cert)}`, `vhost.0=${o.vhost ?? '1'}`, `vhost.1=${o.vhost ?? '1'}`, `le.0=${o.le ?? '0'}`, 'le.1=0'].join('\n');
+  const reads = (log: string[]) => log.filter((l) => l === 'one:proxy-served').length;
+
+  it('is silent when the proxy serves proxy.ssl.crt, and warns when it does not', async () => {
+    const ok = await setup(withCert(), { served: [served('custom')] });
+    await proxySetup(ok.ctx, undefined, fakeCertWait());
+    expect(ok.out()).not.toContain('Warning:');
+    expect(reads(ok.log)).toBe(1);
+
+    const other = await setup(withCert(), { served: [served('le-leaf')] });
+    await proxySetup(other.ctx, undefined, fakeCertWait());
+    expect(other.out()).toContain(
+      `Warning: "one" serves another certificate for certs.example.com than proxy.ssl.crt: Let's Encrypt (R11), expires 2126-01-01. Run "comet-deploy proxy setup"; "comet-deploy proxy status" shows what each proxy serves.`,
+    );
+    expect(reads(other.log)).toBe(16);
+  });
+
+  it('does not wait on a server where the app does not run behind the proxy yet', async () => {
+    const s = await setup(withCert(), { served: [served('le-leaf', { vhost: '0' })] }, { verbose: true });
+    await proxySetup(s.ctx, undefined, fakeCertWait());
+    expect(reads(s.log)).toBe(1);
+    expect(s.out()).toContain('[one] certificate not checked: the app does not run behind this proxy yet');
+    expect(s.out()).not.toContain('Warning:');
+  });
+
+  it("points at reconfig while the running app still asks Let's Encrypt for a domain", async () => {
+    const s = await setup(withCert(), { served: [served('le-leaf', { le: '1' })] });
+    await proxySetup(s.ctx, undefined, fakeCertWait());
+    expect(reads(s.log)).toBe(1);
+    expect(s.out()).toContain(`Warning: "one": the running app still asks Let's Encrypt for certs.example.com. Run "comet-deploy reconfig" to switch it to proxy.ssl.crt.`);
+    expect(s.out()).not.toContain('serves another certificate');
   });
 });

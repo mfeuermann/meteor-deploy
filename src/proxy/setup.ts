@@ -54,7 +54,7 @@ import {
   writeUpstreamFile,
 } from './sync.js';
 import { describeServed, localCertFingerprint } from './certs.js';
-import { parseServedOutput } from './served.js';
+import { customCertWarnings, parseServedOutput, readServed, REAL_CERT_WAIT, waitForCustomCert, type CertWaitDeps } from './served.js';
 import { desiredEntries, formatUpstream, parseUpstream } from './upstream.js';
 
 /** The lock functions the proxy commands use (tests replace them). */
@@ -129,12 +129,54 @@ async function runProxyStart(ctx: CommandContext, servers: string[], o: { force:
 }
 
 /**
+ * After `proxy setup` with a custom certificate (proxy certificates spec §4.3): waits until each
+ * server serves `proxy.ssl.crt` and warns when it does not. A server where no app container
+ * names a domain in VIRTUAL_HOST (a fresh setup) is not checked; one where the running app still
+ * asks Let's Encrypt for a domain gets a pointer to `reconfig`, which replaces that container.
+ */
+async function checkSetupCert(ctx: CommandContext, servers: string[], w: CertWaitDeps): Promise<void> {
+  const c = ctx.config;
+  const expected = localCertFingerprint(c, ctx.basePath);
+  if (!expected) return;
+  const domains = proxyDomains(c);
+  const r = ctx.reporter;
+  await Promise.all(
+    servers.map(async (s) => {
+      try {
+        const conn = await ctx.ssh.get(s);
+        const first = await readServed(conn, c);
+        const le = domains.filter((x) => first.letsEncrypt.includes(x));
+        if (le.length) {
+          r.warn(`"${s}": the running app still asks Let's Encrypt for ${le.join(', ')}. Run "comet-deploy reconfig" to switch it to proxy.ssl.crt.`);
+          return;
+        }
+        if (!domains.some((x) => first.vhost.includes(x))) {
+          r.verboseLine(s, 'certificate not checked: the app does not run behind this proxy yet');
+          return;
+        }
+        let reading: typeof first | null = first;
+        const read = async () => {
+          const x = reading ?? (await readServed(conn, c));
+          reading = null;
+          return x;
+        };
+        const warnings = customCertWarnings(s, await waitForCustomCert(read, expected, domains, w), expected, domains, new Date());
+        for (const x of warnings) r.warn(x);
+        if (warnings.length === 0) r.verboseLine(s, `serves proxy.ssl.crt for ${domains.join(', ')}`);
+      } catch (err) {
+        r.warn(`Could not check the certificate "${s}" serves: ${(err as Error).message}.`);
+      }
+    }),
+  );
+}
+
+/**
  * `proxy setup` (and the proxy part of `setup`): MUP's setup steps on every proxy server in
  * parallel, then `proxy.start` when needed, then the load balancing config container (MUP
  * `post.proxy.setup`), all inside the `proxy.setup` step. Everything local is read first, so a missing file fails before any
  * server changes.
  */
-export async function proxySetup(ctx: CommandContext, d: ProxyLockDeps = LOCK_DEPS): Promise<void> {
+export async function proxySetup(ctx: CommandContext, d: ProxyLockDeps = LOCK_DEPS, w: CertWaitDeps = REAL_CERT_WAIT): Promise<void> {
   const p = requireProxy(ctx);
   const c = ctx.config;
   const servers = proxyServers(c, ctx.serverFilter);
@@ -196,6 +238,7 @@ export async function proxySetup(ctx: CommandContext, d: ProxyLockDeps = LOCK_DE
           await conn.runScriptOrThrow(script, 'Configure Proxy', verboseOutput(ctx.reporter, s));
         });
       }
+      await checkSetupCert(ctx, servers, w);
     });
   });
 }

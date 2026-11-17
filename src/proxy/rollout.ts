@@ -40,6 +40,8 @@ import {
   type ProxyFileState,
   type ProxySyncPlan,
 } from './sync.js';
+import { localCertFingerprint } from './certs.js';
+import { customCertWarnings, readServed, REAL_CERT_WAIT, waitForCustomCert, type CertWaitDeps } from './served.js';
 import { UpstreamController, type UpstreamApply } from './upstream.js';
 
 /** The commands that run a rollout behind the proxy. */
@@ -67,6 +69,10 @@ export interface ProxyRolloutDeps {
   upstreamController: (c: NormalizedConfig, files: ReadonlyMap<string, string | null>, apply: UpstreamApply, o: { applyConfig: boolean }) => UpstreamControl;
   /** Whether the app's running container publishes a host port (false when there is none). */
   publishesHostPort: (conn: SshConnection, c: NormalizedConfig) => Promise<boolean>;
+  /** What a proxy server serves for the app's domains (the check of `proxy.ssl.crt` in `finish`). */
+  readServed: typeof readServed;
+  /** The clock of that check. */
+  certWait: CertWaitDeps;
 }
 
 /** `docker inspect` of the app container's port bindings: any binding means a published host port. */
@@ -82,6 +88,8 @@ export const PROXY_ROLLOUT_DEPS: ProxyRolloutDeps = {
   sharedSettingsDrift,
   upstreamController: (c, files, apply, o) => new UpstreamController(c, files, apply, o),
   publishesHostPort,
+  readServed,
+  certWait: REAL_CERT_WAIT,
 };
 
 /**
@@ -148,7 +156,9 @@ export async function createProxyRollout(
     const disabling = proxies.some((p) => planProxySync(desired, states.get(p)!, domains).lbTransition === 'disable');
     if (disabling && proxyServers(c, null).some((p) => !appServers.has(p))) throw new CometError(LB_OFF_WITHOUT_BACKEND);
   }
-  return new Rollout(ctx, o, d, { desired, proxies, domains });
+  // The fingerprint of proxy.ssl.crt, checked against what the proxies serve after the rollout.
+  const expected = desired?.certs ? localCertFingerprint(c, ctx.basePath) : null;
+  return new Rollout(ctx, o, d, { desired, proxies, domains, expected });
 }
 
 class Rollout implements ProxyRollout {
@@ -170,7 +180,7 @@ class Rollout implements ProxyRollout {
     private readonly ctx: CommandContext,
     private readonly o: { action: RolloutAction; strategy: CometOptions['strategy'] },
     private readonly d: ProxyRolloutDeps,
-    private readonly s: { desired: DesiredProxyFiles | null; proxies: string[]; domains: string[] },
+    private readonly s: { desired: DesiredProxyFiles | null; proxies: string[]; domains: string[]; expected: string | null },
   ) {
     this.c = ctx.config;
     this.lbActive = !!this.c.proxy?.loadBalancing;
@@ -297,6 +307,7 @@ class Rollout implements ProxyRollout {
           for (const s of f.down) e.down.add(s);
         }
       }
+      await this.checkCustomCert(warnings, new Set([...this.failed.map((f) => f.proxy), ...byProxy.keys()]));
     } catch (err) {
       warnings.push(`Finishing the reverse proxy failed: ${message(err)}. Run "comet-deploy proxy setup" to bring it in line.`);
     }
@@ -318,6 +329,31 @@ class Rollout implements ProxyRollout {
       }
     }
     return warnings;
+  }
+
+  /**
+   * Deploy and reconfig with a custom certificate: waits until every proxy server (except those
+   * where this rollout failed) serves `proxy.ssl.crt` for every domain, and adds a warning for
+   * each one that does not (proxy certificates spec §4.3). The exit code does not change.
+   */
+  private async checkCustomCert(warnings: string[], skip: Set<string>): Promise<void> {
+    const { ctx, c, d } = this;
+    const { expected, domains } = this.s;
+    if (!expected || (this.o.action !== 'deploy' && this.o.action !== 'reconfig')) return;
+    const todo = this.s.proxies.filter((p) => !skip.has(p));
+    const res = await Promise.allSettled(
+      todo.map(async (p) => {
+        const conn = await ctx.ssh.get(p);
+        const last = await waitForCustomCert(() => d.readServed(conn, c), expected, domains, d.certWait);
+        const w = customCertWarnings(p, last, expected, domains, new Date());
+        if (w.length === 0) ctx.reporter.verboseLine(p, `serves proxy.ssl.crt for ${domains.join(', ')}`);
+        return w;
+      }),
+    );
+    res.forEach((x, i) => {
+      if (x.status === 'fulfilled') warnings.push(...x.value);
+      else warnings.push(`Could not check the certificate "${todo[i]}" serves: ${message(x.reason)}.`);
+    });
   }
 
   /**

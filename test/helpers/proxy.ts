@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import type { CommandContext } from '../../src/core/context.js';
 import { proxyDomains } from '../../src/proxy/render.js';
 import type { ProxyRolloutDeps } from '../../src/proxy/rollout.js';
+import type { CertWaitDeps, ServedOnServer } from '../../src/proxy/served.js';
 import { desiredProxyFiles, type ProxyFileState } from '../../src/proxy/sync.js';
 import { desiredEntries, formatUpstream, parseUpstream, UpstreamController } from '../../src/proxy/upstream.js';
 
@@ -55,10 +56,21 @@ export function fakeProxyDeps(
     drift?: boolean;
     publishes?: string[];
     files?: Record<string, string | null>;
+    /** What each proxy serves, per read (the last one repeats); without it nothing is served. */
+    served?: Record<string, ServedOnServer[]>;
   } = {},
 ): ProxyRolloutDeps {
   const writes = new Map<string, number>();
+  const reads = new Map<string, number>();
   return {
+    readServed: async (conn) => {
+      calls.push(`served:${conn.name}`);
+      const list = o.served?.[conn.name] ?? [{ domains: {}, vhost: [], letsEncrypt: [] }];
+      const n = reads.get(conn.name) ?? 0;
+      reads.set(conn.name, n + 1);
+      return list[Math.min(n, list.length - 1)]!;
+    },
+    certWait: fakeCertWait(),
     readProxyFileState: async (conn) => {
       const s = states[conn.name];
       if (s instanceof Error) throw s;
@@ -96,4 +108,11 @@ export function fakeProxyDeps(
       };
     },
   };
+}
+
+/** A clock for the certificate check that never really waits: `sleep` moves it forward. */
+export function fakeCertWait(): CertWaitDeps & { slept: () => number } {
+  let t = 0;
+  let slept = 0;
+  return { now: () => t, sleep: async (ms) => void ((t += ms), (slept += ms)), slept: () => slept };
 }

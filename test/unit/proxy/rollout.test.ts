@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createContext } from '../../../src/core/context.js';
 import { CometError } from '../../../src/core/errors.js';
@@ -8,6 +10,7 @@ import type { SshConnection } from '../../../src/ssh/connection.js';
 import { tempDir } from '../../helpers/fs.js';
 import { formatUpstream, parseUpstream } from '../../../src/proxy/upstream.js';
 import { fakeProxyDeps, inSyncState } from '../../helpers/proxy.js';
+import type { ServedOnServer } from '../../../src/proxy/served.js';
 
 const mup = (proxy: string | null, extra = '') => `module.exports = {
   servers: {
@@ -387,5 +390,56 @@ describe('lockTargets', () => {
     expect(lockTargets((await context(mup(LB), 'one')).ctx)).toEqual(['one', 'two']);
     expect(lockTargets((await context(mup(LE), 'one')).ctx)).toEqual(['one']);
     expect(lockTargets((await context(mup(null), 'one')).ctx)).toEqual(['one']);
+  });
+});
+
+describe('the certificate check after the rollout', () => {
+  const pem = (n: string) => readFileSync(join(import.meta.dirname, '../../fixtures/certs', `${n}.pem`), 'utf8');
+  const CUSTOM = "{ domains: 'a.example.com', ssl: { crt: './bundle.crt', key: './private.key' } }";
+  const serving = (n: string): ServedOnServer => ({ domains: { 'a.example.com': { kind: 'cert', pem: pem(n) } }, vhost: ['a.example.com'], letsEncrypt: [] });
+  const TAIL = 'Run "comet-deploy proxy setup"; "comet-deploy proxy status" shows what each proxy serves.';
+
+  async function run(o: { action?: 'deploy' | 'reconfig' | 'restart' | 'rollback'; proxy?: string; served?: Record<string, ServedOnServer[]>; verbose?: boolean; failAfter?: boolean; lb?: 'off' } = {}) {
+    const dir = tempDir({ 'mup.js': mup(o.proxy ?? CUSTOM), 'bundle.crt': pem('custom'), 'private.key': 'KEY' });
+    const lines: string[] = [];
+    const ctx = await createContext(
+      { config: 'mup.js', verbose: o.verbose },
+      {
+        cwd: dir,
+        reporter: createReporter({ verbose: !!o.verbose, tty: false, write: (x) => void lines.push(x) }),
+        sshPoolFactory: () => ({ get: async (name: string) => ({ name, host: name }) as unknown as SshConnection, closeAll: async () => {} }),
+      },
+    );
+    const calls: string[] = [];
+    const state = await inSyncState(ctx, o.lb ? { lb: o.lb } : {});
+    const deps = fakeProxyDeps({ one: state, two: state }, calls, { served: o.served, failAfter: o.failAfter });
+    const rollout = (await createProxyRollout(ctx, { action: o.action ?? 'deploy', strategy: 'canary' }, deps))!;
+    await rollout.prepare();
+    const warnings = await rollout.finish(await roll(rollout, ['one', 'two'], calls));
+    return { warnings, calls, output: () => lines.join('') };
+  }
+
+  it('warns when a proxy serves another certificate than proxy.ssl.crt after a deploy or reconfig', async () => {
+    for (const action of ['deploy', 'reconfig'] as const) {
+      const r = await run({ action, served: { one: [serving('le-leaf')], two: [serving('custom')] } });
+      expect(r.warnings, action).toEqual([`"one" serves another certificate for a.example.com than proxy.ssl.crt: Let's Encrypt (R11), expires 2126-01-01. ${TAIL}`]);
+    }
+  });
+
+  it('is silent when it is served, and says so with --verbose', async () => {
+    const r = await run({ verbose: true, served: { one: [serving('le-leaf'), serving('custom')], two: [serving('custom')] } });
+    expect(r.warnings).toEqual([]);
+    expect(r.output()).toContain('[one] serves proxy.ssl.crt for a.example.com');
+    expect(r.calls.filter((c) => c === 'served:one')).toHaveLength(2);
+  });
+
+  it("does not check after restart or rollback, with Let's Encrypt, or on a proxy whose update failed", async () => {
+    for (const action of ['restart', 'rollback'] as const) expect((await run({ action })).calls.filter((c) => c.startsWith('served:')), action).toEqual([]);
+    expect((await run({ proxy: "{ domains: 'a.example.com', ssl: { letsEncryptEmail: 'a@a.example.com' } }" })).calls.filter((c) => c.startsWith('served:'))).toEqual([]);
+    // Load balancing is turned on in the after part, which fails on both proxies.
+    const lb = "{ domains: 'a.example.com', loadBalancing: true, ssl: { crt: './bundle.crt', key: './private.key' } }";
+    const failed = await run({ proxy: lb, lb: 'off', failAfter: true });
+    expect(failed.warnings.join('\n')).toContain('Could not update the reverse proxy');
+    expect(failed.calls.filter((c) => c.startsWith('served:'))).toEqual([]);
   });
 });
