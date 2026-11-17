@@ -3,7 +3,8 @@
  * Task 8, Review Focus 1 and 2): setup and deploy behind MUP's proxy with Let's Encrypt (from
  * Pebble), proxy restarts only when needed, app proxy files synced by deploy, zero-downtime
  * switches for every command, a failed health check behind the proxy, a custom certificate and
- * its replacement, Docker 29, and a second app on the same proxy.
+ * its replacement, the certificates `proxy status` and `deploy` see nginx serve, Docker 29, and a
+ * second app on the same proxy.
  */
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -37,12 +38,16 @@ function fingerprint(pemOrOpensslOutput: string): string {
   return (m?.[1] ?? '').replace(/:/g, '').toUpperCase();
 }
 
+/** The arguments of `openssl req` for a self-signed certificate for DOMAIN (with `cn` as its CN), valid for a year: no expiry warning. */
+const selfSigned = (cn: string, key: string, crt: string) => ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '365', '-subj', `/CN=${cn}`, '-addext', `subjectAltName=DNS:${DOMAIN}`, '-keyout', key, '-out', crt];
+
+/** The fingerprint of a local PEM certificate file. */
+const fileFingerprint = (path: string) => fingerprint(execFileSync('openssl', ['x509', '-noout', '-fingerprint', '-sha256', '-in', path], { encoding: 'utf8' }));
+
 /** A self-signed certificate for DOMAIN written to `<dir>/bundle.crt` and `<dir>/private.key`; returns its fingerprint. */
 function makeCert(dir: string, cn: string): string {
-  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2', '-subj', `/CN=${cn}`, '-keyout', join(dir, 'private.key'), '-out', join(dir, 'bundle.crt')], {
-    stdio: 'ignore',
-  });
-  return fingerprint(execFileSync('openssl', ['x509', '-noout', '-fingerprint', '-sha256', '-in', join(dir, 'bundle.crt')], { encoding: 'utf8' }));
+  execFileSync('openssl', selfSigned(cn, join(dir, 'private.key'), join(dir, 'bundle.crt')), { stdio: 'ignore' });
+  return fileFingerprint(join(dir, 'bundle.crt'));
 }
 
 /** The fingerprint of the certificate nginx serves for DOMAIN on port 443 of the fake server. */
@@ -140,6 +145,12 @@ describe('proxy: Let\'s Encrypt via Pebble, deployer user, Docker 27.5', () => {
 
   it('1+2. setup and deploy: the app answers through the proxy with a certificate from Pebble', async () => {
     await setupAndDeploy(server, p);
+    // proxy status shows what nginx serves: the certificate from Pebble's intermediate CA.
+    let status = '';
+    const served = await waitFor(async () => (status = (await cli(['proxy', 'status', ...config()], p.root)).output).includes(`${DOMAIN}: Pebble`), 60_000, 3000);
+    expect(served, `${status}\n\n${await certDiagnostics(server)}`).toBe(true);
+    expect(status).toContain('   - Served certificates:');
+    expect(status).not.toContain(`serves a certificate that is not for ${DOMAIN}`);
   }, 1_200_000);
 
   it('3. a second setup does not restart the proxy; proxy start does', async () => {
@@ -200,6 +211,8 @@ describe('proxy: Let\'s Encrypt via Pebble, deployer user, Docker 27.5', () => {
     write({ proxy: custom() });
     const a = await cli(['deploy', ...config()], p.root);
     expect(a.code, a.output).toBe(0);
+    // The deploy's own check saw proxy.ssl.crt served.
+    expect(a.output).not.toContain('serves another certificate');
     await expectServed(server, first);
     // The companion handles the removal of the old container (with LETSENCRYPT_HOST) meanwhile.
     await expectStaysServed(server, first, 45_000);
@@ -210,6 +223,34 @@ describe('proxy: Let\'s Encrypt via Pebble, deployer user, Docker 27.5', () => {
     expect(b.code, b.output).toBe(0);
     await expectServed(server, second);
     expect(await appAnswers(server)).toBe(true);
+    const status = await cli(['proxy', 'status', ...config()], p.root);
+    expect(status.output).toContain(`${DOMAIN}: proxy.ssl.crt, expires `);
+    expect(status.output).not.toContain('Warning:');
+  });
+
+  it('7b. status and deploy warn when nginx serves another certificate; proxy setup restores proxy.ssl.crt', async () => {
+    const own = fileFingerprint(join(p.deployDir, 'bundle.crt'));
+    const mounted = `/opt/${PROXY}/mounted-certs/${DOMAIN}`;
+    const args = selfSigned(`${DOMAIN} other`, `${mounted}.key`, `${mounted}.crt`).map((a) => `'${a}'`);
+    const other = await server.exec(`sudo openssl ${args.join(' ')} 2>&1 && docker exec ${PROXY} nginx -s reload 2>&1`);
+    expect(other.code, other.stdout).toBe(0);
+    expect(await waitFor(async () => !['', own].includes(await servedFingerprint(server)), 30_000, 1000)).toBe(true);
+
+    const warning = `serves another certificate for ${DOMAIN} than proxy.ssl.crt`;
+    const status = await cli(['proxy', 'status', ...config()], p.root);
+    expect(status.output).toContain(warning);
+    expect(status.output).toContain(`${DOMAIN}: ${DOMAIN} other, not the certificate from proxy.ssl.crt`);
+
+    // Nothing in the app's files differs, so the deploy leaves the certificate alone and says so.
+    const deploy = await cli(['deploy', ...config()], p.root);
+    expect(deploy.code, deploy.output).toBe(0);
+    expect(deploy.output).toContain(`${warning}: ${DOMAIN} other, expires `);
+    expect(deploy.output).toContain('Run "comet-deploy proxy setup"; "comet-deploy proxy status" shows what each proxy serves.');
+
+    const setup = await cli(['proxy', 'setup', ...config()], p.root);
+    expect(setup.code, setup.output).toBe(0);
+    expect(setup.output).not.toContain(warning);
+    await expectServed(server, own);
   });
 
   it('9. a second app on the same proxy leaves the first app\'s files alone (Review Focus 1)', async () => {

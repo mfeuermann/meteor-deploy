@@ -9,6 +9,10 @@ All notable changes to comet-deploy. The versions follow [semantic versioning](h
 - `status` and `proxy status` show the certificate nginx actually serves for each domain of the app (`Served certificates`), asked on each proxy server: the issuer, the expiry date and the days left, or `proxy.ssl.crt` for your own certificate. They warn about a certificate that expires within 14 days or has expired, one that is not for the domain, one that is not your `proxy.ssl.crt`, and a domain without a certificate. See [Troubleshooting → The proxy serves another certificate](https://github.com/mfeuermann/meteor-deploy/blob/main/docs/troubleshooting.md#the-proxy-serves-another-certificate).
 - With your own certificate, `deploy`, `reconfig` and `proxy setup` check at the end that every proxy server serves it, for up to 30 seconds, and warn when one does not. The exit code does not change.
 
+### Fixed
+
+- Switching a domain from Let's Encrypt to your own certificate (`proxy.ssl.crt`) could leave nginx serving the Let's Encrypt companion's self-signed default a few seconds after the deploy: MUP's `ssl-setup.sh` copied the certificate through the companion's link in `mounted-certs`, and the companion deleted that link once the old app container was gone. The proxy steps now remove the companion's links for the app's domains before the copy, and a deploy that switches sets the certificate once more after the activation. A server that already serves the default gets the certificate back with `comet-deploy proxy setup`.
+
 ## [0.6.1] - 2026-11-17
 
 ### Added
