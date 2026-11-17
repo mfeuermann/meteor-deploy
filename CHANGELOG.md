@@ -6,9 +6,9 @@ All notable changes to comet-deploy. The versions follow [semantic versioning](h
 
 ### Changed
 
-- The certificate check after `deploy`, `reconfig` and `proxy setup` also warns, like `status`, when your `proxy.ssl.crt` expires within 14 days, has expired or is not for a domain of the app. Before, it only compared the certificate with the one nginx serves.
+- The certificate check after `deploy`, `reconfig` and `proxy setup` also warns, like `status`, when your `proxy.ssl.crt` expires within 14 days, has expired or is not for a domain of the app (`"one": proxy.ssl.crt is not for www.example.com (CN=example.com). Add the domain to the certificate, or remove it from proxy.domains.`). Before, it only compared the certificate with the one nginx serves.
 - The check prints `[<server>] waiting up to 30 s until nginx serves proxy.ssl.crt` while it waits, instead of a silent pause before the summary.
-- A deploy that was aborted, or that ended healthy on no server, skips the check, so Ctrl+C no longer waits up to 30 s and a reverted deploy gets no advice about a certificate it did not change.
+- A deploy that was aborted, or that ended healthy on no server, skips the check: it failed, and the next deploy checks again. Ctrl+C while the check waits stops the wait too.
 
 ## [0.7.0] - 2026-11-17
 

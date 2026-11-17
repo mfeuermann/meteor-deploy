@@ -126,6 +126,9 @@ export function describeServed(server: string, domain: string, state: ServedStat
   notes.push(expired ? `expired on ${date}` : `expires ${date} (${plural(days)})`);
   const line = `${domain}: ${notes.join(', ')}`;
 
+  if (!covers && own) {
+    return { line, problems: [`"${server}": proxy.ssl.crt is not for ${domain} (${subject}). Add the domain to the certificate, or remove it from proxy.domains.`] };
+  }
   if (!covers) return { line, problems: [`"${server}" serves a certificate that is not for ${domain}: ${subject}.`] };
   const problems: string[] = [];
   if (o.expected !== null && !own) problems.push(`"${server}" serves another certificate for ${domain} than proxy.ssl.crt: ${label}, expires ${date}.`);

@@ -123,13 +123,28 @@ describe('waitForCustomCert', () => {
     expect(last).toEqual(reading(cert('le-leaf')));
   });
 
-  it('says once that it waits, only when the first reading does not match', async () => {
+  it('says once that it waits, only when the first reading does not match, also when reading takes time', async () => {
     const waits: number[] = [];
     let reads = 0;
-    await waitForCustomCert(async () => reading(++reads >= 3 ? cert('custom') : cert('le-leaf')), CUSTOM, ['a.test'], clock().d, { onWait: () => waits.push(reads) });
+    // Like an SSH round trip: the clock moves while the proxy is read.
+    const slow = clock();
+    const read = async (pem: string) => {
+      slow.d.sleep(300);
+      return reading(cert(pem));
+    };
+    await waitForCustomCert(() => read(++reads >= 3 ? 'custom' : 'le-leaf'), CUSTOM, ['a.test'], slow.d, { onWait: () => waits.push(reads) });
     expect(waits).toEqual([1]);
-    await waitForCustomCert(async () => reading(cert('custom')), CUSTOM, ['a.test'], clock().d, { onWait: () => waits.push(-1) });
+    await waitForCustomCert(() => read('custom'), CUSTOM, ['a.test'], clock().d, { onWait: () => waits.push(-1) });
     expect(waits).toEqual([1]);
+  });
+
+  it('stops waiting when the command is aborted', async () => {
+    const c = clock();
+    let reads = 0;
+    let aborted = false;
+    const d = { now: c.d.now, sleep: async (ms: number) => void ((aborted = true), c.d.sleep(ms)) };
+    await waitForCustomCert(async () => (reads++, reading(cert('le-leaf'))), CUSTOM, ['a.test'], d, { aborted: () => aborted });
+    expect(reads).toBe(1);
   });
 
   it('does not wait when it cannot check', async () => {
@@ -153,7 +168,9 @@ describe('customCertWarnings', () => {
     expect(customCertWarnings('one', on({ 'example.com': cert('custom') }), CUSTOM, ['example.com'], soon)).toEqual([
       '"one" serves a certificate for example.com that expires in 7 days (2126-01-01).',
     ]);
-    expect(customCertWarnings('one', on({ 'a.test': cert('custom') }), CUSTOM, ['a.test'], now)).toEqual(['"one" serves a certificate that is not for a.test: CN=example.com.']);
+    expect(customCertWarnings('one', on({ 'a.test': cert('custom') }), CUSTOM, ['a.test'], now)).toEqual([
+      '"one": proxy.ssl.crt is not for a.test (CN=example.com). Add the domain to the certificate, or remove it from proxy.domains.',
+    ]);
   });
 
   it('names what is served instead, and how to fix it', () => {

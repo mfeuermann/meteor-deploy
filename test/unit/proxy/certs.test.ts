@@ -43,6 +43,12 @@ describe('describeServed', () => {
     expect(d.problems).toEqual(['"one" serves a certificate that is not for app.example.com: CN=letsencrypt-nginx-proxy-companion.']);
   });
 
+  it('says so when proxy.ssl.crt itself is not for the domain', () => {
+    const d = describeServed('one', 'shop.test', served('custom'), { expected: certFingerprint(pem('custom')), now: daysBefore(76) });
+    expect(d.line).toBe('shop.test: proxy.ssl.crt, not for shop.test (CN=example.com), expires 2126-01-01 (76 days)');
+    expect(d.problems).toEqual(['"one": proxy.ssl.crt is not for shop.test (CN=example.com). Add the domain to the certificate, or remove it from proxy.domains.']);
+  });
+
   it('accepts a wildcard certificate for a subdomain', () => {
     const d = describeServed('one', 'shop.example.com', served('wildcard'), { expected: null, now: daysBefore(76) });
     expect(d.line).toBe('shop.example.com: *.example.com, expires 2126-01-01 (76 days)');

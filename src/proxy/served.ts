@@ -56,27 +56,33 @@ export const CERT_WAIT_MS = 30_000;
 /**
  * Reads until every domain serves the certificate with fingerprint `expected`, every
  * `intervalMs` (2 s) for at most `timeoutMs` (30 s). Stops at once when the server cannot be
- * checked (no openssl, no HTTPS port). `onWait` is called once, before the first wait. Returns
- * the last reading.
+ * checked (no openssl, no HTTPS port), and when `aborted` says the command was aborted (then the
+ * caller ignores the reading). `onWait` is called once, before the first wait. Returns the last
+ * reading.
  */
 export async function waitForCustomCert(
   read: () => Promise<ServedOnServer>,
   expected: string,
   domains: string[],
   d: CertWaitDeps,
-  o: { timeoutMs?: number; intervalMs?: number; onWait?: () => void } = {},
+  o: { timeoutMs?: number; intervalMs?: number; onWait?: () => void; aborted?: () => boolean } = {},
 ): Promise<ServedOnServer> {
   const timeoutMs = o.timeoutMs ?? CERT_WAIT_MS;
   const intervalMs = o.intervalMs ?? 2_000;
   const start = d.now();
+  let told = false;
   for (;;) {
     const last = await read();
     const states = domains.map((x) => last.domains[x]);
     if (states.some((s) => s?.kind === 'no-openssl' || s?.kind === 'no-https')) return last;
     if (states.every((s) => servesExpected(s, expected))) return last;
-    if (d.now() - start >= timeoutMs) return last;
-    if (d.now() === start) o.onWait?.();
+    if (d.now() - start >= timeoutMs || o.aborted?.()) return last;
+    if (!told) {
+      told = true;
+      o.onWait?.();
+    }
     await d.sleep(intervalMs);
+    if (o.aborted?.()) return last;
   }
 }
 

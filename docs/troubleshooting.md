@@ -1007,6 +1007,12 @@ Warning: "one" serves a certificate that is not for app.example.com: CN=letsencr
 
 nginx has no certificate for the domain and serves the companion's self-signed default instead. With Let's Encrypt, see [No Let's Encrypt certificate](#no-lets-encrypt-certificate); with your own certificate, run `comet-deploy proxy setup`.
 
+```
+Warning: "one": proxy.ssl.crt is not for www.example.com (CN=example.com). Add the domain to the certificate, or remove it from proxy.domains.
+```
+
+nginx serves your own certificate, but its names do not include that domain, so browsers reject it. `proxy setup` does not help here: use a certificate whose names cover every domain in `proxy.domains` (a wildcard such as `*.example.com` covers `www.example.com`, not `example.com`), or take the domain out of `proxy.domains`, then run `comet-deploy deploy`.
+
 ### A certificate expires soon
 
 ```

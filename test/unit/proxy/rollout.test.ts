@@ -409,6 +409,8 @@ describe('the certificate check after the rollout', () => {
       lb?: 'off';
       status?: Record<string, ActivationResult['status']>;
       aborted?: boolean;
+      /** Ctrl+C while the check waits for the first time. */
+      abortInWait?: boolean;
     } = {},
   ) {
     const dir = tempDir({ 'mup.js': mup(o.proxy ?? CUSTOM), 'bundle.crt': pem('custom'), 'private.key': 'KEY' });
@@ -424,9 +426,15 @@ describe('the certificate check after the rollout', () => {
     const calls: string[] = [];
     const state = await inSyncState(ctx, o.lb ? { lb: o.lb } : {});
     const deps = fakeProxyDeps({ one: state, two: state }, calls, { served: o.served, failAfter: o.failAfter });
+    const ac = new AbortController();
+    if (o.aborted) ac.abort();
+    if (o.abortInWait) {
+      const wait = deps.certWait;
+      deps.certWait = { now: wait.now, sleep: async (ms) => (ac.abort(), wait.sleep(ms)) };
+    }
     const rollout = (await createProxyRollout(ctx, { action: o.action ?? 'deploy', strategy: 'canary' }, deps))!;
     await rollout.prepare();
-    const warnings = await rollout.finish(await roll(rollout, ['one', 'two'], calls, o.status), { aborted: o.aborted });
+    const warnings = await rollout.finish(await roll(rollout, ['one', 'two'], calls, o.status), { signal: ac.signal });
     return { warnings, calls, output: () => lines.join('') };
   }
 
@@ -448,6 +456,12 @@ describe('the certificate check after the rollout', () => {
     const r = await run({ served: { one: [serving('le-leaf'), serving('custom')], two: [serving('custom')] } });
     expect(r.output()).toContain('[one] waiting up to 30 s until nginx serves proxy.ssl.crt');
     expect(r.output()).not.toContain('[two] waiting');
+  });
+
+  it('stops waiting on Ctrl+C during the check, without a warning', async () => {
+    const r = await run({ served: { one: [serving('le-leaf')], two: [serving('custom')] }, abortInWait: true });
+    expect(r.calls.filter((c) => c === 'served:one')).toHaveLength(1);
+    expect(r.warnings.join('\n')).not.toContain('serves another certificate');
   });
 
   it('does not check after a deploy that ended healthy on no server, or was aborted', async () => {

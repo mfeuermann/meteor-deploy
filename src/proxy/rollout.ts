@@ -53,10 +53,10 @@ export interface ProxyRollout {
   /** Wraps one server's activation: picks the SwitchMode, drains (load balancing), runs, marks the server healthy or keeps it down. */
   activate(server: string, run: (mode: SwitchMode) => Promise<ActivationResult>): Promise<ActivationResult>;
   /**
-   * After the strategy (also after an abort, `aborted`): the `after` part of the sync, the final
+   * After the strategy (also after an abort, `signal`): the `after` part of the sync, the final
    * upstream and the certificate check. Returns warnings for the summary; never throws.
    */
-  finish(results: ActivationResult[], o?: { aborted?: boolean }): Promise<string[]>;
+  finish(results: ActivationResult[], o?: { signal?: AbortSignal }): Promise<string[]>;
 }
 
 /** What `finish` and `activate` use of `UpstreamController`. */
@@ -287,7 +287,7 @@ class Rollout implements ProxyRollout {
     return result;
   }
 
-  async finish(results: ActivationResult[], o: { aborted?: boolean } = {}): Promise<string[]> {
+  async finish(results: ActivationResult[], o: { signal?: AbortSignal } = {}): Promise<string[]> {
     const warnings: string[] = [];
     if (!this.prepared) return warnings;
     /** Per proxy: the errors, whether the file sync failed, and the servers that may be down there. */
@@ -310,7 +310,9 @@ class Rollout implements ProxyRollout {
           for (const s of f.down) e.down.add(s);
         }
       }
-      if (!o.aborted && results.some((x) => x.status === 'healthy')) await this.checkCustomCert(warnings, new Set([...this.failed.map((f) => f.proxy), ...byProxy.keys()]));
+      if (!o.signal?.aborted && results.some((x) => x.status === 'healthy')) {
+        await this.checkCustomCert(warnings, new Set([...this.failed.map((f) => f.proxy), ...byProxy.keys()]), () => !!o.signal?.aborted);
+      }
     } catch (err) {
       warnings.push(`Finishing the reverse proxy failed: ${message(err)}. Run "comet-deploy proxy setup" to bring it in line.`);
     }
@@ -338,9 +340,10 @@ class Rollout implements ProxyRollout {
    * Deploy and reconfig with a custom certificate: waits until every proxy server (except those
    * where this rollout failed) serves `proxy.ssl.crt` for every domain, and adds a warning for
    * each one that does not (proxy certificates spec §4.3). The exit code does not change.
-   * `finish` skips it after an abort and when no server ended healthy: nothing runs the new config.
+   * `finish` skips it after an abort and when no server ended healthy (the deploy failed; the next
+   * one checks again); Ctrl+C during the wait stops it without a warning.
    */
-  private async checkCustomCert(warnings: string[], skip: Set<string>): Promise<void> {
+  private async checkCustomCert(warnings: string[], skip: Set<string>, aborted: () => boolean): Promise<void> {
     const { ctx, c, d } = this;
     const { expected, domains } = this.s;
     if (!expected || (this.o.action !== 'deploy' && this.o.action !== 'reconfig')) return;
@@ -349,7 +352,8 @@ class Rollout implements ProxyRollout {
       todo.map(async (p) => {
         const conn = await ctx.ssh.get(p);
         const onWait = () => ctx.reporter.info(`[${p}] waiting up to ${CERT_WAIT_MS / 1000} s until nginx serves proxy.ssl.crt`);
-        const last = await waitForCustomCert(() => d.readServed(conn, c), expected, domains, d.certWait, { onWait });
+        const last = await waitForCustomCert(() => d.readServed(conn, c), expected, domains, d.certWait, { onWait, aborted });
+        if (aborted()) return [];
         const w = customCertWarnings(p, last, expected, domains, new Date());
         if (w.length === 0) ctx.reporter.verboseLine(p, `serves proxy.ssl.crt for ${domains.join(', ')}`);
         return w;

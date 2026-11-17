@@ -842,7 +842,7 @@ describe('pipelines behind the proxy', () => {
       s.deps.createProxyRollout = async () => ({
         prepare: async () => {},
         activate: async (_server, go) => go({ kind: 'zero-downtime' }),
-        finish: async (_results, o) => (flags.push(o?.aborted), []),
+        finish: async (_results, o) => (flags.push(o?.signal?.aborted), []),
       });
       const ac = new AbortController();
       const activate = s.deps.activateServer!;

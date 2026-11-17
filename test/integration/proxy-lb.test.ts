@@ -179,7 +179,9 @@ describe('proxy load balancing on two servers', () => {
     writeTestConfig(p.deployDir, servers, { privateIp: true, proxy: { ...lb, ssl: { crt: './bundle.crt', key: './private.key' } } });
     const custom = await cli(['deploy', ...config()], p.root);
     expect(custom.code, custom.output).toBe(0);
-    expect(custom.output).not.toContain('serves another certificate');
+    // The deploy's own check passed on both proxies: no certificate warning at all.
+    expect(custom.output).not.toMatch(/Warning: .*(certificate|proxy\.ssl\.crt)/);
+    expect(custom.output).toContain("Let's Encrypt links in mounted-certs replaced");
     await Promise.all(servers.map((s) => expectServed(s, fp)));
     await Promise.all(servers.map((s) => expectStaysServed(s, fp, 45_000)));
   }, 1_200_000);
