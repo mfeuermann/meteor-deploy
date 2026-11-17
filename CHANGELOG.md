@@ -6,7 +6,7 @@ All notable changes to comet-deploy. The versions follow [semantic versioning](h
 
 ### Added
 
-- `deploy`, `meteor deploy` and `setup` start with a banner in a terminal: COMET in block letters, the version and the author. CI logs, pipes and files do not get it.
+- `deploy`, `meteor deploy` and `setup` start with a banner in a terminal: COMET in block letters, the version and the author. CI logs, pipes and files do not get it. The README shows it too.
 
 ## [0.6.0] - 2026-11-16
 

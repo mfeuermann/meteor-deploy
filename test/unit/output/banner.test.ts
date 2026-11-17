@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { renderBanner } from '../../../src/output/banner.js';
 
@@ -36,5 +37,14 @@ describe('renderBanner', () => {
     expect(renderBanner({ version: '1.2.3', color: true, columns: 80 })).toContain('\x1b[');
     expect(renderBanner({ version: '1.2.3', color: false, columns: 80 })).not.toContain('\x1b[');
     expect(renderBanner({ version: '1.2.3', color: true, columns: 60 })).toContain('\x1b[');
+  });
+
+  it('README.md shows the same banner, without the version', () => {
+    const art = renderBanner({ version: 'X', color: false, columns: 80 })
+      .split('\n')
+      .slice(0, 6)
+      .map((line) => line.replace('  vX', ''));
+    const readme = readFileSync(new URL('../../../README.md', import.meta.url), 'utf8');
+    expect(readme).toContain(['```text', ...art, '```'].join('\n'));
   });
 });

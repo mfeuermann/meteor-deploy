@@ -1,5 +1,14 @@
 # comet-deploy
 
+```text
+ ██████╗ ██████╗ ███╗   ███╗███████╗████████╗   .    *
+██╔════╝██╔═══██╗████╗ ████║██╔════╝╚══██╔══╝  . .:::==(O)
+██║     ██║   ██║██╔████╔██║█████╗     ██║
+██║     ██║   ██║██║╚██╔╝██║██╔══╝     ██║     d e p l o y
+╚██████╗╚██████╔╝██║ ╚═╝ ██║███████╗   ██║
+ ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝   ╚═╝     by Marek Feuermann
+```
+
 Fast deploys for Meteor apps, compatible with Meteor Up (MUP) 1.5.11.
 
 comet-deploy builds the Docker image of your app **once, on your machine**, and sends each server **only the image layers it does not have yet**, to all servers in parallel. It reads your existing `mup.js`, has the same commands, and leaves the servers in the same state as MUP. You can switch an app from MUP to comet-deploy and back without touching the servers.

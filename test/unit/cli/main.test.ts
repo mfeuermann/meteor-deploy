@@ -45,6 +45,16 @@ describe('the banner', () => {
     }
   });
 
+  it('is colored only when the terminal has colors (NO_COLOR, TERM=dumb)', async () => {
+    const { tempDir } = await import('../../helpers/fs.js');
+    const dir = tempDir();
+    for (const color of [true, false]) {
+      const c = capture();
+      await main(['deploy'], c.io, { cwd: dir, terminal: { columns: 100, color } });
+      expect(c.out[0]!.includes('\x1b['), `color: ${color}`).toBe(color);
+    }
+  });
+
   it('other commands, --help and output that is no terminal have none', async () => {
     const { tempDir } = await import('../../helpers/fs.js');
     const dir = tempDir();

@@ -4,6 +4,7 @@
  * code. When this file runs as the `comet-deploy` bin script, it parses `process.argv` and sets
  * the process exit code; when tests import it, `main()` and `buildCli()` run in-process.
  */
+import pc from 'picocolors';
 import yargs, { type Argv } from 'yargs';
 import { createBaseContext, createContext, type SshPoolFactory } from '../core/context.js';
 import { CometError } from '../core/errors.js';
@@ -46,10 +47,11 @@ export interface MainDeps {
   /** Replaces the HTTP check from this computer (`status`). */
   checkUrl?: (url: string) => Promise<string>;
   /**
-   * Pretends that the output is a terminal this wide, for the banner of `deploy` and `setup`
-   * (tests). Without it the banner appears only when stdout is a real terminal.
+   * Pretends that the output is a terminal this wide and with or without colors, for the
+   * banner of `deploy` and `setup` (tests). Without it the banner appears only when stdout is
+   * a real terminal.
    */
-  terminal?: { columns?: number };
+  terminal?: { columns?: number; color?: boolean };
 }
 
 const defaultIO: CliIO = {
@@ -96,8 +98,11 @@ export function buildCli(argv: string[], io: CliIO = defaultIO, deps: MainDeps =
   // Colors only on a real terminal; output captured through a custom `io` stays plain text.
   const tty = io === defaultIO && !!process.stdout.isTTY;
   // The banner only in a terminal: never in a CI log, a pipe or a file.
-  const terminal = deps.terminal ?? (tty ? { columns: process.stdout.columns } : undefined);
-  const showBanner = terminal ? () => io.stdout(renderBanner({ version: TOOL_VERSION, color: tty, columns: terminal.columns })) : undefined;
+  // Its colors follow the reporter's: none with NO_COLOR or TERM=dumb (picocolors decides).
+  const terminal = deps.terminal ?? (tty ? { columns: process.stdout.columns, color: pc.isColorSupported } : undefined);
+  const showBanner = terminal
+    ? () => io.stdout(renderBanner({ version: TOOL_VERSION, color: !!terminal.color, columns: terminal.columns }))
+    : undefined;
   // Called by each command handler. `init` and `validate` (`needsConfig: false`) get a context
   // without a loaded config, so they work before mup.js exists or while it is invalid.
   const makeCtx = async (args: Record<string, unknown>, needsConfig: boolean) => {
