@@ -91,6 +91,12 @@ function validTo(cert: X509Certificate): number {
 
 const plural = (n: number) => `${n} ${n === 1 ? 'day' : 'days'}`;
 
+/** The first certificate in `pem`: fingerprint (as `certFingerprint`), issuer label and expiry date (UTC `YYYY-MM-DD`). */
+export function certSummary(pem: string): { fingerprint: string; issuer: string; expires: string } {
+  const cert = firstCertificate(pem);
+  return { fingerprint: cert.fingerprint256.replace(/:/g, '').toUpperCase(), issuer: issuerLabel(cert), expires: new Date(validTo(cert)).toISOString().slice(0, 10) };
+}
+
 /**
  * What `server` serves for `domain`, as a `proxy status` line plus warnings. `expected`: the
  * fingerprint of `proxy.ssl.crt` (null without a custom certificate, or when it cannot be read).
