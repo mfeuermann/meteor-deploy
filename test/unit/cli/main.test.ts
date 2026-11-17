@@ -31,6 +31,38 @@ describe('main', () => {
   });
 });
 
+describe('the banner', () => {
+  const terminal = { columns: 100 };
+
+  it('deploy, meteor deploy and setup print it first in a terminal', async () => {
+    const { tempDir } = await import('../../helpers/fs.js');
+    const dir = tempDir();
+    for (const cmd of [['deploy'], ['meteor', 'deploy'], ['setup']]) {
+      const c = capture();
+      await main(cmd, c.io, { cwd: dir, terminal });
+      expect(c.out[0], cmd.join(' ')).toContain('by Marek Feuermann');
+      expect(c.out[0], cmd.join(' ')).toContain(`v${VERSION}`);
+    }
+  });
+
+  it('other commands, --help and output that is no terminal have none', async () => {
+    const { tempDir } = await import('../../helpers/fs.js');
+    const dir = tempDir();
+    const runs: Array<[string[], { terminal?: typeof terminal }]> = [
+      [['status'], { terminal }],
+      [['validate'], { terminal }],
+      [['deploy', '--help'], { terminal }],
+      [['deploy'], {}],
+      [['setup'], {}],
+    ];
+    for (const [cmd, deps] of runs) {
+      const c = capture();
+      await main(cmd, c.io, { cwd: dir, ...deps });
+      expect(c.out.join('') + c.err.join(''), cmd.join(' ')).not.toContain('Marek Feuermann');
+    }
+  });
+});
+
 describe('meteor debug', () => {
   it('is a real command that picks an app server first', async () => {
     const c = capture();

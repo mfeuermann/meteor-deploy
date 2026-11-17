@@ -5,7 +5,7 @@ comet-deploy is published to npm as [`comet-deploy`](https://www.npmjs.com/packa
 ## A release
 
 1. Make sure `main` is green in the [CI workflow](../.github/workflows/ci.yml), including the integration job.
-2. Write the release notes: a section `## [1.2.3] - <date>` at the top of [CHANGELOG.md](../CHANGELOG.md), with what a user of the previous version notices (`Added`, `Changed`, `Fixed`, `Removed`), and the compare link at the end of the file (`[1.2.3]: https://github.com/mfeuermann/meteor-deploy/compare/v1.2.2...v1.2.3`). Bump the version in the docs too (`grep -rn 1.2.2 README.md docs`). Commit them.
+2. Write the release notes: a section `## [1.2.3] - <date>` at the top of [CHANGELOG.md](../CHANGELOG.md) (rename `## [Unreleased]`, where changes are noted as they land), with what a user of the previous version notices (`Added`, `Changed`, `Fixed`, `Removed`), and the compare link at the end of the file (`[1.2.3]: https://github.com/mfeuermann/meteor-deploy/compare/v1.2.2...v1.2.3`). Bump the version in the docs too (`grep -rn 1.2.2 README.md docs`). Commit them.
 
    `node scripts/release-notes.ts 1.2.3` prints the notes as the GitHub release will show them. Without a section for the version in `package.json`, a unit test fails, and so does the Release workflow before it publishes.
 3. Bump the version. `npm version` changes `package.json` and `package-lock.json`, commits, and creates the tag:

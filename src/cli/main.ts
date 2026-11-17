@@ -8,6 +8,7 @@ import yargs, { type Argv } from 'yargs';
 import { createBaseContext, createContext, type SshPoolFactory } from '../core/context.js';
 import { CometError } from '../core/errors.js';
 import { TOOL_VERSION } from '../core/version.js';
+import { renderBanner } from '../output/banner.js';
 import { createReporter, type Reporter } from '../output/reporter.js';
 import { deployCommand, meteorBuildCommand, meteorDeployCommand, meteorPushCommand } from './commands/deploy.js';
 import { cachePruneCommand } from './commands/cache.js';
@@ -44,6 +45,11 @@ export interface MainDeps {
   sshPoolFactory?: SshPoolFactory;
   /** Replaces the HTTP check from this computer (`status`). */
   checkUrl?: (url: string) => Promise<string>;
+  /**
+   * Pretends that the output is a terminal this wide, for the banner of `deploy` and `setup`
+   * (tests). Without it the banner appears only when stdout is a real terminal.
+   */
+  terminal?: { columns?: number };
 }
 
 const defaultIO: CliIO = {
@@ -89,6 +95,9 @@ export const COMMANDS: CommandModule[] = [
 export function buildCli(argv: string[], io: CliIO = defaultIO, deps: MainDeps = {}, onReporter?: (r: Reporter) => void): Argv {
   // Colors only on a real terminal; output captured through a custom `io` stays plain text.
   const tty = io === defaultIO && !!process.stdout.isTTY;
+  // The banner only in a terminal: never in a CI log, a pipe or a file.
+  const terminal = deps.terminal ?? (tty ? { columns: process.stdout.columns } : undefined);
+  const showBanner = terminal ? () => io.stdout(renderBanner({ version: TOOL_VERSION, color: tty, columns: terminal.columns })) : undefined;
   // Called by each command handler. `init` and `validate` (`needsConfig: false`) get a context
   // without a loaded config, so they work before mup.js exists or while it is invalid.
   const makeCtx = async (args: Record<string, unknown>, needsConfig: boolean) => {
@@ -114,7 +123,7 @@ export function buildCli(argv: string[], io: CliIO = defaultIO, deps: MainDeps =
     .option('servers', { type: 'string', describe: 'Only these servers (space or comma separated)', global: true })
     .option('verbose', { type: 'boolean', describe: 'Show the output of remote commands', global: true })
     .option('show-hook-names', { type: 'boolean', describe: 'Print the names of the available hooks', global: true });
-  registerCommands(y, COMMANDS, makeCtx);
+  registerCommands(y, COMMANDS, makeCtx, showBanner);
   return y
     // Hidden default command: a bare `comet-deploy` ends with an error and a hint instead of
     // printing nothing. Strict mode normally rejects an unknown command before this runs.

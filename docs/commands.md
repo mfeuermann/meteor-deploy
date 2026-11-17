@@ -56,6 +56,7 @@ Other commands (`logs -f`, `status`, `setup`, …) stop immediately on Ctrl+C.
 
 ## Output
 
+- `deploy`, `meteor deploy` and `setup` start with a banner: COMET in block letters, the version and the author. Only in a terminal: never in CI, in a pipe or in a file. A terminal narrower than the banner gets one line instead (`comet-deploy v0.6.0 · by Marek Feuermann`).
 - Phases print `==> Name` when they start and `<== Name (12.3s)` when they end (`<== Name failed (…)` on failure).
 - Per-server steps print `[server] step <symbol> [detail]`. Symbols: `→` running, `✓` ok, `✗` failed, `↺` reverted, `-` skipped.
 - Rollout commands end with a table: `SERVER  VERSION  RESULT  TIME  NOTE`.

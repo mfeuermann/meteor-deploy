@@ -95,6 +95,7 @@ export const setupCommand: ConfigCommand = {
   command: 'setup',
   describe: 'Install Docker and prepare the servers',
   builder: allowMongoVersionChange,
+  banner: true,
   run: (ctx, argv) => setupAll(ctx, { allowMongoVersionChange: argv['allow-mongo-version-change'] === true }),
 };
 

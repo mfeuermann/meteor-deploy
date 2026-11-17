@@ -2,6 +2,12 @@
 
 All notable changes to comet-deploy. The versions follow [semantic versioning](https://semver.org); before 1.0.0, a minor version can change behavior, and this file says how. Each version is on npm as [`comet-deploy`](https://www.npmjs.com/package/comet-deploy) and on GitHub as a release.
 
+## [Unreleased]
+
+### Added
+
+- `deploy`, `meteor deploy` and `setup` start with a banner in a terminal: COMET in block letters, the version and the author. CI logs, pipes and files do not get it.
+
 ## [0.6.0] - 2026-11-16
 
 The last part of phase 2: the operator commands of MUP 1.5.11 that were missing, without the parts of them that expose secrets or ports.

@@ -66,6 +66,7 @@ export const deployCommand: ConfigCommand = {
   command: 'deploy',
   describe: 'Build the app once locally and deploy it to the servers',
   builder: deployOptions,
+  banner: true,
   run: (ctx, argv) => ctx.runner.run('default.deploy', () => runDeploy(ctx, argv)),
 };
 
@@ -75,6 +76,7 @@ export const meteorDeployCommand: ConfigCommand = {
   describe: 'Same as "deploy"',
   group: 'meteor',
   builder: deployOptions,
+  banner: true,
   run: (ctx, argv) => runDeploy(ctx, argv),
 };
 

@@ -22,6 +22,8 @@ interface CommandBase {
   builder?: (y: Argv) => Argv;
   /** `false` passes unknown options through in argv (e.g. `logs -f --tail 50`). */
   strict?: boolean;
+  /** Prints the banner before the command runs, in a terminal only (`deploy`, `setup`). */
+  banner?: boolean;
 }
 
 /**
@@ -58,15 +60,17 @@ const GROUP_DESCRIPTIONS: Record<CommandGroup, string> = {
 };
 
 /**
- * Registers one command module on `y`. Its handler creates the context, runs the command and
- * closes every SSH connection the command opened, also when it throws.
+ * Registers one command module on `y`. Its handler prints the banner (for a module with
+ * `banner`), creates the context, runs the command and closes every SSH connection the
+ * command opened, also when it throws.
  */
-function addCommand(y: Argv, m: CommandModule, makeCtx: MakeContext): Argv {
+function addCommand(y: Argv, m: CommandModule, makeCtx: MakeContext, showBanner?: () => void): Argv {
   const builder = (yy: Argv) => {
     const b = m.builder ? m.builder(yy) : yy;
     return m.strict === false ? b.strict(false) : b;
   };
   const handler = async (argv: Record<string, unknown>) => {
+    if (m.banner) showBanner?.();
     const needsConfig = m.needsConfig !== false;
     const ctx = await makeCtx(argv as GlobalArgs & Record<string, unknown>, needsConfig);
     try {
@@ -87,17 +91,18 @@ function addCommand(y: Argv, m: CommandModule, makeCtx: MakeContext): Argv {
 /**
  * Registers `modules` on `y`: modules without a `group` as top-level commands, the others as
  * subcommands of their group command (`meteor`, `docker`). A group called without a
- * subcommand fails with "Specify a <group> command.". Returns `y`.
+ * subcommand fails with "Specify a <group> command.". `showBanner` prints the banner; the
+ * caller decides whether there is a terminal for it. Returns `y`.
  */
-export function registerCommands(y: Argv, modules: CommandModule[], makeCtx: MakeContext): Argv {
+export function registerCommands(y: Argv, modules: CommandModule[], makeCtx: MakeContext, showBanner?: () => void): Argv {
   const groups = new Map<CommandGroup, CommandModule[]>();
   for (const m of modules) {
     if (m.group) groups.set(m.group, [...(groups.get(m.group) ?? []), m]);
-    else addCommand(y, m, makeCtx);
+    else addCommand(y, m, makeCtx, showBanner);
   }
   for (const [group, mods] of groups) {
     y.command(group, GROUP_DESCRIPTIONS[group], (yy) => {
-      for (const m of mods) addCommand(yy, m, makeCtx);
+      for (const m of mods) addCommand(yy, m, makeCtx, showBanner);
       return yy.demandCommand(1, `Specify a ${group} command.`);
     });
   }
