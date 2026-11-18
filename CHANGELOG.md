@@ -2,7 +2,7 @@
 
 All notable changes to comet-deploy. The versions follow [semantic versioning](https://semver.org); before 1.0.0, a minor version can change behavior, and this file says how. Each version is on npm as [`comet-deploy`](https://www.npmjs.com/package/comet-deploy) and on GitHub as a release.
 
-## [Unreleased]
+## [0.7.1] - 2026-11-18
 
 ### Changed
 
@@ -96,6 +96,7 @@ The first release: phase 1 and the reverse proxy.
 - Deploying from CI with a build cache that survives between runs (`--cache-from`, `--cache-to`). See [Deploying from CI](https://github.com/mfeuermann/meteor-deploy/blob/v0.1.0/docs/ci.md).
 - Secrets (`env` values, settings values, passwords) are masked in the output.
 
+[0.7.1]: https://github.com/mfeuermann/meteor-deploy/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/mfeuermann/meteor-deploy/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/mfeuermann/meteor-deploy/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mfeuermann/meteor-deploy/compare/v0.5.0...v0.6.0
